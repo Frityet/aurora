@@ -100,6 +100,23 @@ void AuroraSetViewportPolicy(AuroraViewportPolicy policy);
 void AuroraGetRenderSize(u32* width, u32* height);
 
 /**
+ * Returns whether the current/most recent frame produced a GXCopyDisp display copy.
+ */
+BOOL AuroraHasDisplayCopy(void);
+
+/**
+ * Returns the size, in pixels, of the current/most recent GXCopyDisp display copy.
+ */
+BOOL AuroraGetDisplayCopySize(u32* width, u32* height);
+
+/**
+ * Reads the current/most recent GXCopyDisp display copy into RGBA8 pixels.
+ * This is intended for screenshots and parity readback after aurora_end_frame().
+ * rowStrideOut receives the number of bytes per row written to dst.
+ */
+BOOL AuroraReadDisplayCopyRGBA8(void* dst, u32 dstSize, u32* width, u32* height, u32* rowStrideOut);
+
+/**
  * Sets the actual render viewport in native framebuffer coordinates.
  * Overrides the automatically scaled values set by the logical GXSetViewport.
  */

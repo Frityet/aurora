@@ -538,6 +538,9 @@ static inline std::string vtx_attr(const ShaderConfig& config, GXAttr attr) {
     if (attr == GX_VA_CLR0 || attr == GX_VA_CLR1) {
       return "vec4f(0.0, 0.0, 0.0, 0.0)"s;
     }
+    if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7) {
+      return "vec2f(0.0, 0.0)"s;
+    }
     UNLIKELY FATAL("unmapped vtx attr {}", underlying(attr));
   }
   if (attr == GX_VA_POS) {
@@ -1100,10 +1103,15 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
     if (tcg.src >= GX_TG_TEX0 && tcg.src <= GX_TG_TEX7) {
       vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0, 1.0);", i,
                                  vtx_attr(config, GXAttr(GX_VA_TEX0 + (tcg.src - GX_TG_TEX0))));
+    } else if (tcg.src == GX_MAX_TEXGENSRC && i <= (GX_VA_TEX7 - GX_VA_TEX0)) {
+      vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0, 1.0);", i, vtx_attr(config, GXAttr(GX_VA_TEX0 + i)));
     } else if (tcg.src == GX_TG_POS) {
       vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0);", i, vtx_attr(config, GX_VA_POS));
     } else if (tcg.src == GX_TG_NRM) {
       vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0);", i, vtx_attr(config, GX_VA_NRM));
+    } else if (tcg.src == GX_TG_COLOR0 || tcg.src == GX_TG_COLOR1) {
+      vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}.rgb, 1.0);", i,
+                                 vtx_attr(config, static_cast<GXAttr>(GX_VA_CLR0 + (tcg.src - GX_TG_COLOR0))));
     } else
       UNLIKELY FATAL("unhandled tcg src {}", underlying(tcg.src));
     if (tcg.type == GX_TG_MTX2x4 || tcg.type == GX_TG_MTX3x4) {
@@ -1217,6 +1225,7 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
     const bool hasBaseTexture = stage.texMapId != GX_TEXMAP_NULL;
     const bool hasBaseCoord = hasBaseTexCoord && hasBaseTexture;
     std::string uvIn;
+    std::string explicitLodCoord;
     if (needsTevTexCoord) {
       fragmentFnPre += fmt::format("\n    // TEV stage {} indirect", i);
 
@@ -1365,6 +1374,9 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
             fragmentFnPre += fmt::format("\n    var ind{0}_uv = t_TexCoord / ubuf.tex{1}_size_bias.xy;", i, texMapId);
           }
           uvIn = fmt::format("ind{0}_uv", i);
+          if (hasBaseCoord) {
+            explicitLodCoord = fmt::format("tex{0}_uv", underlying(stage.texCoordId));
+          }
         }
       }
     }
@@ -1378,9 +1390,17 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
       // No indirect texturing
       uvIn = fmt::format("tex{0}_uv", underlying(stage.texCoordId));
     }
-    fragmentFnPre +=
-        fmt::format("\n    var sampled{0} = textureSampleBias(tex{1}, tex{1}_samp, {2}, ubuf.tex{1}_size_bias.z);", i,
-                    underlying(stage.texMapId), uvIn);
+    if (!explicitLodCoord.empty()) {
+      fragmentFnPre += fmt::format(
+          "\n    let tex{1}_lod_bias_scale = exp2(ubuf.tex{1}_size_bias.z);"
+          "\n    var sampled{0} = textureSampleGrad(tex{1}, tex{1}_samp, {2}, dpdx({3}) * tex{1}_lod_bias_scale, "
+          "dpdy({3}) * tex{1}_lod_bias_scale);",
+          i, underlying(stage.texMapId), uvIn, explicitLodCoord);
+    } else {
+      fragmentFnPre +=
+          fmt::format("\n    var sampled{0} = textureSampleBias(tex{1}, tex{1}_samp, {2}, ubuf.tex{1}_size_bias.z);", i,
+                      underlying(stage.texMapId), uvIn);
+    }
   }
   if (info.usesPTTexMtx.any())
     uniBufAttrs += fmt::format("\n    postmtx: array<mat3x4f, {}>,", MaxPTTexMtx);

@@ -347,6 +347,17 @@ struct GXState {
   GXTexFmt texCopyFmt;
   u16 texCopyDstWidth = 0;
   u16 texCopyDstHeight = 0;
+  struct DisplayCopyState {
+    gfx::ClipRect src{0, 0, 640, 480};
+    u16 dstWidth = 640;
+    u16 dstHeight = 480;
+    f32 yScale = 1.f;
+    u32 displayCopyYScale = 0x100;
+    GXGamma gamma = GX_GM_1_0;
+    GXFBClamp clamp = static_cast<GXFBClamp>(GX_CLAMP_TOP | GX_CLAMP_BOTTOM);
+    u32 frame2Field = 0;
+  };
+  DisplayCopyState dispCopy;
   struct CopyTextureKey {
     const void* dest = nullptr;
     u32 width = 0;
@@ -364,6 +375,8 @@ struct GXState {
   };
   absl::flat_hash_map<const void*, CopyTextureRef> copyTextures;
   absl::flat_hash_map<CopyTextureKey, CopyTextureRef> copyTextureCache;
+  CopyTextureKey frameDisplayCopyKey;
+  bool frameDisplayCopyValid = false;
   bool depthCompare = true;
   bool depthUpdate = true;
   bool colorUpdate = true;
@@ -392,6 +405,11 @@ void clear_copy_texture_cache() noexcept;
 void evict_copy_texture(const void* dest) noexcept;
 void evict_texture_object(u32 texObjId) noexcept;
 void evict_tlut_object(u32 tlutObjId) noexcept;
+const GXState::CopyTextureRef* display_copy_for_present() noexcept;
+void clear_frame_display_copy() noexcept;
+bool has_display_copy() noexcept;
+bool display_copy_size(u32* width, u32* height) noexcept;
+bool read_display_copy_rgba8(void* dst, u32 dstSize, u32* width, u32* height, u32* rowStrideOut) noexcept;
 Vec2<uint32_t> logical_fb_size() noexcept;
 gfx::Viewport map_logical_viewport(const gfx::Viewport& logicalViewport) noexcept;
 gfx::ClipRect map_logical_scissor(const gfx::ClipRect& logicalScissor) noexcept;

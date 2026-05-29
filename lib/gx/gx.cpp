@@ -587,7 +587,7 @@ wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, ArrayRef<wgpu:
   ZoneScoped;
   const wgpu::DepthStencilState depthStencil{
       .format = g_graphicsConfig.depthFormat,
-      .depthWriteEnabled = config.depthCompare && config.depthUpdate,
+      .depthWriteEnabled = config.depthUpdate,
       .depthCompare = config.depthCompare ? to_compare_function(config.depthFunc) : wgpu::CompareFunction::Always,
   };
   const auto blendState =
@@ -1001,7 +1001,9 @@ wgpu::SamplerDescriptor aurora::gfx::TextureBind::get_descriptor() const noexcep
     mipFilter = wgpu::MipmapFilterMode::Linear;
     minLod = 0.f;
     maxLod = static_cast<float>(std::max(ref->mipCount, 1u) - 1u);
-  } else if (mipFilter == wgpu::MipmapFilterMode::Undefined) {
+  } else if (mipFilter == wgpu::MipmapFilterMode::Undefined || texObj.has_mips() == GX_FALSE ||
+             (ref && ref->mipCount <= 1u)) {
+    mipFilter = wgpu::MipmapFilterMode::Undefined;
     minLod = 0.f;
     maxLod = 0.f;
   }

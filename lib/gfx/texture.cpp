@@ -174,7 +174,8 @@ TextureHandle new_render_texture(uint32_t width, uint32_t height, u32 gxFormat, 
   };
   const wgpu::TextureDescriptor textureDescriptor{
       .label = label,
-      .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::RenderAttachment,
+      .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst |
+               wgpu::TextureUsage::RenderAttachment,
       .dimension = wgpu::TextureDimension::e2D,
       .size = size,
       .format = wgpuFormat,
@@ -207,7 +208,7 @@ TextureHandle new_conv_texture(uint32_t width, uint32_t height, u32 gxFormat, co
   };
   const wgpu::TextureDescriptor textureDescriptor{
       .label = label,
-      .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::RenderAttachment,
+      .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::RenderAttachment,
       .dimension = wgpu::TextureDimension::e2D,
       .size = size,
       .format = wgpuFormat,

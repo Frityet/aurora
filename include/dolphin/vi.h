@@ -17,6 +17,8 @@ void VIFlush(void);
 void VIWaitForRetrace(void);
 
 u32 VIGetTvFormat(void);
+u32 VIGetScanMode(void);
+u32 VIGetCurrentLine(void);
 u32 VIGetRetraceCount(void);
 u32 VIGetNextField(void);
 u32 VIGetDTVStatus(void);
@@ -25,8 +27,8 @@ void* VIGetCurrentFrameBuffer(void);
 void* VIGetNextFrameBuffer(void);
 void VISetNextFrameBuffer(void *fb);
 void VISetBlack(BOOL black);
-
-typedef void (*VIRetraceCallback)(u32 retraceCount);
+BOOL VIEnableDimming(BOOL enabled);
+BOOL VIResetDimmingCount(void);
 
 VIRetraceCallback VISetPreRetraceCallback(VIRetraceCallback cb);
 VIRetraceCallback VISetPostRetraceCallback(VIRetraceCallback cb);

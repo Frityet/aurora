@@ -48,6 +48,16 @@ void AuroraGetRenderSize(u32* width, u32* height) {
   }
 }
 
+BOOL AuroraHasDisplayCopy(void) { return aurora::gx::has_display_copy() ? TRUE : FALSE; }
+
+BOOL AuroraGetDisplayCopySize(u32* width, u32* height) {
+  return aurora::gx::display_copy_size(width, height) ? TRUE : FALSE;
+}
+
+BOOL AuroraReadDisplayCopyRGBA8(void* dst, u32 dstSize, u32* width, u32* height, u32* rowStrideOut) {
+  return aurora::gx::read_display_copy_rgba8(dst, dstSize, width, height, rowStrideOut) ? TRUE : FALSE;
+}
+
 void GXSetViewportRender(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz) {
   GX_WRITE_AURORA(GX_LOAD_AURORA_VIEWPORT_RENDER);
   GX_WRITE_F32(left);

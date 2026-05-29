@@ -45,6 +45,7 @@ TextureWithSampler g_depthBuffer;
 static wgpu::BindGroupLayout g_CopyBindGroupLayout;
 wgpu::RenderPipeline g_CopyPipeline;
 wgpu::BindGroup g_CopyBindGroup;
+static wgpu::Sampler g_PresentSampler;
 static AuroraSampler g_Resampler = SAMPLER_BILINEAR;
 static wgpu::BindGroupLayout g_ResampleBindGroupLayout;
 static wgpu::RenderPipeline g_ResamplePipeline;
@@ -280,6 +281,25 @@ TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool m
 
 const TextureWithSampler& present_source() noexcept {
   return g_graphicsConfig.msaaSamples > 1 ? g_frameBufferResolved : g_frameBuffer;
+}
+
+const wgpu::Sampler& present_sampler() noexcept {
+  if (!g_PresentSampler) {
+    constexpr wgpu::SamplerDescriptor samplerDescriptor{
+        .label = "Present sampler",
+        .addressModeU = wgpu::AddressMode::ClampToEdge,
+        .addressModeV = wgpu::AddressMode::ClampToEdge,
+        .addressModeW = wgpu::AddressMode::ClampToEdge,
+        .magFilter = wgpu::FilterMode::Linear,
+        .minFilter = wgpu::FilterMode::Linear,
+        .mipmapFilter = wgpu::MipmapFilterMode::Linear,
+        .lodMinClamp = 0.f,
+        .lodMaxClamp = 1000.f,
+        .maxAnisotropy = 1,
+    };
+    g_PresentSampler = g_device.CreateSampler(&samplerDescriptor);
+  }
+  return g_PresentSampler;
 }
 
 void set_resampler(AuroraSampler sampler) noexcept {
@@ -579,8 +599,8 @@ wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source) {
   return g_device.CreateBindGroup(&bindGroupDescriptor);
 }
 
-const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport) {
-  const auto& source = present_source();
+const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport,
+                                                  const TextureWithSampler& source) {
   const uint32_t width = viewport_extent(viewport.width);
   const uint32_t height = viewport_extent(viewport.height);
   if (!g_resampledFrameBuffer.view || g_resampledFrameBuffer.size.width != width ||
@@ -637,6 +657,10 @@ const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& en
   pass.End();
 
   return g_resampledFrameBuffer;
+}
+
+const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport) {
+  return resample_present_source(encoder, viewport, present_source());
 }
 
 static wgpu::BackendType to_wgpu_backend(AuroraBackend backend) {
@@ -943,6 +967,7 @@ void shutdown() {
   g_CopyBindGroupLayout = {};
   g_CopyPipeline = {};
   g_CopyBindGroup = {};
+  g_PresentSampler = {};
   g_ResampleBindGroupLayout = {};
   g_ResamplePipeline = {};
   g_ResampleUniformBuffer = {};

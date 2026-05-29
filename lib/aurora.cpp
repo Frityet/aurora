@@ -3,6 +3,7 @@
 #ifdef AURORA_ENABLE_GX
 #include "gfx/common.hpp"
 #include "gx/fifo.hpp"
+#include "gx/gx.hpp"
 #include "imgui.hpp"
 #include "webgpu/gpu.hpp"
 #include <webgpu/webgpu_cpp.h>
@@ -69,6 +70,18 @@ constexpr std::array<AuroraBackend, 0> PreferredBackendOrder{};
 #endif
 
 bool g_initialFrame = false;
+
+#ifdef AURORA_ENABLE_GX
+webgpu::TextureWithSampler make_present_source(const gfx::TextureHandle& handle) noexcept {
+  return {
+      .texture = handle->texture,
+      .view = handle->sampleTextureView,
+      .size = handle->size,
+      .format = handle->format,
+      .sampler = webgpu::present_sampler(),
+  };
+}
+#endif
 
 AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexcept {
   g_config = config;
@@ -253,6 +266,7 @@ bool begin_frame() noexcept {
     g_currentView = {};
     return false;
   }
+  gx::clear_frame_display_copy();
 #endif
   return true;
 }
@@ -270,11 +284,24 @@ void end_frame() noexcept {
   {
     window::SurfaceLock surfaceLock;
     if (window::is_presentable() && g_surface && g_currentView) {
-      const auto& presentSource = webgpu::present_source();
+      webgpu::TextureWithSampler presentSource = webgpu::present_source();
+      if (const auto* displayCopy = gx::display_copy_for_present(); displayCopy != nullptr && displayCopy->handle) {
+        presentSource = make_present_source(displayCopy->handle);
+      }
       auto viewport = webgpu::calculate_present_viewport(webgpu::g_graphicsConfig.surfaceConfiguration.width,
                                                          webgpu::g_graphicsConfig.surfaceConfiguration.height,
                                                          presentSource.size.width, presentSource.size.height);
-      const auto& resampledSource = webgpu::resample_present_source(encoder, viewport);
+      if (gx::g_gxState.viewportPolicy == AURORA_VIEWPORT_STRETCH) {
+        viewport = {
+            .left = 0.f,
+            .top = 0.f,
+            .width = static_cast<float>(webgpu::g_graphicsConfig.surfaceConfiguration.width),
+            .height = static_cast<float>(webgpu::g_graphicsConfig.surfaceConfiguration.height),
+            .znear = 0.f,
+            .zfar = 1.f,
+        };
+      }
+      const auto& resampledSource = webgpu::resample_present_source(encoder, viewport, presentSource);
       wgpu::BindGroup presentBindGroup = webgpu::create_copy_bind_group(resampledSource);
     #if AURORA_ENABLE_RMLUI
       if (rmlui::is_initialized()) {

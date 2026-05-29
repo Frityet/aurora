@@ -166,9 +166,10 @@ end
 target("aurora-core")
     set_kind("static")
     add_aurora_common_settings(true)
-    add_files("lib/aurora.cpp", "lib/device.cpp", "lib/input.cpp", "lib/window.cpp",
+    add_files("lib/aurora.cpp", "lib/compat.cpp", "lib/device.cpp", "lib/input.cpp", "lib/window.cpp",
               "lib/logging.cpp", "lib/system_info.cpp")
-    add_headerfiles("include/(aurora/**.h)", "lib/*.hpp")
+    add_headerfiles("include/(aurora/**.h)", "include/(revolution.h)", "include/(revolution/**.h)",
+                    "include/(RVLFaceLib.h)", "lib/*.hpp")
     add_packages("fmt", "libsdl3", "xxhash", {public = true})
     add_packages("abseil", "sqlite3", "tracy")
     if has_config("aurora_enable_gx") then
@@ -199,7 +200,8 @@ target("aurora-os")
               "lib/dolphin/os/OSCache.cpp",
               "lib/dolphin/os/OSArena.cpp", "lib/dolphin/os/OSAlloc.cpp",
               "lib/dolphin/os/OSAddress.cpp", "lib/dolphin/os/OSReport.cpp",
-              "lib/dolphin/AR.cpp")
+              "lib/dolphin/AR.cpp", "lib/nand.cpp")
+    add_headerfiles("include/(aurora/nand.hpp)")
     add_deps("aurora-core")
 
 target("aurora-si")
@@ -212,7 +214,8 @@ target("aurora-si")
 target("aurora-pad")
     set_kind("static")
     add_aurora_common_settings(true)
-    add_files("lib/dolphin/pad/pad.cpp")
+    add_files("lib/dolphin/pad/pad.cpp", "lib/wpad.cpp")
+    add_headerfiles("include/(aurora/wpad.hpp)")
     add_deps("aurora-core", "aurora-si")
     add_packages("abseil")
 

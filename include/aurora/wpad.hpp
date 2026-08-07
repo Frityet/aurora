@@ -24,6 +24,14 @@ struct WpadStickState {
   float y = 0.0F;
 };
 
+enum WpadStickFlag : std::uint32_t {
+  WpadStickNone = 0U,
+  WpadStickUp = 1U,
+  WpadStickDown = 2U,
+  WpadStickRight = 4U,
+  WpadStickLeft = 8U,
+};
+
 struct WpadChannelState {
   bool connected = false;
   std::uint32_t previous_hold = 0U;
@@ -38,6 +46,10 @@ struct WpadChannelState {
   WpadVec3State core_acceleration{};
   WpadVec3State sub_acceleration{};
   WpadStickState sub_stick{};
+  std::uint32_t previous_sub_stick_hold = WpadStickNone;
+  std::uint32_t sub_stick_hold = WpadStickNone;
+  std::uint32_t sub_stick_trigger = WpadStickNone;
+  std::uint32_t sub_stick_release = WpadStickNone;
   bool core_swing = false;
   bool previous_core_swing = false;
   bool sub_swing = false;
@@ -67,6 +79,9 @@ public:
   [[nodiscard]] WpadPointerState past_pointer(s32 channel, std::uint32_t index) const;
   [[nodiscard]] std::uint32_t pointer_history_count(s32 channel) const;
   [[nodiscard]] WpadStickState sub_stick(s32 channel) const;
+  [[nodiscard]] std::uint32_t sub_stick_hold(s32 channel) const;
+  [[nodiscard]] std::uint32_t sub_stick_trigger(s32 channel) const;
+  [[nodiscard]] std::uint32_t sub_stick_release(s32 channel) const;
   [[nodiscard]] WpadVec3State core_acceleration(s32 channel) const;
   [[nodiscard]] WpadVec3State sub_acceleration(s32 channel) const;
   [[nodiscard]] bool is_core_swing(s32 channel) const;

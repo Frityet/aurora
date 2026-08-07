@@ -5,6 +5,25 @@
 namespace aurora {
 namespace {
 WpadService g_wpadService;
+
+constexpr float kSubStickDirectionThreshold = 0.2F;
+
+[[nodiscard]] std::uint32_t sub_stick_direction_flags(float x, float y) {
+  auto flags = static_cast<std::uint32_t>(WpadStickNone);
+  if (x > kSubStickDirectionThreshold) {
+    flags |= WpadStickRight;
+  }
+  if (x < -kSubStickDirectionThreshold) {
+    flags |= WpadStickLeft;
+  }
+  if (y > kSubStickDirectionThreshold) {
+    flags |= WpadStickUp;
+  }
+  if (y < -kSubStickDirectionThreshold) {
+    flags |= WpadStickDown;
+  }
+  return flags;
+}
 } // namespace
 
 void WpadService::clear() { m_channels = {}; }
@@ -12,11 +31,14 @@ void WpadService::clear() { m_channels = {}; }
 void WpadService::begin_frame() {
   for (auto& channel : m_channels) {
     channel.previous_hold = channel.hold;
+    channel.previous_sub_stick_hold = channel.sub_stick_hold;
     channel.previous_core_swing = channel.core_swing;
     channel.previous_sub_swing = channel.sub_swing;
     channel.trigger = 0U;
     channel.release = 0U;
     channel.repeat = 0U;
+    channel.sub_stick_trigger = WpadStickNone;
+    channel.sub_stick_release = WpadStickNone;
     if (channel.hold != 0U) {
       ++channel.hold_frame_count;
       if (channel.hold_frame_count == 1U || (channel.hold_frame_count > 30U && (channel.hold_frame_count % 8U) == 0U)) {
@@ -27,6 +49,9 @@ void WpadService::begin_frame() {
     }
     if (!channel.connected) {
       channel.hold = 0U;
+      channel.sub_stick = {};
+      channel.previous_sub_stick_hold = WpadStickNone;
+      channel.sub_stick_hold = WpadStickNone;
       channel.pointer.valid = false;
       channel.pointer_history_count = 0U;
     }
@@ -46,6 +71,11 @@ void WpadService::set_connected(s32 channel, bool connected) {
     state->release = 0U;
     state->repeat = 0U;
     state->hold_frame_count = 0U;
+    state->sub_stick = {};
+    state->previous_sub_stick_hold = WpadStickNone;
+    state->sub_stick_hold = WpadStickNone;
+    state->sub_stick_trigger = WpadStickNone;
+    state->sub_stick_release = WpadStickNone;
     state->pointer.valid = false;
     state->pointer_history_count = 0U;
   }
@@ -98,6 +128,9 @@ void WpadService::set_sub_stick(s32 channel, float x, float y) {
       .x = x,
       .y = y,
   };
+  state->sub_stick_hold = sub_stick_direction_flags(x, y);
+  state->sub_stick_trigger = state->sub_stick_hold & ~state->previous_sub_stick_hold;
+  state->sub_stick_release = state->previous_sub_stick_hold & ~state->sub_stick_hold;
 }
 
 void WpadService::set_core_acceleration(s32 channel, float x, float y, float z) {
@@ -195,7 +228,22 @@ std::uint32_t WpadService::pointer_history_count(s32 channel) const {
 
 WpadStickState WpadService::sub_stick(s32 channel) const {
   const auto* state = channel_state(channel);
-  return state == nullptr ? WpadStickState{} : state->sub_stick;
+  return state == nullptr || !state->connected ? WpadStickState{} : state->sub_stick;
+}
+
+std::uint32_t WpadService::sub_stick_hold(s32 channel) const {
+  const auto* state = channel_state(channel);
+  return state == nullptr || !state->connected ? WpadStickNone : state->sub_stick_hold;
+}
+
+std::uint32_t WpadService::sub_stick_trigger(s32 channel) const {
+  const auto* state = channel_state(channel);
+  return state == nullptr || !state->connected ? WpadStickNone : state->sub_stick_trigger;
+}
+
+std::uint32_t WpadService::sub_stick_release(s32 channel) const {
+  const auto* state = channel_state(channel);
+  return state == nullptr || !state->connected ? WpadStickNone : state->sub_stick_release;
 }
 
 WpadVec3State WpadService::core_acceleration(s32 channel) const {

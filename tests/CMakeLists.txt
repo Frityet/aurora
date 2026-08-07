@@ -15,6 +15,16 @@ add_executable(brlan_tests brlan_test.cpp)
 target_link_libraries(brlan_tests PRIVATE aurora::nw4r gtest gtest_main)
 gtest_discover_tests(brlan_tests)
 
+add_executable(wpad_tests
+  wpad_test.cpp
+  wpad_test_stubs.cpp
+  ../lib/wpad.cpp
+)
+target_include_directories(wpad_tests PRIVATE ../include)
+target_compile_definitions(wpad_tests PRIVATE AURORA TARGET_PC)
+target_link_libraries(wpad_tests PRIVATE gtest gtest_main)
+gtest_discover_tests(wpad_tests)
+
 if (AURORA_ENABLE_GX)
   # GX FIFO round-trip tests
   # Compile GX sources directly to avoid pulling in the full renderer/WebGPU runtime

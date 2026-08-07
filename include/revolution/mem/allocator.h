@@ -23,15 +23,11 @@ struct MEMAllocator {
 };
 
 static inline void* MEMAllocFromAllocator(MEMAllocator* allocator, u32 size) {
-  return allocator != nullptr && allocator->pFunc != nullptr && allocator->pFunc->pfAlloc != nullptr
-             ? allocator->pFunc->pfAlloc(allocator, size)
-             : nullptr;
+  return allocator->pFunc->pfAlloc(allocator, size);
 }
 
 static inline void MEMFreeToAllocator(MEMAllocator* allocator, void* memory) {
-  if (allocator != nullptr && allocator->pFunc != nullptr && allocator->pFunc->pfFree != nullptr) {
-    allocator->pFunc->pfFree(allocator, memory);
-  }
+  allocator->pFunc->pfFree(allocator, memory);
 }
 
 #ifdef __cplusplus

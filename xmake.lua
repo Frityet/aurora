@@ -163,6 +163,12 @@ local function add_dawn_backend_defines()
                 "DAWN_ENABLE_BACKEND_NULL", {public = true})
 end
 
+target("aurora-nw4r")
+    set_kind("static")
+    add_includedirs("include", {public = true})
+    add_files("lib/nw4r/brlan.cpp")
+    add_headerfiles("include/(aurora/nw4r/**.hpp)")
+
 target("aurora-core")
     set_kind("static")
     add_aurora_common_settings(true)

@@ -11,6 +11,10 @@ if (NOT TARGET gtest)
   FetchContent_MakeAvailable(googletest)
 endif ()
 
+add_executable(brlan_tests brlan_test.cpp)
+target_link_libraries(brlan_tests PRIVATE aurora::nw4r gtest gtest_main)
+gtest_discover_tests(brlan_tests)
+
 if (AURORA_ENABLE_GX)
   # GX FIFO round-trip tests
   # Compile GX sources directly to avoid pulling in the full renderer/WebGPU runtime

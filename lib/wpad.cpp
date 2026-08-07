@@ -294,6 +294,17 @@ extern "C" void WPADSetVRes(s32, u32, u32) {}
 
 extern "C" void WPADSetAutoSamplingBuf(s32, void*, u32) {}
 
+extern "C" void WPADControlMotor(s32 channel, u32 command) {
+  if (channel < 0 || channel >= PAD_CHANMAX) {
+    return;
+  }
+  PADControlMotor(static_cast<u32>(channel), command == WPAD_MOTOR_RUMBLE ? PAD_MOTOR_RUMBLE : PAD_MOTOR_STOP);
+}
+
+extern "C" BOOL WPADSupportsRumble(s32 channel) {
+  return channel >= 0 && channel < PAD_CHANMAX ? PADSupportsRumble(static_cast<u32>(channel)) : FALSE;
+}
+
 extern "C" void WPADControlSpeaker(s32, s32, void*) {}
 
 extern "C" void WPADStartFastSimpleSync() {}

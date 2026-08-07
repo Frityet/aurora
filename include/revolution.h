@@ -37,6 +37,9 @@ constexpr s32 WPAD_CHAN2 = 2;
 constexpr s32 WPAD_CHAN3 = 3;
 constexpr s32 WPAD_MAX_CONTROLLERS = 4;
 
+constexpr u32 WPAD_MOTOR_STOP = 0;
+constexpr u32 WPAD_MOTOR_RUMBLE = 1;
+
 constexpr u32 WPAD_BUTTON_LEFT = 0x0001;
 constexpr u32 WPAD_BUTTON_RIGHT = 0x0002;
 constexpr u32 WPAD_BUTTON_DOWN = 0x0004;
@@ -114,6 +117,8 @@ void WPADEnableURCC(BOOL enable);
 void WPADSetDataFormat(s32 channel, s32 format);
 void WPADSetVRes(s32 channel, u32 xres, u32 yres);
 void WPADSetAutoSamplingBuf(s32 channel, void *buffer, u32 length);
+void WPADControlMotor(s32 channel, u32 command);
+BOOL WPADSupportsRumble(s32 channel);
 void WPADControlSpeaker(s32 channel, s32 command, void *callback);
 void WPADStartFastSimpleSync(void);
 void WPADStopSimpleSync(void);

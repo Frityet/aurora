@@ -273,6 +273,7 @@ BOOL PADHasLED(u32 port);
 
 BOOL PADSetRumbleIntensity(u32 port, u16 low, u16 high);
 BOOL PADGetRumbleIntensity(u32 port, u16* low, u16* high);
+BOOL PADSupportsRumble(u32 port);
 BOOL PADSupportsRumbleIntensity(u32 port);
 BOOL PADCanForceDeviceRumble(u32 port);
 BOOL PADGetForceDeviceRumble(u32 port);

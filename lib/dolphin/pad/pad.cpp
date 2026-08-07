@@ -1716,6 +1716,15 @@ BOOL PADGetRumbleIntensity(const u32 port, u16* low, u16* high) {
   return TRUE;
 }
 
+BOOL PADSupportsRumble(const u32 port) {
+  if (port >= PAD_CHANMAX) {
+    return FALSE;
+  }
+
+  const auto controller = aurora::input::get_controller_for_player(port);
+  return (controller != nullptr && controller->m_hasRumble) || should_use_device_rumble(port, controller) ? TRUE : FALSE;
+}
+
 BOOL PADSupportsRumbleIntensity(const u32 port) {
   if (const auto* ctrl = aurora::input::get_controller_for_player(port)) {
     if (!ctrl->m_isGameCube && (ctrl->m_hasRumble || should_use_device_rumble(port, ctrl))) {

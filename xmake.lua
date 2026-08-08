@@ -169,13 +169,19 @@ target("aurora-nw4r")
     add_files("lib/nw4r/brlan.cpp")
     add_headerfiles("include/(aurora/nw4r/**.hpp)")
 
-target("aurora-core")
+target("aurora-base")
     set_kind("static")
     add_aurora_common_settings(true)
-    add_files("lib/aurora.cpp", "lib/compat.cpp", "lib/device.cpp", "lib/input.cpp", "lib/window.cpp",
-              "lib/logging.cpp", "lib/system_info.cpp")
-    add_headerfiles("include/(aurora/**.h)", "include/(revolution.h)", "include/(revolution/**.h)",
-                    "include/(RVLFaceLib.h)", "lib/*.hpp")
+    add_files("lib/runtime_state.cpp", "lib/compat.cpp", "lib/device.cpp", "lib/input.cpp", "lib/logging.cpp",
+              "lib/system_info.cpp")
+    add_packages("fmt", "libsdl3", "xxhash", {public = true})
+    add_packages("abseil", "sqlite3", "tracy")
+
+target("aurora-platform")
+    set_kind("static")
+    add_aurora_common_settings(true)
+    add_files("lib/window.cpp")
+    add_deps("aurora-base")
     add_packages("fmt", "libsdl3", "xxhash", {public = true})
     add_packages("abseil", "sqlite3", "tracy")
     if has_config("aurora_enable_gx") then
@@ -189,6 +195,21 @@ target("aurora-core")
             add_defines("AURORA_CACHE_USE_ZSTD")
             add_packages("zstd")
         end
+    end
+
+target("aurora-core")
+    set_kind("static")
+    add_aurora_common_settings(true)
+    add_files("lib/aurora.cpp")
+    add_headerfiles("include/(aurora/**.h)", "include/(revolution.h)", "include/(revolution/**.h)",
+                    "include/(RVLFaceLib.h)", "lib/*.hpp")
+    add_deps("aurora-base", "aurora-platform")
+    add_packages("fmt", "libsdl3", "xxhash", {public = true})
+    add_packages("abseil", "sqlite3", "tracy")
+    if has_config("aurora_enable_gx") then
+        add_deps("aurora-gx")
+        add_defines("AURORA_ENABLE_GX", "IMGUI_USER_CONFIG=\"aurora/imgui_config.h\"", {public = true})
+        add_dawn_backend_defines()
     end
     if has_config("aurora_enable_rmlui") then
         add_defines("AURORA_ENABLE_RMLUI", {public = true})
@@ -208,13 +229,13 @@ target("aurora-os")
               "lib/dolphin/os/OSAddress.cpp", "lib/dolphin/os/OSReport.cpp",
               "lib/dolphin/AR.cpp", "lib/nand.cpp")
     add_headerfiles("include/(aurora/nand.hpp)")
-    add_deps("aurora-core")
+    add_deps("aurora-base")
 
 target("aurora-si")
     set_kind("static")
     add_aurora_common_settings(true)
     add_files("lib/dolphin/si/si.cpp")
-    add_deps("aurora-core")
+    add_deps("aurora-base")
     add_packages("abseil")
 
 target("aurora-pad")
@@ -222,14 +243,14 @@ target("aurora-pad")
     add_aurora_common_settings(true)
     add_files("lib/dolphin/pad/pad.cpp", "lib/wpad.cpp")
     add_headerfiles("include/(aurora/wpad.hpp)")
-    add_deps("aurora-core", "aurora-si")
+    add_deps("aurora-base", "aurora-si")
     add_packages("abseil")
 
 target("aurora-ms")
     set_kind("static")
     add_aurora_common_settings(true)
     add_files("lib/dolphin/ms/mouse.cpp")
-    add_deps("aurora-core")
+    add_deps("aurora-base")
     add_packages("abseil")
 
 target("aurora-main")
@@ -249,7 +270,7 @@ target("aurora-vi")
     set_kind("static")
     add_aurora_common_settings(true)
     add_files("lib/dolphin/vi/vi.cpp")
-    add_deps("aurora-core")
+    add_deps("aurora-platform")
 
 if has_config("aurora_enable_gx") then
     target("aurora-gx")
@@ -273,7 +294,7 @@ if has_config("aurora_enable_gx") then
                   "lib/dolphin/gx/GXTev.cpp", "lib/dolphin/gx/GXTexture.cpp",
                   "lib/dolphin/gx/GXTransform.cpp", "lib/dolphin/gx/GXVert.cpp",
                   "lib/dolphin/gx/GXAurora.cpp")
-        add_deps("aurora-core")
+        add_deps("aurora-platform", "aurora-vi")
         add_packages("dawn-build", "xxhash", "abseil", "sqlite3", "tracy", "libpng", "zlib")
 
     target("aurora-gd")
@@ -296,7 +317,7 @@ if has_config("aurora_enable_card") then
                   "lib/card/DolphinCardPath.cpp", "lib/card/File.cpp",
                   "lib/card/FileIO.cpp", "lib/card/SRAM.cpp", "lib/card/Util.cpp",
                   "lib/dolphin/card.cpp")
-        add_deps("aurora-core")
+        add_deps("aurora-base")
 end
 
 if has_config("aurora_enable_dvd") then
@@ -304,7 +325,7 @@ if has_config("aurora_enable_dvd") then
         set_kind("static")
         add_aurora_common_settings(true)
         add_files("lib/dolphin/dvd/dvd.cpp")
-        add_deps("aurora-core")
+        add_deps("aurora-base")
         add_packages("encounter-nod", "libsdl3", {public = true})
         add_packages("fmt")
 end

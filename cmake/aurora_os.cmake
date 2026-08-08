@@ -12,4 +12,4 @@ add_library(aurora::os ALIAS aurora_os)
 set_target_properties(aurora_os PROPERTIES FOLDER "aurora")
 
 target_include_directories(aurora_os PUBLIC include)
-target_link_libraries(aurora_os PRIVATE aurora::core)
+target_link_libraries(aurora_os PRIVATE aurora::base)

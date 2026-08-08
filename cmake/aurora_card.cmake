@@ -13,5 +13,5 @@ add_library(aurora_card STATIC
 add_library(aurora::card ALIAS aurora_card)
 set_target_properties(aurora_card PROPERTIES FOLDER "aurora")
 
-target_link_libraries(aurora_card PUBLIC aurora::core)
+target_link_libraries(aurora_card PUBLIC aurora::base)
 target_include_directories(aurora_card PRIVATE include)

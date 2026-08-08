@@ -223,6 +223,7 @@ enum class ShaderType : uint8_t {
 
 void initialize();
 void shutdown();
+void invalidate_surface_resources() noexcept;
 
 bool begin_frame();
 void end_frame(const wgpu::CommandEncoder& cmd);

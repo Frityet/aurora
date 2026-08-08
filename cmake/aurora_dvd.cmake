@@ -6,5 +6,5 @@ set_target_properties(aurora_dvd PROPERTIES FOLDER "aurora")
 
 target_compile_definitions(aurora_dvd PUBLIC AURORA TARGET_PC)
 target_include_directories(aurora_dvd PUBLIC include)
-target_link_libraries(aurora_dvd PUBLIC nod::nod ${AURORA_SDL3_TARGET})
+target_link_libraries(aurora_dvd PUBLIC aurora::base nod::nod ${AURORA_SDL3_TARGET})
 target_link_libraries(aurora_dvd PRIVATE fmt::fmt)

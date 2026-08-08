@@ -9,6 +9,7 @@
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>
+#include <aurora/math.hpp>
 #include <SDL3/SDL_error.h>
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_properties.h>
@@ -30,9 +31,6 @@ extern "C" void Android_UnlockActivityMutex(void);
 #include <atomic>
 #include <vector>
 
-#include "rmlui.hpp"
-#include "dolphin/vi/vi_internal.hpp"
-
 namespace aurora::window {
 namespace {
 Module Log("aurora::window");
@@ -41,6 +39,8 @@ SDL_Window* g_window;
 SDL_Renderer* g_renderer;
 float g_frameBufferScale = 0.f;
 bool g_frameBufferAspectFit = false;
+std::uint32_t g_configuredFrameBufferWidth = 640;
+std::uint32_t g_configuredFrameBufferHeight = 480;
 AuroraWindowSize g_windowSize;
 std::vector<AuroraEvent> g_events;
 std::atomic_bool g_backgrounded = false;
@@ -148,10 +148,6 @@ void process_event(SDL_Event& event) {
 #ifdef AURORA_ENABLE_GX
   imgui::process_event(event);
 #endif
-#ifdef AURORA_ENABLE_RMLUI
-  rmlui::handle_event(event);
-#endif
-
   switch (event.type) {
   case SDL_EVENT_WINDOW_MOVED: {
     g_events.push_back(AuroraEvent{
@@ -405,18 +401,18 @@ AuroraWindowSize get_window_size() {
   int fb_w = native_fb_w;
   int fb_h = native_fb_h;
   if (g_frameBufferScale > 0.f) {
-    const auto [baseW, baseH] = vi::configured_fb_size();
     const auto [scaledW, scaledH] =
-        scale_frame_buffer_to_aspect(static_cast<int>(baseW), static_cast<int>(baseH), g_frameBufferScale,
+        scale_frame_buffer_to_aspect(static_cast<int>(g_configuredFrameBufferWidth),
+                                     static_cast<int>(g_configuredFrameBufferHeight), g_frameBufferScale,
                                      static_cast<float>(fb_w) / static_cast<float>(fb_h));
     fb_w = scaledW;
     fb_h = scaledH;
   }
   if (g_frameBufferAspectFit) {
-    const auto [baseW, baseH] = vi::configured_fb_size();
-    if (baseW > 0 && baseH > 0) {
+    if (g_configuredFrameBufferWidth > 0 && g_configuredFrameBufferHeight > 0) {
       const auto [fitW, fitH] =
-          fit_frame_buffer_to_aspect(fb_w, fb_h, static_cast<float>(baseW) / static_cast<float>(baseH));
+          fit_frame_buffer_to_aspect(fb_w, fb_h, static_cast<float>(g_configuredFrameBufferWidth) /
+                                                     static_cast<float>(g_configuredFrameBufferHeight));
       fb_w = fitW;
       fb_h = fitH;
     }
@@ -432,6 +428,11 @@ AuroraWindowSize get_window_size() {
       .native_fb_height = static_cast<uint32_t>(native_fb_h),
       .scale = scale,
   };
+}
+
+void set_configured_frame_buffer_size(std::uint32_t width, std::uint32_t height) noexcept {
+  g_configuredFrameBufferWidth = width;
+  g_configuredFrameBufferHeight = height;
 }
 
 SDL_Window* get_sdl_window() { return g_window; }

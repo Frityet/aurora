@@ -11,6 +11,8 @@
 struct SDL_Window;
 
 namespace aurora::webgpu {
+using SwapchainInvalidationCallback = void (*)() noexcept;
+
 struct GraphicsConfig {
   wgpu::SurfaceConfiguration surfaceConfiguration;
   wgpu::TextureFormat depthFormat;
@@ -52,7 +54,7 @@ extern wgpu::BindGroup g_CopyBindGroup;
 extern wgpu::Instance g_instance;
 extern bool g_bcTexturesSupported;
 
-bool initialize(AuroraBackend backend, bool allowCpu);
+bool initialize(AuroraBackend backend, bool allowCpu, SwapchainInvalidationCallback invalidationCallback);
 void shutdown();
 void release_surface() noexcept;
 bool refresh_surface(bool recreate = true);

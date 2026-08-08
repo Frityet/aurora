@@ -13,7 +13,6 @@
 #include <magic_enum.hpp>
 #include <webgpu/webgpu_cpp.h>
 
-#include "../gfx/common.hpp"
 #include "../internal.hpp"
 #include "../window.hpp"
 
@@ -21,13 +20,6 @@
 #include "../dawn/BackendBinding.hpp"
 #include <dawn/native/DawnNative.h>
 #endif
-
-namespace aurora::gx {
-void clear_copy_texture_cache() noexcept;
-} // namespace aurora::gx
-namespace aurora::gfx {
-void clear_offscreen_cache();
-} // namespace aurora::gfx
 
 namespace aurora::webgpu {
 static Module Log("aurora::gpu");
@@ -51,6 +43,7 @@ static wgpu::BindGroupLayout g_ResampleBindGroupLayout;
 static wgpu::RenderPipeline g_ResamplePipeline;
 static wgpu::Buffer g_ResampleUniformBuffer;
 static TextureWithSampler g_resampledFrameBuffer;
+static SwapchainInvalidationCallback g_swapchainInvalidationCallback;
 
 static wgpu::Adapter g_adapter;
 wgpu::Instance g_instance;
@@ -708,7 +701,9 @@ static bool create_surface() {
   return true;
 }
 
-bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
+bool initialize(AuroraBackend auroraBackend, bool allowCpu, SwapchainInvalidationCallback invalidationCallback) {
+  ASSERT(invalidationCallback != nullptr, "WebGPU requires a swapchain resource invalidator");
+  g_swapchainInvalidationCallback = invalidationCallback;
   if (!g_instance) {
     Log.info("Creating WebGPU instance");
     const std::array requiredInstanceFeatures{
@@ -1030,8 +1025,8 @@ void resize_swapchain(uint32_t width, uint32_t height, uint32_t native_width, ui
     return;
   }
   if (sizeChanged) {
-    gx::clear_copy_texture_cache();
-    gfx::clear_caches();
+    ASSERT(g_swapchainInvalidationCallback != nullptr, "WebGPU swapchain resource invalidator is unavailable");
+    g_swapchainInvalidationCallback();
   }
   g_graphicsConfig.surfaceConfiguration.width = native_width;
   g_graphicsConfig.surfaceConfiguration.height = native_height;
@@ -1043,6 +1038,7 @@ void resize_swapchain(uint32_t width, uint32_t height, uint32_t native_width, ui
   g_depthBuffer = create_depth_texture(width, height);
   g_CopyBindGroup = create_copy_bind_group(present_source());
 }
+
 } // namespace aurora::webgpu
 
 void aurora_enable_vsync(const bool enabled) {

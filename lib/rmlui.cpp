@@ -363,7 +363,7 @@ void set_input_type(InputType type) noexcept {
   }
 }
 
-void handle_event(SDL_Event& event) noexcept {
+void handle_event(const SDL_Event& event) noexcept {
   if (g_context == nullptr || imgui::wants_capture_event(event)) {
     return;
   }
@@ -406,7 +406,8 @@ void handle_event(SDL_Event& event) noexcept {
     break;
   }
 
-  RmlSDL::InputEventHandler(g_context, window::get_sdl_window(), event);
+  auto mutableEvent = event;
+  RmlSDL::InputEventHandler(g_context, window::get_sdl_window(), mutableEvent);
 }
 
 RenderOutput render(const wgpu::CommandEncoder& encoder, const webgpu::Viewport& presentViewport,

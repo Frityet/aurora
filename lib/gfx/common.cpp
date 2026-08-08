@@ -329,6 +329,11 @@ void clear_caches() noexcept {
   g_cachedBindGroups.clear();
 }
 
+void invalidate_surface_resources() noexcept {
+  gx::clear_copy_texture_cache();
+  clear_caches();
+}
+
 static OffscreenCacheEntry get_offscreen_textures(uint32_t width, uint32_t height) {
   OffscreenCacheKey key{width, height};
   if (const auto it = g_offscreenCache.find(key); it != g_offscreenCache.end()) {

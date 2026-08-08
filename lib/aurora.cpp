@@ -24,10 +24,6 @@
 #include "tracy/Tracy.hpp"
 
 namespace aurora {
-AuroraConfig g_config;
-uint32_t g_sdlCustomEventsStart;
-char g_gameName[4];
-
 namespace {
 Module Log("aurora");
 
@@ -124,7 +120,7 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
   AuroraBackend selectedBackend = config.desiredBackend;
   bool windowCreated = false;
   if (selectedBackend != BACKEND_AUTO && window::create_window(selectedBackend)) {
-    if (webgpu::initialize(selectedBackend, config.allowCpuAdapter)) {
+    if (webgpu::initialize(selectedBackend, config.allowCpuAdapter, gfx::invalidate_surface_resources)) {
       windowCreated = true;
     } else {
       window::destroy_window();
@@ -137,7 +133,7 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
       if (!window::create_window(selectedBackend)) {
         continue;
       }
-      if (webgpu::initialize(selectedBackend, config.allowCpuAdapter)) {
+      if (webgpu::initialize(selectedBackend, config.allowCpuAdapter, gfx::invalidate_surface_resources)) {
         windowCreated = true;
         break;
       } else {
@@ -213,7 +209,15 @@ const AuroraEvent* update() noexcept {
     g_initialFrame = false;
     input::initialize();
   }
-  return window::poll_events();
+  const auto* events = window::poll_events();
+#ifdef AURORA_ENABLE_RMLUI
+  for (auto* event = events; event->type != AURORA_NONE; ++event) {
+    if (event->type == AURORA_SDL_EVENT) {
+      rmlui::handle_event(event->sdl);
+    }
+  }
+#endif
+  return events;
 }
 
 bool begin_frame() noexcept {

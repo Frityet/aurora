@@ -30,7 +30,9 @@ void configure(const GXRenderModeObj* rm) noexcept {
   } else {
     g_renderMode = *rm;
   }
-  if (render_mode_size() != oldSize) {
+  const auto newSize = render_mode_size();
+  window::set_configured_frame_buffer_size(newSize.x, newSize.y);
+  if (newSize != oldSize) {
     window::request_frame_buffer_resize();
   }
 }

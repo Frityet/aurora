@@ -88,8 +88,9 @@ public:
     } mID;
 };
 
-// Aurora can preserve logical JAudio request identity even when a platform
-// backend intentionally performs silent playback.
+// A PC-side JAudio handle can either carry the logical attachment used by
+// compatibility facades, or identify a concrete backend voice. Backend
+// identity lets the owner retire the handle when that voice actually ends.
 class JAISoundHandle {
 public:
     [[nodiscard]] bool isSoundAttached() const {
@@ -98,12 +99,36 @@ public:
 
     void attach() {
         mAttached = true;
+        mBackendOwner = nullptr;
+        mBackendToken = 0;
+    }
+
+    void attachBackend(const void *owner, u64 token) {
+        mAttached = true;
+        mBackendOwner = owner;
+        mBackendToken = token;
+    }
+
+    [[nodiscard]] bool isBackendAttached(const void *owner, u64 token) const {
+        return mAttached && mBackendOwner == owner && mBackendToken == token;
+    }
+
+    [[nodiscard]] const void *backendOwner() const {
+        return mBackendOwner;
+    }
+
+    [[nodiscard]] u64 backendToken() const {
+        return mBackendToken;
     }
 
     void releaseSound() {
         mAttached = false;
+        mBackendOwner = nullptr;
+        mBackendToken = 0;
     }
 
 private:
     bool mAttached = false;
+    const void *mBackendOwner = nullptr;
+    u64 mBackendToken = 0;
 };

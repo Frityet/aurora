@@ -369,6 +369,11 @@ void clear_copy_texture_cache() noexcept {
   }
 }
 
+bool has_copy_texture(const void* dest) noexcept {
+  const auto it = g_gxState.copyTextures.find(dest);
+  return it != g_gxState.copyTextures.end() && it->second.handle;
+}
+
 void clear_static_texture_cache() noexcept {
   s_textureObjectCaches.clear();
   for (auto& [_, cache] : s_tlutObjectCaches) {

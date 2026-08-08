@@ -172,8 +172,9 @@ target("aurora-nw4r")
 target("aurora-base")
     set_kind("static")
     add_aurora_common_settings(true)
-    add_files("lib/runtime_state.cpp", "lib/compat.cpp", "lib/device.cpp", "lib/input.cpp", "lib/logging.cpp",
-              "lib/system_info.cpp")
+    add_files("lib/runtime_state.cpp", "lib/compat.cpp", "lib/audio.cpp", "lib/device.cpp", "lib/input.cpp", "lib/logging.cpp",
+              "lib/system_info.cpp", "lib/rfl/ResourceArchive.cpp")
+    add_headerfiles("include/(aurora/audio.hpp)", "include/(aurora/rfl/**.hpp)")
     add_packages("fmt", "libsdl3", "xxhash", {public = true})
     add_packages("abseil", "sqlite3", "tracy")
 

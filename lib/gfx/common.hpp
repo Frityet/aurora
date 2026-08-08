@@ -237,6 +237,7 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
 
 void begin_offscreen(uint32_t width, uint32_t height);
 void end_offscreen();
+bool is_frame_active() noexcept;
 bool is_offscreen() noexcept;
 uint32_t get_sample_count() noexcept;
 void clear_caches() noexcept;

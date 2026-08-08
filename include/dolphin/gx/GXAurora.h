@@ -100,6 +100,16 @@ void AuroraSetViewportPolicy(AuroraViewportPolicy policy);
 void AuroraGetRenderSize(u32* width, u32* height);
 
 /**
+ * Returns whether GX commands can currently be submitted to an active frame.
+ */
+BOOL AuroraIsFrameActive(void);
+
+/**
+ * Returns whether GXCopyTex has materialized a GPU texture for the destination address.
+ */
+BOOL AuroraHasTextureCopy(const void* dest);
+
+/**
  * Returns whether the current/most recent frame produced a GXCopyDisp display copy.
  */
 BOOL AuroraHasDisplayCopy(void);

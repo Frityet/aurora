@@ -48,6 +48,12 @@ void AuroraGetRenderSize(u32* width, u32* height) {
   }
 }
 
+BOOL AuroraIsFrameActive(void) { return aurora::gfx::is_frame_active() ? TRUE : FALSE; }
+
+BOOL AuroraHasTextureCopy(const void* dest) {
+  return aurora::gx::has_copy_texture(dest) ? TRUE : FALSE;
+}
+
 BOOL AuroraHasDisplayCopy(void) { return aurora::gx::has_display_copy() ? TRUE : FALSE; }
 
 BOOL AuroraGetDisplayCopySize(u32* width, u32* height) {

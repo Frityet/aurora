@@ -317,6 +317,8 @@ void queue_palette_conv(tex_palette_conv::ConvRequest req) {
   g_renderPasses[g_currentRenderPass].paletteConvs.push_back(std::move(req));
 }
 
+bool is_frame_active() noexcept { return g_currentRenderPass != UINT32_MAX; }
+
 bool is_offscreen() noexcept { return g_inOffscreen; }
 
 uint32_t get_sample_count() noexcept {

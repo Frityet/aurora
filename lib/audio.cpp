@@ -100,13 +100,36 @@ AfcDecodeResult decode_jaudio_afc_hq(std::span<const std::uint8_t> encoded, std:
   return decode_afc_hq(encoded, sample_count, kJAudioAfcCoefficients, initial_state);
 }
 
-struct LoopingAudioMixer::Impl {
+struct PcmAudioMixer::Impl {
+  struct GainRamp {
+    float start = 1.0F;
+    float target = 1.0F;
+    std::uint64_t total_frames = 0;
+    std::uint64_t elapsed_frames = 0;
+
+    [[nodiscard]] bool active() const { return elapsed_frames < total_frames; }
+
+    [[nodiscard]] float value() const {
+      if (!active()) {
+        return target;
+      }
+      return std::lerp(start, target, static_cast<float>(elapsed_frames) / static_cast<float>(total_frames));
+    }
+
+    void advance() {
+      if (active()) {
+        ++elapsed_frames;
+      }
+    }
+  };
+
   struct LayerState {
-    LoopingPcmLayer spec;
+    PcmLayer spec;
     double source_position = 0.0;
     std::uint64_t elapsed_output_frames = 0;
     double release_elapsed_seconds = 0.0;
     float release_start_envelope = 0.0F;
+    GainRamp gain_ramp;
     bool release_started = false;
     bool finished = false;
   };
@@ -114,12 +137,35 @@ struct LoopingAudioMixer::Impl {
   struct VoiceState {
     VoiceToken token;
     std::vector<LayerState> layers;
-    float gain_multiplier = 1.0F;
     float pitch_multiplier = 1.0F;
+    GainRamp gain_ramp;
+    bool stop_after_gain_ramp = false;
+    bool paused = false;
     bool releasing = false;
   };
 
   explicit Impl(std::uint32_t rate, PlaybackDevicePolicy policy) : output_rate(rate), device_policy(policy) {}
+
+  [[nodiscard]] std::uint64_t fade_frame_count(double duration_seconds) const {
+    if (!std::isfinite(duration_seconds) || duration_seconds < 0.0) {
+      throw std::invalid_argument("A PCM voice fade duration must be finite and nonnegative");
+    }
+    if (duration_seconds == 0.0) {
+      return 0U;
+    }
+    return std::max<std::uint64_t>(
+        1U, static_cast<std::uint64_t>(std::llround(duration_seconds * static_cast<double>(output_rate))));
+  }
+
+  void configure_gain_ramp(GainRamp& ramp, float current, float target, double duration_seconds) const {
+    const auto frames = fade_frame_count(duration_seconds);
+    ramp = GainRamp{
+        .start = current,
+        .target = target,
+        .total_frames = frames,
+        .elapsed_frames = 0U,
+    };
+  }
 
   [[nodiscard]] float attack_envelope(const LayerState& layer) const {
     const auto delay_frames =
@@ -157,11 +203,13 @@ struct LoopingAudioMixer::Impl {
     });
   }
 
-  [[nodiscard]] bool validate_layer(const LoopingPcmLayer& layer) const {
-    return layer.samples != nullptr && !layer.samples->empty() && layer.sample_rate != 0U &&
-           layer.loop_start < layer.loop_end && layer.loop_end <= layer.samples->size() && std::isfinite(layer.gain) &&
-           layer.gain >= 0.0F && std::isfinite(layer.pitch_ratio) && layer.pitch_ratio > 0.0F &&
-           std::isfinite(layer.pan) && layer.pan >= 0.0F && layer.pan <= 1.0F &&
+  [[nodiscard]] bool validate_layer(const PcmLayer& layer) const {
+    const auto finite = layer.loop_start == 0U && layer.loop_end == 0U;
+    const auto valid_loop =
+        layer.samples != nullptr && layer.loop_start < layer.loop_end && layer.loop_end <= layer.samples->size();
+    return layer.samples != nullptr && !layer.samples->empty() && layer.sample_rate != 0U && (finite || valid_loop) &&
+           std::isfinite(layer.gain) && layer.gain >= 0.0F && std::isfinite(layer.pitch_ratio) &&
+           layer.pitch_ratio > 0.0F && std::isfinite(layer.pan) && layer.pan >= 0.0F && layer.pan <= 1.0F &&
            std::isfinite(layer.start_delay_seconds) && layer.start_delay_seconds >= 0.0 &&
            std::isfinite(layer.attack_seconds) && layer.attack_seconds >= 0.0 && std::isfinite(layer.release_seconds) &&
            layer.release_seconds >= 0.0;
@@ -172,6 +220,7 @@ struct LoopingAudioMixer::Impl {
         static_cast<std::uint64_t>(std::llround(layer.spec.start_delay_seconds * static_cast<double>(output_rate)));
     if (layer.elapsed_output_frames < delay_frames) {
       ++layer.elapsed_output_frames;
+      layer.gain_ramp.advance();
       return 0.0F;
     }
 
@@ -186,20 +235,32 @@ struct LoopingAudioMixer::Impl {
     }
 
     const auto& samples = *layer.spec.samples;
+    const auto looping = layer.spec.loop_end != 0U;
+    if (!looping && layer.source_position >= static_cast<double>(samples.size())) {
+      layer.finished = true;
+      return 0.0F;
+    }
     const auto position_floor = static_cast<std::size_t>(layer.source_position);
-    const auto next_position = position_floor + 1U < layer.spec.loop_end ? position_floor + 1U : layer.spec.loop_start;
+    const auto next_position =
+        looping ? (position_floor + 1U < layer.spec.loop_end ? position_floor + 1U : layer.spec.loop_start)
+                : std::min(position_floor + 1U, samples.size() - 1U);
     const auto fraction = static_cast<float>(layer.source_position - static_cast<double>(position_floor));
-    const auto sample =
-        std::lerp(samples[position_floor], samples[next_position], fraction) * layer.spec.gain * envelope;
+    const auto sample = std::lerp(samples[position_floor], samples[next_position], fraction) * layer.spec.gain *
+                        layer.gain_ramp.value() * envelope;
 
     const auto step = static_cast<double>(layer.spec.sample_rate) / static_cast<double>(output_rate) *
                       static_cast<double>(layer.spec.pitch_ratio) * static_cast<double>(voice_pitch);
     layer.source_position += step;
-    while (layer.source_position >= static_cast<double>(layer.spec.loop_end)) {
-      layer.source_position = static_cast<double>(layer.spec.loop_start) +
-                              (layer.source_position - static_cast<double>(layer.spec.loop_end));
+    if (looping) {
+      while (layer.source_position >= static_cast<double>(layer.spec.loop_end)) {
+        layer.source_position = static_cast<double>(layer.spec.loop_start) +
+                                (layer.source_position - static_cast<double>(layer.spec.loop_end));
+      }
+    } else if (layer.source_position >= static_cast<double>(samples.size())) {
+      layer.finished = true;
     }
     ++layer.elapsed_output_frames;
+    layer.gain_ramp.advance();
     if (layer.release_started) {
       layer.release_elapsed_seconds += 1.0 / static_cast<double>(output_rate);
     }
@@ -213,15 +274,25 @@ struct LoopingAudioMixer::Impl {
       auto left = 0.0F;
       auto right = 0.0F;
       for (auto& voice : voices) {
+        if (voice.paused) {
+          continue;
+        }
+        const auto voice_gain = voice.gain_ramp.value();
         for (auto& layer : voice.layers) {
           if (layer.finished) {
             continue;
           }
-          const auto sample = sample_layer(layer, voice.pitch_multiplier) * voice.gain_multiplier;
+          const auto sample = sample_layer(layer, voice.pitch_multiplier) * voice_gain;
           // Constant-power pan. JAudio's neutral pan is 0.5.
           const auto pan_angle = std::numbers::pi_v<float> * 0.5F * layer.spec.pan;
           left += sample * std::cos(pan_angle);
           right += sample * std::sin(pan_angle);
+        }
+        voice.gain_ramp.advance();
+        if (voice.stop_after_gain_ramp && !voice.gain_ramp.active()) {
+          for (auto& layer : voice.layers) {
+            layer.finished = true;
+          }
         }
       }
       output[frame * 2U] = std::clamp(left, -1.0F, 1.0F);
@@ -286,16 +357,16 @@ struct LoopingAudioMixer::Impl {
   PlaybackDevicePolicy device_policy = PlaybackDevicePolicy::RequireAudibleOutput;
 };
 
-LoopingAudioMixer::LoopingAudioMixer(std::uint32_t output_sample_rate, PlaybackDevicePolicy device_policy)
+PcmAudioMixer::PcmAudioMixer(std::uint32_t output_sample_rate, PlaybackDevicePolicy device_policy)
 : m_impl(std::make_unique<Impl>(output_sample_rate, device_policy)) {
   if (output_sample_rate == 0U) {
     throw std::invalid_argument("Audio mixer output sample rate must be nonzero");
   }
 }
 
-LoopingAudioMixer::~LoopingAudioMixer() { close_default_playback(); }
+PcmAudioMixer::~PcmAudioMixer() { close_default_playback(); }
 
-void LoopingAudioMixer::open_default_playback() {
+void PcmAudioMixer::open_default_playback() {
   const auto lock = std::scoped_lock(m_impl->mutex);
   if (m_impl->stream != nullptr) {
     if (m_impl->device_failed.load(std::memory_order_relaxed)) {
@@ -367,7 +438,7 @@ void LoopingAudioMixer::open_default_playback() {
   }
 }
 
-void LoopingAudioMixer::close_default_playback() {
+void PcmAudioMixer::close_default_playback() {
   SDL_AudioStream* stream = nullptr;
   auto quit_audio = false;
   auto quit_events = false;
@@ -394,25 +465,25 @@ void LoopingAudioMixer::close_default_playback() {
   m_impl->device_failed.store(false, std::memory_order_relaxed);
 }
 
-bool LoopingAudioMixer::is_device_open() const {
+bool PcmAudioMixer::is_device_open() const {
   const auto lock = std::scoped_lock(m_impl->mutex);
   return m_impl->stream != nullptr && !m_impl->device_failed.load(std::memory_order_relaxed);
 }
 
-VoiceToken LoopingAudioMixer::start_voice(const LoopingVoiceSpec& spec) {
+VoiceToken PcmAudioMixer::start_voice(const PcmVoiceSpec& spec) {
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   if (spec.layers.empty()) {
-    throw std::invalid_argument("A looping voice must contain at least one PCM layer");
+    throw std::invalid_argument("A PCM voice must contain at least one layer");
   }
   if (!std::isfinite(spec.gain_multiplier) || spec.gain_multiplier < 0.0F) {
-    throw std::invalid_argument("A looping voice gain multiplier must be nonnegative");
+    throw std::invalid_argument("A PCM voice gain multiplier must be nonnegative");
   }
   if (!std::isfinite(spec.pitch_multiplier) || spec.pitch_multiplier <= 0.0F) {
-    throw std::invalid_argument("A looping voice pitch multiplier must be positive");
+    throw std::invalid_argument("A PCM voice pitch multiplier must be positive");
   }
   if (!std::ranges::all_of(spec.layers, [this](const auto& layer) { return m_impl->validate_layer(layer); })) {
-    throw std::invalid_argument("A looping voice contains an invalid PCM layer");
+    throw std::invalid_argument("A PCM voice contains an invalid layer");
   }
 
   auto token = VoiceToken{m_impl->next_token++};
@@ -422,8 +493,12 @@ VoiceToken LoopingAudioMixer::start_voice(const LoopingVoiceSpec& spec) {
   auto voice = Impl::VoiceState{
       .token = token,
       .layers = {},
-      .gain_multiplier = spec.gain_multiplier,
       .pitch_multiplier = spec.pitch_multiplier,
+      .gain_ramp =
+          Impl::GainRamp{
+              .start = spec.gain_multiplier,
+              .target = spec.gain_multiplier,
+          },
   };
   voice.layers.reserve(spec.layers.size());
   for (const auto& layer : spec.layers) {
@@ -433,12 +508,12 @@ VoiceToken LoopingAudioMixer::start_voice(const LoopingVoiceSpec& spec) {
   return token;
 }
 
-bool LoopingAudioMixer::try_update_voice(VoiceToken token, float gain_multiplier, float pitch_multiplier) {
+bool PcmAudioMixer::try_update_voice(VoiceToken token, float gain_multiplier, float pitch_multiplier) {
   if (!std::isfinite(gain_multiplier) || gain_multiplier < 0.0F) {
-    throw std::invalid_argument("A looping voice gain multiplier must be nonnegative");
+    throw std::invalid_argument("A PCM voice gain multiplier must be nonnegative");
   }
   if (!std::isfinite(pitch_multiplier) || pitch_multiplier <= 0.0F) {
-    throw std::invalid_argument("A looping voice pitch multiplier must be positive");
+    throw std::invalid_argument("A PCM voice pitch multiplier must be positive");
   }
 
   const auto lock = std::scoped_lock(m_impl->mutex);
@@ -447,38 +522,100 @@ bool LoopingAudioMixer::try_update_voice(VoiceToken token, float gain_multiplier
   if (voice == m_impl->voices.end()) {
     return false;
   }
-  voice->gain_multiplier = gain_multiplier;
+  voice->gain_ramp = Impl::GainRamp{.start = gain_multiplier, .target = gain_multiplier};
+  voice->stop_after_gain_ramp = false;
   voice->pitch_multiplier = pitch_multiplier;
   return true;
 }
 
-void LoopingAudioMixer::set_voice_gain(VoiceToken token, float gain_multiplier) {
+void PcmAudioMixer::set_voice_gain(VoiceToken token, float gain_multiplier) {
   if (!std::isfinite(gain_multiplier) || gain_multiplier < 0.0F) {
-    throw std::invalid_argument("A looping voice gain multiplier must be nonnegative");
+    throw std::invalid_argument("A PCM voice gain multiplier must be nonnegative");
   }
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
   if (voice == m_impl->voices.end()) {
-    throw std::logic_error("Cannot update an inactive looping voice");
+    throw std::logic_error("Cannot update an inactive PCM voice");
   }
-  voice->gain_multiplier = gain_multiplier;
+  voice->gain_ramp = Impl::GainRamp{.start = gain_multiplier, .target = gain_multiplier};
+  voice->stop_after_gain_ramp = false;
 }
 
-void LoopingAudioMixer::set_voice_pitch(VoiceToken token, float pitch_multiplier) {
+void PcmAudioMixer::set_voice_pitch(VoiceToken token, float pitch_multiplier) {
   if (!std::isfinite(pitch_multiplier) || pitch_multiplier <= 0.0F) {
-    throw std::invalid_argument("A looping voice pitch multiplier must be positive");
+    throw std::invalid_argument("A PCM voice pitch multiplier must be positive");
   }
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
   if (voice == m_impl->voices.end()) {
-    throw std::logic_error("Cannot update an inactive looping voice");
+    throw std::logic_error("Cannot update an inactive PCM voice");
   }
   voice->pitch_multiplier = pitch_multiplier;
 }
 
-void LoopingAudioMixer::release_voice(VoiceToken token) {
+void PcmAudioMixer::fade_voice_gain(VoiceToken token, float gain_multiplier, double duration_seconds) {
+  if (!std::isfinite(gain_multiplier) || gain_multiplier < 0.0F) {
+    throw std::invalid_argument("A PCM voice gain multiplier must be nonnegative");
+  }
+  const auto lock = std::scoped_lock(m_impl->mutex);
+  m_impl->reclaim_finished_voices();
+  const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
+  if (voice == m_impl->voices.end()) {
+    throw std::logic_error("Cannot fade an inactive PCM voice");
+  }
+  m_impl->configure_gain_ramp(voice->gain_ramp, voice->gain_ramp.value(), gain_multiplier, duration_seconds);
+  voice->stop_after_gain_ramp = false;
+}
+
+void PcmAudioMixer::fade_out_voice(VoiceToken token, double duration_seconds) {
+  const auto lock = std::scoped_lock(m_impl->mutex);
+  m_impl->reclaim_finished_voices();
+  const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
+  if (voice == m_impl->voices.end()) {
+    return;
+  }
+  m_impl->configure_gain_ramp(voice->gain_ramp, voice->gain_ramp.value(), 0.0F, duration_seconds);
+  voice->stop_after_gain_ramp = true;
+  if (!voice->gain_ramp.active()) {
+    for (auto& layer : voice->layers) {
+      layer.finished = true;
+    }
+  }
+}
+
+void PcmAudioMixer::fade_layer_gains(VoiceToken token, std::span<const float> gain_multipliers,
+                                     double duration_seconds) {
+  if (!std::ranges::all_of(gain_multipliers, [](float gain) { return std::isfinite(gain) && gain >= 0.0F; })) {
+    throw std::invalid_argument("PCM layer gain multipliers must be finite and nonnegative");
+  }
+  const auto lock = std::scoped_lock(m_impl->mutex);
+  m_impl->reclaim_finished_voices();
+  const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
+  if (voice == m_impl->voices.end()) {
+    throw std::logic_error("Cannot fade layers on an inactive PCM voice");
+  }
+  if (gain_multipliers.size() != voice->layers.size()) {
+    throw std::invalid_argument("PCM layer gain count must match the voice layer count");
+  }
+  for (auto index = std::size_t{0}; index < voice->layers.size(); ++index) {
+    auto& ramp = voice->layers[index].gain_ramp;
+    m_impl->configure_gain_ramp(ramp, ramp.value(), gain_multipliers[index], duration_seconds);
+  }
+}
+
+void PcmAudioMixer::set_voice_paused(VoiceToken token, bool paused) {
+  const auto lock = std::scoped_lock(m_impl->mutex);
+  m_impl->reclaim_finished_voices();
+  const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
+  if (voice == m_impl->voices.end()) {
+    throw std::logic_error("Cannot pause an inactive PCM voice");
+  }
+  voice->paused = paused;
+}
+
+void PcmAudioMixer::release_voice(VoiceToken token) {
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
@@ -487,34 +624,34 @@ void LoopingAudioMixer::release_voice(VoiceToken token) {
   }
 }
 
-void LoopingAudioMixer::stop_voice(VoiceToken token) {
+void PcmAudioMixer::stop_voice(VoiceToken token) {
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   std::erase_if(m_impl->voices, [token](const Impl::VoiceState& voice) { return voice.token == token; });
 }
 
-void LoopingAudioMixer::stop_all_voices() {
+void PcmAudioMixer::stop_all_voices() {
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->voices.clear();
 }
 
-bool LoopingAudioMixer::is_voice_active(VoiceToken token) const {
+bool PcmAudioMixer::is_voice_active(VoiceToken token) const {
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   return std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token) != m_impl->voices.end();
 }
 
-std::optional<float> LoopingAudioMixer::voice_gain_multiplier(VoiceToken token) const {
+std::optional<float> PcmAudioMixer::voice_gain_multiplier(VoiceToken token) const {
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
   if (voice == m_impl->voices.end()) {
     return std::nullopt;
   }
-  return voice->gain_multiplier;
+  return voice->gain_ramp.value();
 }
 
-std::optional<float> LoopingAudioMixer::voice_pitch_multiplier(VoiceToken token) const {
+std::optional<float> PcmAudioMixer::voice_pitch_multiplier(VoiceToken token) const {
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
@@ -524,7 +661,17 @@ std::optional<float> LoopingAudioMixer::voice_pitch_multiplier(VoiceToken token)
   return voice->pitch_multiplier;
 }
 
-void LoopingAudioMixer::render_interleaved(std::span<float> output) {
+std::optional<bool> PcmAudioMixer::voice_paused(VoiceToken token) const {
+  const auto lock = std::scoped_lock(m_impl->mutex);
+  m_impl->reclaim_finished_voices();
+  const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
+  if (voice == m_impl->voices.end()) {
+    return std::nullopt;
+  }
+  return voice->paused;
+}
+
+void PcmAudioMixer::render_interleaved(std::span<float> output) {
   if ((output.size() & 1U) != 0U) {
     throw std::invalid_argument("Interleaved stereo output must contain an even sample count");
   }
@@ -533,9 +680,9 @@ void LoopingAudioMixer::render_interleaved(std::span<float> output) {
   m_impl->reclaim_finished_voices();
 }
 
-std::uint32_t LoopingAudioMixer::output_sample_rate() const { return m_impl->output_rate; }
+std::uint32_t PcmAudioMixer::output_sample_rate() const { return m_impl->output_rate; }
 
-PlaybackStats LoopingAudioMixer::stats() const {
+PlaybackStats PcmAudioMixer::stats() const {
   const auto lock = std::scoped_lock(m_impl->mutex);
   return m_impl->stats;
 }

@@ -2,6 +2,8 @@
 
 #include <revolution/types.h>
 
+#include <stdexcept>
+
 class JAISoundID {
 public:
     enum SoundType {
@@ -88,22 +90,19 @@ public:
     } mID;
 };
 
-// A PC-side JAudio handle can either carry the logical attachment used by
-// compatibility facades, or identify a concrete backend voice. Backend
-// identity lets the owner retire the handle when that voice actually ends.
+// A PC-side JAudio handle is attached only while it identifies a concrete
+// backend voice. The owner retires the handle when that voice actually ends.
 class JAISoundHandle {
 public:
     [[nodiscard]] bool isSoundAttached() const {
         return mAttached;
     }
 
-    void attach() {
-        mAttached = true;
-        mBackendOwner = nullptr;
-        mBackendToken = 0;
-    }
-
     void attachBackend(const void *owner, u64 token) {
+        if (owner == nullptr || token == 0U) {
+            throw std::invalid_argument(
+                "A JAudio handle requires a concrete backend owner and token");
+        }
         mAttached = true;
         mBackendOwner = owner;
         mBackendToken = token;

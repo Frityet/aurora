@@ -44,7 +44,11 @@ enum class EnvelopeCurve {
   JAudioSampleCell,
 };
 
-struct LoopingPcmLayer {
+// A mono PCM layer mixed into a stereo output voice. A zero loop_end denotes
+// finite playback through samples->size(); otherwise [loop_start, loop_end)
+// is repeated. Keeping loop metadata on the layer allows streamed music,
+// sequenced instruments, and finite sound effects to share one renderer.
+struct PcmLayer {
   std::shared_ptr<const std::vector<float>> samples;
   std::uint32_t sample_rate = 0;
   std::size_t loop_start = 0;
@@ -59,8 +63,8 @@ struct LoopingPcmLayer {
   EnvelopeCurve release_curve = EnvelopeCurve::Linear;
 };
 
-struct LoopingVoiceSpec {
-  std::vector<LoopingPcmLayer> layers;
+struct PcmVoiceSpec {
+  std::vector<PcmLayer> layers;
   float gain_multiplier = 1.0F;
   float pitch_multiplier = 1.0F;
 };
@@ -83,18 +87,18 @@ enum class PlaybackDevicePolicy {
   AllowExplicitTestSink,
 };
 
-// A small, deterministic looping-voice mixer. The same rendering path drives
-// both focused tests and the SDL playback callback.
-class LoopingAudioMixer final {
+// A small deterministic PCM voice mixer. The same rendering path drives both
+// focused tests and the SDL playback callback.
+class PcmAudioMixer final {
 public:
-  explicit LoopingAudioMixer(std::uint32_t output_sample_rate = 48000,
-                             PlaybackDevicePolicy device_policy = PlaybackDevicePolicy::RequireAudibleOutput);
-  ~LoopingAudioMixer();
+  explicit PcmAudioMixer(std::uint32_t output_sample_rate = 48000,
+                         PlaybackDevicePolicy device_policy = PlaybackDevicePolicy::RequireAudibleOutput);
+  ~PcmAudioMixer();
 
-  LoopingAudioMixer(const LoopingAudioMixer&) = delete;
-  LoopingAudioMixer& operator=(const LoopingAudioMixer&) = delete;
-  LoopingAudioMixer(LoopingAudioMixer&&) = delete;
-  LoopingAudioMixer& operator=(LoopingAudioMixer&&) = delete;
+  PcmAudioMixer(const PcmAudioMixer&) = delete;
+  PcmAudioMixer& operator=(const PcmAudioMixer&) = delete;
+  PcmAudioMixer(PcmAudioMixer&&) = delete;
+  PcmAudioMixer& operator=(PcmAudioMixer&&) = delete;
 
   // Opens and resumes SDL's default playback device. Throws with SDL's exact
   // error if no real playback stream can be established.
@@ -102,19 +106,30 @@ public:
   void close_default_playback();
   [[nodiscard]] bool is_device_open() const;
 
-  [[nodiscard]] VoiceToken start_voice(const LoopingVoiceSpec& spec);
+  [[nodiscard]] VoiceToken start_voice(const PcmVoiceSpec& spec);
   // Atomically updates both live parameters. Returns false when the callback
   // has already retired the token, allowing the owner to attach a new voice
   // without a check/update race.
   [[nodiscard]] bool try_update_voice(VoiceToken token, float gain_multiplier, float pitch_multiplier);
   void set_voice_gain(VoiceToken token, float gain_multiplier);
   void set_voice_pitch(VoiceToken token, float pitch_multiplier);
+  // Gain ramps are advanced by rendered output frames, so their timing is
+  // deterministic in tests and independent of callback chunk sizes.
+  void fade_voice_gain(VoiceToken token, float gain_multiplier, double duration_seconds);
+  // Fades to silence and retires the token on the final ramp frame.
+  void fade_out_voice(VoiceToken token, double duration_seconds);
+  // Layer gains are useful for JAudio track/channel mute-state transitions.
+  // The span must contain exactly one multiplier per layer.
+  void fade_layer_gains(VoiceToken token, std::span<const float> gain_multipliers, double duration_seconds);
+  void set_voice_paused(VoiceToken token, bool paused);
   void release_voice(VoiceToken token);
   void stop_voice(VoiceToken token);
   void stop_all_voices();
   [[nodiscard]] bool is_voice_active(VoiceToken token) const;
+  // Returns the current rendered-frame value of an in-progress gain ramp.
   [[nodiscard]] std::optional<float> voice_gain_multiplier(VoiceToken token) const;
   [[nodiscard]] std::optional<float> voice_pitch_multiplier(VoiceToken token) const;
+  [[nodiscard]] std::optional<bool> voice_paused(VoiceToken token) const;
 
   // Writes interleaved stereo float samples. The span length must be even.
   void render_interleaved(std::span<float> output);

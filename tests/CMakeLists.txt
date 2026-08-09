@@ -1,11 +1,14 @@
 include(FetchContent)
 include(GoogleTest)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/AuroraCopyRuntimeDLLs.cmake)
+
+set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
 
 if (NOT TARGET gtest)
   FetchContent_Declare(googletest
     URL https://github.com/google/googletest/archive/refs/tags/v1.17.0.tar.gz
     URL_HASH SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE
     EXCLUDE_FROM_ALL
   )
   FetchContent_MakeAvailable(googletest)
@@ -116,6 +119,10 @@ if (AURORA_ENABLE_GX)
     ../lib/gx/fifo.cpp
     ../lib/gx/destruction_state.cpp
     ../lib/gx/command_processor.cpp
+    # Display list reader/optimizer
+    ../lib/gx/attr_fmt.cpp
+    ../lib/gx/dl.cpp
+    gx_dl_test.cpp
   )
 
   target_include_directories(gx_fifo_tests PRIVATE
@@ -139,11 +146,71 @@ if (AURORA_ENABLE_GX)
   )
 
   gtest_discover_tests(gx_fifo_tests)
+
+  add_executable(gx_texture_cache_tests
+    gx_texture_cache_test.cpp
+    gx_texture_cache_test_stubs.cpp
+    ../lib/gx/texture.cpp
+  )
+  target_include_directories(gx_texture_cache_tests PRIVATE
+    ../include
+    ../lib
+  )
+  target_compile_definitions(gx_texture_cache_tests PRIVATE AURORA TARGET_PC)
+  target_link_libraries(gx_texture_cache_tests PRIVATE
+    gtest
+    gtest_main
+    fmt::fmt
+    xxhash
+    absl::flat_hash_map
+    dawn::webgpu_dawn
+    TracyClient
+    ${AURORA_SDL3_TARGET}
+  )
+  aurora_copy_runtime_dlls(gx_texture_cache_tests)
+  gtest_discover_tests(gx_texture_cache_tests)
+
+  add_executable(texture_replacement_streaming_tests
+    texture_replacement_streaming_test.cpp
+  )
+  target_include_directories(texture_replacement_streaming_tests PRIVATE
+    ../include
+    ../lib
+  )
+  target_compile_definitions(texture_replacement_streaming_tests PRIVATE AURORA TARGET_PC)
+  target_link_libraries(texture_replacement_streaming_tests PRIVATE
+    aurora::gx
+    aurora::vi
+    gtest
+    gtest_main
+  )
+  aurora_copy_runtime_dlls(texture_replacement_streaming_tests)
+  gtest_discover_tests(texture_replacement_streaming_tests)
+
+  add_executable(render_worker_tests
+    render_worker_test.cpp
+    ../lib/gfx/render_worker.cpp
+  )
+  target_include_directories(render_worker_tests PRIVATE
+    ../include
+    ../lib
+  )
+  target_compile_definitions(render_worker_tests PRIVATE AURORA TARGET_PC)
+  target_link_libraries(render_worker_tests PRIVATE
+    gtest
+    gtest_main
+    TracyClient
+  )
+  gtest_discover_tests(render_worker_tests)
 endif () # AURORA_ENABLE_GX
 
 # DVD API tests
 if (TARGET aurora::dvd)
-  add_executable(dvd_tests test_dvd.cpp)
+  add_executable(dvd_tests
+    test_dvd.cpp
+    dvd_test_stubs.cpp
+    ../lib/logging.cpp
+  )
   target_link_libraries(dvd_tests PRIVATE aurora::dvd gtest gtest_main)
 
   # Pass disc image path as a compile definition if provided

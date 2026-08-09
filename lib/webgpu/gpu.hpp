@@ -12,6 +12,7 @@ struct SDL_Window;
 
 namespace aurora::webgpu {
 using SwapchainInvalidationCallback = void (*)() noexcept;
+using GpuSynchronizeCallback = void (*)();
 
 struct GraphicsConfig {
   wgpu::SurfaceConfiguration surfaceConfiguration;
@@ -50,16 +51,21 @@ extern TextureWithSampler g_frameBuffer;
 extern TextureWithSampler g_frameBufferResolved;
 extern TextureWithSampler g_depthBuffer;
 extern wgpu::RenderPipeline g_CopyPipeline;
+extern wgpu::RenderPipeline g_CopyPremultipliedAlphaPipeline;
 extern wgpu::BindGroup g_CopyBindGroup;
 extern wgpu::Instance g_instance;
+extern wgpu::AdapterInfo g_adapterInfo;
+extern bool g_hasCoreFeatures;
 extern bool g_bcTexturesSupported;
+extern bool g_astcTexturesSupported;
+extern bool g_textureComponentSwizzleSupported;
 
-bool initialize(AuroraBackend backend, bool allowCpu, SwapchainInvalidationCallback invalidationCallback);
+bool initialize(AuroraBackend backend, bool allowCpu, SwapchainInvalidationCallback invalidationCallback,
+                GpuSynchronizeCallback synchronizeCallback);
 void shutdown();
 void release_surface() noexcept;
 bool refresh_surface(bool recreate = true);
-void resize_swapchain(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height,
-                      bool force = false);
+void resize_swapchain(uint32_t width, uint32_t height, uint32_t nativeWidth, uint32_t nativeHeight, bool force = false);
 TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled);
 const TextureWithSampler& present_source() noexcept;
 const wgpu::Sampler& present_sampler() noexcept;
@@ -76,6 +82,7 @@ void draw_clear(const wgpu::RenderPassEncoder& pass, bool clearColor, bool clear
 
 size_t load_from_cache(void const* key, size_t keySize, void* value, size_t valueSize, void* userdata);
 void store_to_cache(void const* key, size_t keySize, void const* value, size_t valueSize, void* userdata);
+void cache_prune();
 void cache_shutdown();
 
 } // namespace aurora::webgpu

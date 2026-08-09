@@ -95,7 +95,7 @@ elseif (_aurora_sdl3_provider STREQUAL "package")
   include(FetchContent)
   FetchContent_Declare(sdl3_prebuilt
     URL "${AURORA_SDL3_PACKAGE_URL}"
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE
   )
   FetchContent_MakeAvailable(sdl3_prebuilt)
 
@@ -141,7 +141,13 @@ elseif (_aurora_sdl3_provider STREQUAL "vendor")
     include(FetchContent)
     FetchContent_Declare(SDL
       URL "https://github.com/libsdl-org/SDL/archive/${AURORA_SDL3_REF}.tar.gz"
-      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+      DOWNLOAD_EXTRACT_TIMESTAMP FALSE
+      PATCH_COMMAND ${CMAKE_COMMAND}
+        -DSDL_SOURCE_DIR=<SOURCE_DIR>
+        -P "${CMAKE_CURRENT_LIST_DIR}/patches/apply-sdl3-android-nintendo-auto-mapping.cmake"
+      COMMAND ${CMAKE_COMMAND}
+        -DSDL_SOURCE_DIR=<SOURCE_DIR>
+        -P "${CMAKE_CURRENT_LIST_DIR}/patches/apply-sdl3-android-security-exception.cmake"
       EXCLUDE_FROM_ALL
     )
     FetchContent_MakeAvailable(SDL)
@@ -153,4 +159,19 @@ elseif (_aurora_sdl3_provider STREQUAL "vendor")
 else ()
   message(FATAL_ERROR "Invalid AURORA_SDL3_PROVIDER: ${AURORA_SDL3_PROVIDER} "
     "(must be auto, vendor, system, or package)")
+endif ()
+
+if (ANDROID)
+  if (NOT _aurora_sdl3_provider STREQUAL "vendor")
+    message(FATAL_ERROR "aurora: Android builds require AURORA_SDL3_PROVIDER=vendor")
+  endif ()
+  FetchContent_GetProperties(SDL SOURCE_DIR _aurora_sdl3_source_dir)
+  set(_aurora_sdl3_java_source_dir "${_aurora_sdl3_source_dir}/android-project/app/src/main/java")
+  if (NOT IS_DIRECTORY "${_aurora_sdl3_java_source_dir}/org/libsdl/app")
+    message(FATAL_ERROR "aurora: SDL Android Java sources were not found at ${_aurora_sdl3_java_source_dir}")
+  endif ()
+  set(AURORA_SDL3_JAVA_SOURCE_DIR "${_aurora_sdl3_java_source_dir}" CACHE INTERNAL
+    "Java sources matching Aurora's pinned SDL build" FORCE)
+  set(AURORA_ANDROID_JAVA_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../platforms/android/java" CACHE INTERNAL
+    "Aurora Android Java platform sources" FORCE)
 endif ()

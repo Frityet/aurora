@@ -22,14 +22,14 @@ static void GXWriteString(const char* label) {
 }
 
 void GXPushDebugGroup(const char* label) {
-  GX_WRITE_AURORA(GX_LOAD_AURORA_DEBUG_GROUP_PUSH);
+  GX_WRITE_AURORA(GX_AURORA_DEBUG_GROUP_PUSH);
   GXWriteString(label);
 }
 
-void GXPopDebugGroup() { GX_WRITE_AURORA(GX_LOAD_AURORA_DEBUG_GROUP_POP); }
+void GXPopDebugGroup() { GX_WRITE_AURORA(GX_AURORA_DEBUG_GROUP_POP); }
 
 void GXInsertDebugMarker(const char* label) {
-  GX_WRITE_AURORA(GX_LOAD_AURORA_DEBUG_MARKER_INSERT);
+  GX_WRITE_AURORA(GX_AURORA_DEBUG_MARKER_INSERT);
   GXWriteString(label);
 }
 
@@ -51,6 +51,10 @@ void AuroraGetRenderSize(u32* width, u32* height) {
 BOOL AuroraIsFrameActive(void) { return aurora::gfx::is_frame_active() ? TRUE : FALSE; }
 
 BOOL AuroraHasTextureCopy(const void* dest) {
+  if (aurora::gfx::is_frame_active()) {
+    GXFlush();
+    aurora::gx::fifo::drain();
+  }
   return aurora::gx::has_copy_texture(dest) ? TRUE : FALSE;
 }
 
@@ -65,7 +69,7 @@ BOOL AuroraReadDisplayCopyRGBA8(void* dst, u32 dstSize, u32* width, u32* height,
 }
 
 void GXSetViewportRender(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz) {
-  GX_WRITE_AURORA(GX_LOAD_AURORA_VIEWPORT_RENDER);
+  GX_WRITE_AURORA(GX_AURORA_LOAD_VIEWPORT_RENDER);
   GX_WRITE_F32(left);
   GX_WRITE_F32(top);
   GX_WRITE_F32(wd);
@@ -75,19 +79,36 @@ void GXSetViewportRender(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz)
 }
 
 void GXSetScissorRender(u32 left, u32 top, u32 wd, u32 ht) {
-  GX_WRITE_AURORA(GX_LOAD_AURORA_SCISSOR_RENDER);
+  GX_WRITE_AURORA(GX_AURORA_LOAD_SCISSOR_RENDER);
   GX_WRITE_U32(left);
   GX_WRITE_U32(top);
   GX_WRITE_U32(wd);
   GX_WRITE_U32(ht);
 }
 
+void GXSetProjectionFull(const void* mtx) {
+  const f32* values = reinterpret_cast<const f32*>(mtx);
+  GX_WRITE_AURORA(GX_AURORA_LOAD_PROJECTION_FULL);
+  for (int i = 0; i < 16; ++i) {
+    GX_WRITE_F32(values[i]);
+  }
+}
+
+void GX2SetPolygonOffset(f32 mFrontOffset, f32 mFrontScale, f32 mBackOffset, f32 mBackScale, f32 mClamp) {
+  GX_WRITE_AURORA(GX2_SET_POLYGON_OFFSET);
+  GX_WRITE_F32(mFrontOffset);
+  GX_WRITE_F32(mFrontScale);
+  GX_WRITE_F32(mBackOffset);
+  GX_WRITE_F32(mBackScale);
+  GX_WRITE_F32(mClamp);
+}
+
 void GXCreateFrameBuffer(u32 width, u32 height) {
-  aurora::gx::fifo::drain();
-  aurora::gfx::begin_offscreen(width, height);
+  GX_WRITE_AURORA(GX_AURORA_BEGIN_OFFSCREEN);
+  GX_WRITE_U32(width);
+  GX_WRITE_U32(height);
 }
 
 void GXRestoreFrameBuffer() {
-  aurora::gx::fifo::drain();
-  aurora::gfx::end_offscreen();
+  GX_WRITE_AURORA(GX_AURORA_END_OFFSCREEN);
 }

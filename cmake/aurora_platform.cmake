@@ -13,13 +13,18 @@ if (AURORA_ENABLE_GX)
             lib/imgui.cpp
             lib/webgpu/gpu.cpp
             lib/webgpu/gpu_cache.cpp
+            lib/webgpu/gpu_prof.cpp
             lib/dawn/BackendBinding.cpp
+            lib/dawn/TracyPlatform.cpp
     )
+    if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
+        set_source_files_properties(lib/dawn/TracyPlatform.cpp PROPERTIES COMPILE_FLAGS -fno-rtti)
+    endif ()
     target_link_libraries(aurora_platform PUBLIC imgui)
     target_link_libraries(aurora_platform PRIVATE dawn::webgpu_dawn)
     if (AURORA_CACHE_USE_ZSTD)
         target_compile_definitions(aurora_platform PRIVATE AURORA_CACHE_USE_ZSTD)
-        target_link_libraries(aurora_platform PRIVATE libzstd_static)
+        target_link_libraries(aurora_platform PRIVATE zstd::libzstd)
     endif ()
     if (DAWN_ENABLE_VULKAN)
         target_compile_definitions(aurora_platform PUBLIC DAWN_ENABLE_BACKEND_VULKAN)

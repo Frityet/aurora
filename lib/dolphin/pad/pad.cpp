@@ -1,6 +1,7 @@
 #include "../../input.hpp"
 #include "../../device.hpp"
 #include "../../internal.hpp"
+#include "../../fs_helper.hpp"
 #include <dolphin/pad.h>
 #include <dolphin/si.h>
 #include <SDL3/SDL_mouse.h>
@@ -325,14 +326,39 @@ static bool device_gyro_available_for_port(const u32 port) {
   return port == PAD_CHAN0 && aurora::device::gyro_available();
 }
 
+static bool device_accel_available_for_port(const u32 port) {
+  return port == PAD_CHAN0 && aurora::device::accel_available();
+}
+
+static bool device_sensor_available_for_port(const u32 port, const PADSensorType sensor) {
+  switch (sensor) {
+  case PAD_SENSOR_ACCEL:
+    return device_accel_available_for_port(port);
+  case PAD_SENSOR_GYRO:
+    return device_gyro_available_for_port(port);
+  default:
+    return false;
+  }
+}
+
+static bool get_device_sensor_data(const PADSensorType sensor, f32* data, const int nValues) {
+  switch (sensor) {
+  case PAD_SENSOR_ACCEL:
+    return aurora::device::accel(data, nValues);
+  case PAD_SENSOR_GYRO:
+    return aurora::device::gyro(data, nValues);
+  default:
+    return false;
+  }
+}
+
 static bool controller_has_sensor(const aurora::input::GameController* controller, const PADSensorType sensor) {
   return controller != nullptr && SDL_GamepadHasSensor(controller->m_controller, static_cast<SDL_SensorType>(sensor));
 }
 
 static bool should_use_device_sensor(const u32 port, const aurora::input::GameController* controller,
                                      const PADSensorType sensor) {
-  return sensor == PAD_SENSOR_GYRO && !controller_has_sensor(controller, sensor) &&
-         device_gyro_available_for_port(port);
+  return device_sensor_available_for_port(port, sensor) && !controller_has_sensor(controller, sensor);
 }
 
 // ReSharper disable once CppDFAConstantFunctionResult
@@ -346,6 +372,11 @@ BOOL PADInit() {
     state.m_buttonMapping = g_defaultKeys;
     state.m_axisMapping = g_defaultKeyAxis;
   });
+
+  if (!g_keyboardBindingsLoaded) {
+    g_keyboardBindingsLoaded = true;
+    load_keyboard_bindings();
+  }
 
   return true;
 }
@@ -647,9 +678,8 @@ static void merge_virtual_status(PADStatus& status, const PADStatus& virtualStat
 }
 
 u32 PADRead(PADStatus* status) {
-  if (!g_keyboardBindingsLoaded) {
-    g_keyboardBindingsLoaded = true;
-    load_keyboard_bindings();
+  if (!g_initialized) {
+    aurora::input::Log.fatal("PADRead called before PADInit()!");
   }
 
   int numKeys = 0;
@@ -1258,7 +1288,8 @@ constexpr int32_t k_keyboardVersion = 3;
 
 static void load_keyboard_bindings() {
   const auto filePath = std::filesystem::path{aurora::g_config.userPath} / "keyboard_bindings.dat";
-  SDL_IOStream* file = SDL_IOFromFile(filePath.string().c_str(), "rb");
+  const auto pathString = fs_path_to_string(filePath);
+  SDL_IOStream* file = SDL_IOFromFile(pathString.c_str(), "rb");
   if (file == nullptr) {
     return;
   }
@@ -1328,9 +1359,10 @@ static void load_keyboard_bindings() {
 
 static void save_keyboard_bindings() {
   const auto filePath = std::filesystem::path{aurora::g_config.userPath} / "keyboard_bindings.dat";
-  SDL_IOStream* file = SDL_IOFromFile(filePath.string().c_str(), "wb");
+  const auto pathString = fs_path_to_string(filePath);
+  SDL_IOStream* file = SDL_IOFromFile(pathString.c_str(), "wb");
   if (file == nullptr) {
-    aurora::input::Log.warn("save_keyboard_bindings: failed to open {} for writing", filePath.string());
+    aurora::input::Log.warn("save_keyboard_bindings: failed to open {} for writing", pathString);
     return;
   }
 
@@ -1361,7 +1393,7 @@ void PADSerializeMappings() {
     const auto filePath =
         basePath / fmt::format("{}_{:04X}_{:04X}.controller", aurora::input::controller_name(controller.m_index),
                                controller.m_vid, controller.m_pid);
-    std::string filePathStr = filePath.string();
+    std::string filePathStr = fs_path_to_string(filePath);
 
     // don't truncate the file if it already exists
     const char* openMode = std::filesystem::exists(filePath) ? "r+b" : "wb";
@@ -1380,7 +1412,7 @@ void PADSerializeMappings() {
     // start writing data at next 32-byte aligned offset
     const int64_t dataStart = SDL_TellIO(file) + 31 & ~31;
     if (dataStart == -1) {
-      aurora::input::Log.warn("Unable to seek in controller bindings! Path: \"{}\"", filePath.string());
+      aurora::input::Log.warn("Unable to seek in controller bindings! Path: \"{}\"", filePathStr);
       return;
     }
     SDL_SeekIO(file, dataStart, SDL_IO_SEEK_SET);
@@ -1657,7 +1689,7 @@ BOOL PADGetSensorData(const u32 port, const PADSensorType sensor, f32* data, con
   }
 
   if (should_use_device_sensor(port, ctrl, sensor)) {
-    return aurora::device::gyro(data, nValues) ? TRUE : FALSE;
+    return get_device_sensor_data(sensor, data, nValues) ? TRUE : FALSE;
   }
 
   return FALSE;

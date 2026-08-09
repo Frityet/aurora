@@ -12,7 +12,7 @@ void GXDestroyTexObj(GXTexObj* obj_) {
     return;
   }
   aurora::gx::with_destruction_commands_enabled([texObjId] {
-    GX_WRITE_AURORA(GX_LOAD_AURORA_DESTROY_TEXOBJ);
+    GX_WRITE_AURORA(GX_AURORA_DESTROY_TEXOBJ);
     GX_WRITE_U32(texObjId);
   });
 }
@@ -25,7 +25,7 @@ void GXDestroyTlutObj(GXTlutObj* obj_) {
     return;
   }
   aurora::gx::with_destruction_commands_enabled([tlutObjId] {
-    GX_WRITE_AURORA(GX_LOAD_AURORA_DESTROY_TLUT);
+    GX_WRITE_AURORA(GX_AURORA_DESTROY_TLUT);
     GX_WRITE_U32(tlutObjId);
   });
 }
@@ -36,7 +36,7 @@ void GXDestroyCopyTex(void* dest) {
     return;
   }
   aurora::gx::with_destruction_commands_enabled([identity] {
-    GX_WRITE_AURORA(GX_LOAD_AURORA_DESTROY_COPY_TEX);
+    GX_WRITE_AURORA(GX_AURORA_DESTROY_COPY_TEX);
     GX_WRITE_U64(static_cast<u64>(identity));
   });
 }

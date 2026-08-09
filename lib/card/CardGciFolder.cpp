@@ -1,5 +1,7 @@
 #include "CardGciFolder.hpp"
 
+#include <cstring>
+
 #include <filesystem>
 #include "../fs_helper.hpp"
 
@@ -13,27 +15,29 @@ aurora::Module Log("aurora::card");
 
 namespace aurora::card {
 
-CardGciFolder::GciFile* CardGciFolder::getFile(uint32_t idx) {
+CardGciFolder::GciFile* CardGciFolder::get_file(uint32_t idx) {
   if (m_files.size() > idx) {
-    auto file = &m_files[idx];
-    if (file->opened)
-      return file;
+    return &m_files[idx];
   }
   return nullptr;
 }
 
-CardGciFolder::GciFile* CardGciFolder::getFile(FileHandle& fh) { return getFile(fh.getFileNo()); }
-
-const CardGciFolder::GciFile* CardGciFolder::getFile(uint32_t idx) const {
+const CardGciFolder::GciFile* CardGciFolder::get_file(uint32_t idx) const {
   if (m_files.size() > idx) {
-    auto file = &m_files[idx];
-    if (file->opened)
-      return file;
+    return &m_files[idx];
   }
   return nullptr;
 }
 
-const CardGciFolder::GciFile* CardGciFolder::getFile(FileHandle& fh) const { return getFile(fh.getFileNo()); }
+CardGciFolder::GciFile* CardGciFolder::get_open_file(const FileHandle& fh) {
+  auto* file = get_file(fh.getFileNo());
+  return file != nullptr && file->opened ? file : nullptr;
+}
+
+const CardGciFolder::GciFile* CardGciFolder::get_open_file(const FileHandle& fh) const {
+  const auto* file = get_file(fh.getFileNo());
+  return file != nullptr && file->opened ? file : nullptr;
+}
 
 CardGciFolder::CardGciFolder() {}
 
@@ -121,14 +125,14 @@ ECardResult CardGciFolder::createFile(const char* filename, size_t size, FileHan
   }
 
   gciFileHeader->swapEndian();
-  m_files.push_back({*gciFileHeader, fileSize, reinterpret_cast<const char8_t*>(gciFilename.c_str()), false}); // push non-endian swapped header first
+  m_files.push_back({*gciFileHeader, fileSize, reinterpret_cast<const char8_t*>(gciFilename.c_str()), true});
   handleOut = FileHandle(m_files.size() - 1, 0);
 
   return ECardResult::READY;
 }
 
 ECardResult CardGciFolder::closeFile(FileHandle& fh) {
-  auto file = getFile(fh);
+  auto file = get_open_file(fh);
   if (file) {
     file->opened = false;
     return ECardResult::READY;
@@ -138,7 +142,7 @@ ECardResult CardGciFolder::closeFile(FileHandle& fh) {
 }
 
 void CardGciFolder::deleteFile(const FileHandle& fh) {
-  auto file = getFile(fh.getFileNo());
+  auto file = get_open_file(fh);
   if (!file)
     return;
 
@@ -163,7 +167,7 @@ ECardResult CardGciFolder::renameFile(const char* oldName, const char* newName) 
 }
 
 ECardResult CardGciFolder::fileWrite(FileHandle& fh, const void* buf, size_t size) {
-  auto file = getFile(fh);
+  auto file = get_open_file(fh);
   if (file) {
     FileIO fileIO(m_folderPath / file->filename);
     if (fileIO) {
@@ -178,7 +182,7 @@ ECardResult CardGciFolder::fileWrite(FileHandle& fh, const void* buf, size_t siz
 }
 
 ECardResult CardGciFolder::fileRead(FileHandle& fh, void* dst, size_t size) {
-  auto file = getFile(fh);
+  auto file = get_open_file(fh);
   if (file) {
     FileIO fileIO(m_folderPath / file->filename);
     if (fileIO) {
@@ -193,7 +197,7 @@ ECardResult CardGciFolder::fileRead(FileHandle& fh, void* dst, size_t size) {
 }
 
 void CardGciFolder::seek(FileHandle& fh, int32_t pos, SeekOrigin whence) {
-  auto file = getFile(fh);
+  auto file = get_open_file(fh);
   if (file) {
     switch (whence) {
     case SeekOrigin::Begin:
@@ -214,7 +218,7 @@ ECardResult CardGciFolder::getStatus(const FileHandle& fh, CardStat& statOut) co
 }
 
 ECardResult CardGciFolder::getStatus(uint32_t fileNo, CardStat& statOut) const {
-  auto gciFile = getFile(fileNo);
+  auto gciFile = get_file(fileNo);
 
   if (!gciFile)
     return ECardResult::NOFILE;
@@ -223,8 +227,8 @@ ECardResult CardGciFolder::getStatus(uint32_t fileNo, CardStat& statOut) const {
   std::strncpy(statOut.x0_fileName, file->m_filename, 32);
   statOut.x20_length = file->m_blockCount * BlockSize;
   statOut.x24_time = file->m_modifiedTime;
-  memmove(statOut.x28_gameName.data(), file->m_game, 4);
-  memmove(statOut.x2c_company.data(), file->m_maker, 4);
+  memmove(statOut.x28_gameName.data(), file->m_game, statOut.x28_gameName.size());
+  memmove(statOut.x2c_company.data(), file->m_maker, statOut.x2c_company.size());
 
   statOut.x2e_bannerFormat = file->m_bannerFlags;
   statOut.x30_iconAddr = file->m_iconAddress;
@@ -269,7 +273,7 @@ ECardResult CardGciFolder::setStatus(const FileHandle& fh, const CardStat& stat)
 }
 
 ECardResult CardGciFolder::setStatus(uint32_t fileNo, const CardStat& stat) {
-  auto gciFile = getFile(fileNo);
+  auto gciFile = get_file(fileNo);
 
   if (!gciFile)
     return ECardResult::NOFILE;
@@ -339,13 +343,11 @@ void CardGciFolder::format(ECardSlot deviceId, ECardSize size, EEncoding encodin
 
 void CardGciFolder::commit() {
   for (auto& gciFile : m_files) {
-    if (gciFile.opened) {
-      FileIO file(m_folderPath / gciFile.filename);
+    FileIO file(m_folderPath / gciFile.filename);
 
-      File tempFile = gciFile.file;
-      tempFile.swapEndian();
-      file.fileWrite(&tempFile, sizeof(File), 0); // update header
-    }
+    File tempFile = gciFile.file;
+    tempFile.swapEndian();
+    file.fileWrite(&tempFile, sizeof(File), 0); // update header
   }
 }
 
@@ -360,8 +362,7 @@ bool CardGciFolder::open(const std::filesystem::path& filepath) {
     return false;
   }
 
-  std::filesystem::directory_iterator it(
-      filepath, std::filesystem::directory_options::skip_permission_denied, ec);
+  std::filesystem::directory_iterator it(filepath, std::filesystem::directory_options::skip_permission_denied, ec);
   if (ec) {
     Log.warn("Failed to enumerate GCI folder '{}': {}", fs_path_to_string(filepath), ec.message());
     return false;

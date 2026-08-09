@@ -158,7 +158,7 @@ struct TcgConfig {
   GXTexMtx mtx = GX_IDENTITY;
   GXPTTexMtx postMtx = GX_PTIDENTITY;
   bool normalize = false;
-  u8 _p1 = 0;
+  u8 embossSrc = 0; // Emboss source texcoord (GX_TG_BUMP*)
   u8 _p2 = 0;
   u8 _p3 = 0;
 
@@ -348,8 +348,10 @@ struct GXState {
   std::array<AttrArray, MaxVtxAttr> arrays;
   gfx::ClipRect texCopySrc;
   GXTexFmt texCopyFmt;
-  u16 texCopyDstWidth = 0;
-  u16 texCopyDstHeight = 0;
+  u32 texCopyDstWidth = 0;
+  u32 texCopyDstHeight = 0;
+  bool texCopyDstWide = false;
+  const void* texCopyDest = nullptr;
   struct DisplayCopyState {
     gfx::ClipRect src{0, 0, 640, 480};
     u16 dstWidth = 640;
@@ -396,6 +398,13 @@ struct GXState {
   }();
   std::array<u32, 0x1A> xfRegCache;
 
+  // GX2 state
+  f32 frontOffset = 0.0f;
+  f32 frontScale = 0.0f;
+  f32 backOffset = 0.0f;
+  f32 backScale = 0.0f;
+  f32 clamp = 0.0f;
+
   void clearVtxSizeCache() { lastVtxFmt = GX_MAX_VTXFMT; }
 };
 extern GXState g_gxState;
@@ -421,6 +430,7 @@ void set_logical_viewport(const gfx::Viewport& viewport) noexcept;
 void set_render_viewport(const gfx::Viewport& viewport) noexcept;
 void set_logical_scissor(const gfx::ClipRect& scissor) noexcept;
 void set_render_scissor(const gfx::ClipRect& scissor) noexcept;
+void copy_tex(const void* dest, GXBool clear) noexcept;
 const gfx::TextureBind& get_texture(GXTexMapID id) noexcept;
 void resolve_sampled_textures(const ShaderInfo& info) noexcept;
 
@@ -456,7 +466,7 @@ struct AttrConfig {
   u8 stride = 0;         // Array stride
   u8 frac = 0;
   bool le = true;
-  u8 _p1 = 0;
+  bool nbt3 = false;     // GX_NRM_NBT3
 };
 struct ShaderConfig {
   u8 fogType = GX_FOG_NONE;
@@ -507,6 +517,7 @@ struct BindGroupRanges {
 void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXVtxFmt fmt) noexcept;
 wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, ArrayRef<wgpu::VertexBufferLayout> vtxBuffers,
                                     wgpu::ShaderModule shader, const char* label) noexcept;
+std::string build_shader_source(const ShaderConfig& config) noexcept;
 wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept;
 GXBindGroups build_bind_groups(const ShaderInfo& info) noexcept;
 

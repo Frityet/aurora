@@ -3,10 +3,12 @@
 
 #include "../../gfx/tex_copy_conv.hpp"
 #include "../../gfx/texture.hpp"
+#include "../../gfx/common.hpp"
 #include "../../gx/fifo.hpp"
 #include "../../window.hpp"
 #include "../../gfx/clear.hpp"
 #include "../../webgpu/gpu.hpp"
+#include "../../gx/texture.hpp"
 #include "../vi/vi_internal.hpp"
 
 #include <algorithm>
@@ -108,6 +110,9 @@ bool display_copy_size(u32* width, u32* height) noexcept {
 }
 
 bool read_display_copy_rgba8(void* dst, u32 dstSize, u32* width, u32* height, u32* rowStrideOut) noexcept {
+  if (gpu_copy_ready()) {
+    gfx::gpu_synchronize();
+  }
   const auto* displayCopy = display_copy_for_present();
   if (displayCopy == nullptr || !displayCopy->handle || !gpu_copy_ready()) {
     display_copy_size(width, height);
@@ -219,6 +224,59 @@ bool read_display_copy_rgba8(void* dst, u32 dstSize, u32* width, u32* height, u3
   readbackBuffer.Unmap();
   return true;
 }
+
+void copy_tex(const void* dest, GXBool clear) noexcept {
+  const auto rect = map_logical_scissor(g_gxState.texCopySrc);
+  const auto [dstWidth, dstHeight] = scale_copy_dst(g_gxState.texCopyDstWidth, g_gxState.texCopyDstHeight);
+  const auto texCopyFmt = g_gxState.texCopyFmt;
+
+  const GXState::CopyTextureKey key{
+      .dest = dest,
+      .width = dstWidth,
+      .height = dstHeight,
+      .format = texCopyFmt,
+  };
+  auto it = g_gxState.copyTextureCache.find(key);
+  if (it == g_gxState.copyTextureCache.end()) {
+    gfx::TextureHandle handle;
+    if (gfx::tex_copy_conv::needs_conversion(texCopyFmt)) {
+      handle = gfx::new_conv_texture(dstWidth, dstHeight, texCopyFmt, "Copy Conv Texture");
+    } else {
+      // Configure the texture swizzle to use alpha 1.0 if targeting RGB565 or EFB doesn't have alpha
+      const auto fmt = texCopyFmt == GX_TF_RGB565 || g_gxState.pixelFmt == GX_PF_RGB8_Z24 ||
+                               g_gxState.pixelFmt == GX_PF_RGB565_Z16
+                           ? GX_TF_RGB565
+                           : GX_TF_RGBA8;
+      handle = gfx::new_render_texture(dstWidth, dstHeight, fmt, "Resolved Texture");
+    }
+    it = g_gxState.copyTextureCache.emplace(key, GXState::CopyTextureRef{.handle = handle, .revision = 0}).first;
+  }
+  auto& handle = it->second;
+
+  if (g_gxState.alphaUpdate && g_gxState.dstAlpha != UINT32_MAX) {
+    if (!clear) {
+      // TODO: figure out the right behavior here.
+      // should the copy have a specific alpha value but the EFB remains untouched?
+    }
+    // Overwrite alpha before resolving
+    gfx::push_draw_command(gfx::clear::DrawData{
+        .pipeline = gfx::pipeline_ref(gfx::clear::PipelineConfig{
+            .clearColor = false,
+            .clearAlpha = true,
+            .clearDepth = false,
+        }),
+        .color = wgpu::Color{0.f, 0.f, 0.f, g_gxState.dstAlpha / 255.f},
+    });
+  }
+  const auto clearColor = clear && g_gxState.colorUpdate;
+  const auto clearAlpha = clear && g_gxState.alphaUpdate;
+  const auto clearDepth = clear && g_gxState.depthUpdate;
+  gfx::resolve_pass_into(handle.handle, rect, clearColor, clearAlpha, clearDepth, g_gxState.clearColor,
+                         clear_depth_value(), texCopyFmt);
+  ++handle.revision;
+  g_gxState.copyTextures[dest] = handle;
+  texture::invalidate_bindings();
+}
 } // namespace aurora::gx
 
 extern "C" {
@@ -300,7 +358,13 @@ void GXSetDispCopySrc(u16 left, u16 top, u16 wd, u16 ht) {
   };
 }
 
-void GXSetTexCopySrc(u16 left, u16 top, u16 wd, u16 ht) { g_gxState.texCopySrc = {left, top, wd, ht}; }
+void GXSetTexCopySrc(u16 left, u16 top, u16 wd, u16 ht) {
+  GX_WRITE_AURORA(GX_AURORA_LOAD_COPY_SRC);
+  GX_WRITE_U32(left);
+  GX_WRITE_U32(top);
+  GX_WRITE_U32(wd);
+  GX_WRITE_U32(ht);
+}
 
 void GXSetDispCopyDst(u16 wd, u16 ht) {
   g_gxState.dispCopy.dstWidth = wd;
@@ -308,9 +372,11 @@ void GXSetDispCopyDst(u16 wd, u16 ht) {
 }
 
 void GXSetTexCopyDst(u16 wd, u16 ht, GXTexFmt fmt, GXBool mipmap) {
-  g_gxState.texCopyFmt = fmt;
-  g_gxState.texCopyDstWidth = wd;
-  g_gxState.texCopyDstHeight = ht;
+  GX_WRITE_AURORA(GX_AURORA_LOAD_COPY_DST);
+  GX_WRITE_U32(wd);
+  GX_WRITE_U32(ht);
+  GX_WRITE_U32(fmt);
+  GX_WRITE_U8(mipmap != GX_FALSE);
 }
 
 void GXSetDispCopyFrame2Field(u32 mode) { g_gxState.dispCopy.frame2Field = mode; }
@@ -378,68 +444,21 @@ void GXCopyDisp(void* dest, GXBool clear) {
   const auto clearColor = clear && g_gxState.colorUpdate;
   const auto clearAlpha = clear && g_gxState.alphaUpdate;
   const auto clearDepth = clear && g_gxState.depthUpdate;
-  aurora::gfx::resolve_pass(handle.handle, rect, clearColor, clearAlpha, clearDepth, g_gxState.clearColor,
-                            aurora::gx::clear_depth_value(), GX_TF_RGBA8);
+  aurora::gfx::resolve_pass_into(handle.handle, rect, clearColor, clearAlpha, clearDepth, g_gxState.clearColor,
+                                 aurora::gx::clear_depth_value(), GX_TF_RGBA8);
   ++handle.revision;
   g_gxState.frameDisplayCopyKey = key;
   g_gxState.frameDisplayCopyValid = true;
 }
 
 void GXCopyTex(void* dest, GXBool clear) {
-  if (!gpu_copy_ready()) {
-    return;
-  }
-  aurora::gx::fifo::drain();
+  GX_WRITE_AURORA(GX_AURORA_LOAD_COPY_DEST);
+  GX_WRITE_U64(reinterpret_cast<u64>(dest));
 
-  const auto rect = aurora::gx::map_logical_scissor(g_gxState.texCopySrc);
-  const auto [dstWidth, dstHeight] = scale_copy_dst(g_gxState.texCopyDstWidth, g_gxState.texCopyDstHeight);
-  const auto texCopyFmt = g_gxState.texCopyFmt;
-
-  const aurora::gx::GXState::CopyTextureKey key{
-      .dest = dest,
-      .width = dstWidth,
-      .height = dstHeight,
-      .format = texCopyFmt,
-  };
-  auto it = g_gxState.copyTextureCache.find(key);
-  if (it == g_gxState.copyTextureCache.end()) {
-    aurora::gfx::TextureHandle handle;
-    if (aurora::gfx::tex_copy_conv::needs_conversion(texCopyFmt)) {
-      handle = aurora::gfx::new_conv_texture(dstWidth, dstHeight, texCopyFmt, "Copy Conv Texture");
-    } else {
-      // Configure the texture swizzle to use alpha 1.0 if targeting RGB565 or EFB doesn't have alpha
-      const auto fmt = texCopyFmt == GX_TF_RGB565 || g_gxState.pixelFmt == GX_PF_RGB8_Z24 ||
-                               g_gxState.pixelFmt == GX_PF_RGB565_Z16
-                           ? GX_TF_RGB565
-                           : GX_TF_RGBA8;
-      handle = aurora::gfx::new_render_texture(dstWidth, dstHeight, fmt, "Resolved Texture");
-    }
-    it = g_gxState.copyTextureCache.emplace(key, aurora::gx::GXState::CopyTextureRef{.handle = handle, .revision = 0}).first;
-  }
-  auto& handle = it->second;
-
-  if (g_gxState.alphaUpdate && g_gxState.dstAlpha != UINT32_MAX) {
-    if (!clear) {
-      // TODO: figure out the right behavior here.
-      // should the copy have a specific alpha value but the EFB remains untouched?
-    }
-    // Overwrite alpha before resolving
-    aurora::gfx::push_draw_command(aurora::gfx::clear::DrawData{
-        .pipeline = aurora::gfx::pipeline_ref(aurora::gfx::clear::PipelineConfig{
-            .clearColor = false,
-            .clearAlpha = true,
-            .clearDepth = false,
-        }),
-        .color = wgpu::Color{0.f, 0.f, 0.f, g_gxState.dstAlpha / 255.f},
-    });
-  }
-  const auto clearColor = clear && g_gxState.colorUpdate;
-  const auto clearAlpha = clear && g_gxState.alphaUpdate;
-  const auto clearDepth = clear && g_gxState.depthUpdate;
-  aurora::gfx::resolve_pass(handle.handle, rect, clearColor, clearAlpha, clearDepth, g_gxState.clearColor,
-                            aurora::gx::clear_depth_value(), texCopyFmt);
-  ++handle.revision;
-  g_gxState.copyTextures[dest] = handle;
+  SET_REG_FIELD(0, __gx->cpTex, 1, 11, clear != GX_FALSE);
+  SET_REG_FIELD(0, __gx->cpTex, 1, 14, 0);
+  SET_REG_FIELD(0, __gx->cpTex, 8, 24, 0x52);
+  GX_WRITE_RAS_REG(__gx->cpTex);
 }
 
 u16 GXGetNumXfbLines(u16 efbHeight, f32 yScale) {

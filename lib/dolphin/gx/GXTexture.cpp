@@ -2,7 +2,6 @@
 #include "__gx.h"
 
 #include "../../gfx/texture.hpp"
-#include "../../gfx/texture_replacement.hpp"
 #include "dolphin/gx/GXAurora.h"
 
 #include <algorithm>
@@ -79,7 +78,7 @@ void init_texobj_common(GXTexObj_& obj, const void* data, u16 width, u16 height,
 }
 
 void emit_loaded_texobj_metadata(const GXTexObj_& obj, GXTexMapID id) {
-  GX_WRITE_AURORA(GX_LOAD_AURORA_TEXOBJ);
+  GX_WRITE_AURORA(GX_AURORA_LOAD_TEXOBJ);
   GX_WRITE_U8(static_cast<u8>(id));
   GX_WRITE_U64(reinterpret_cast<u64>(obj.data));
   GX_WRITE_U32(obj.width());
@@ -92,7 +91,7 @@ void emit_loaded_texobj_metadata(const GXTexObj_& obj, GXTexMapID id) {
 }
 
 void emit_loaded_tlut_metadata(const GXTlutObj_& obj, u32 idx) {
-  GX_WRITE_AURORA(GX_LOAD_AURORA_TLUT);
+  GX_WRITE_AURORA(GX_AURORA_LOAD_TLUT);
   GX_WRITE_U8(static_cast<u8>(idx));
   GX_WRITE_U64(reinterpret_cast<u64>(obj.data));
   GX_WRITE_U32(static_cast<u32>(obj.format));
@@ -317,7 +316,6 @@ void GXInitTlutObj(GXTlutObj* obj_, const void* data, GXTlutFmt format, u16 entr
 
   SET_REG_FIELD(0, obj->tlut, 2, 10, format);
   SET_REG_FIELD(0, obj->loadTlut0, 8, 24, 0x64);
-  aurora::gfx::texture_replacement::register_tlut(obj_, data, format, entries);
 }
 
 void GXInitTlutObjData(GXTlutObj* obj_, const void* data) {
@@ -338,7 +336,6 @@ void GXLoadTlut(const GXTlutObj* obj_, u32 idx) {
   GX_WRITE_RAS_REG(loadTlut1);
   __GXFlushTextureState();
 
-  aurora::gfx::texture_replacement::load_tlut(obj_, idx);
   emit_loaded_tlut_metadata(*obj, idx);
 }
 

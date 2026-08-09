@@ -8,17 +8,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(AURORA_ENABLE_GX "Enable GX implementation and WebGPU renderer" ON)
-option(AURORA_ENABLE_DVD "Enable DVD implementation backed by nod" OFF)  # TODO: need to fix tests
+option(AURORA_ENABLE_DVD "Enable DVD implementation backed by nod" ON)
 option(AURORA_ENABLE_CARD "Enable CARD implementation based on kabufuda" ON)
 option(AURORA_ENABLE_RMLUI "Enable HTML/CSS Based UI Library for use in end-user UI development." OFF)
 option(AURORA_CACHE_USE_ZSTD "Compress WebGPU cache entries with zstd" ON)
 
 # Dependency versions
-set(AURORA_DAWN_VERSION "v20260523.201736" CACHE STRING "Dawn prebuilt version tag (https://github.com/encounter/dawn-build/releases)")
-set(AURORA_DAWN_REF "9aa45f938d4b36626722bbfdc2f18447179337e6" CACHE STRING "Dawn commit ref (https://github.com/google/dawn)")
-set(AURORA_SDL3_VERSION "3.4.8" CACHE STRING "SDL3 prebuilt version tag (https://github.com/libsdl-org/SDL/releases)")
-set(AURORA_SDL3_REF "29f7f08261e086a6879d7d3cb4ca51195fbfe9f8" CACHE STRING "SDL3 commit ref (https://github.com/libsdl-org/SDL)")
-set(AURORA_NOD_VERSION "v2.0.0-alpha.8" CACHE STRING "nod version tag (https://github.com/encounter/nod/releases)")
+include(cmake/AuroraDependencyVersions.cmake)
 
 # Platform-specific defaults
 set(_default_provider "auto")

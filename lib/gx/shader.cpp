@@ -81,6 +81,9 @@ static std::string alpha_bump_sel(size_t stageIdx, const ShaderConfig& config, c
 }
 
 static bool uses_texture_sample(const TevStage& stage) noexcept {
+  if (stage.texMapId == GX_TEXMAP_NULL) {
+    return false;
+  }
   const auto& c = stage.colorPass;
   const auto& a = stage.alphaPass;
   return c.a == GX_CC_TEXC || c.a == GX_CC_TEXA || c.b == GX_CC_TEXC || c.b == GX_CC_TEXA || c.c == GX_CC_TEXC ||
@@ -123,14 +126,18 @@ static std::string color_arg_reg(GXTevColorArg arg, size_t stageIdx, const Shade
   case GX_CC_A2:
     return "vec3f(tevreg2.a)";
   case GX_CC_TEXC: {
-    CHECK(stage.texMapId != GX_TEXMAP_NULL, "unmapped texture for stage {}", stageIdx);
+    if (stage.texMapId == GX_TEXMAP_NULL) {
+      return "vec3f(1.0)";
+    }
     CHECK(stage.texMapId >= GX_TEXMAP0 && stage.texMapId <= GX_TEXMAP7, "invalid texture {} for stage {}",
           underlying(stage.texMapId), stageIdx);
     const auto& swap = config.tevSwapTable[stage.tevSwapTex];
     return fmt::format("sampled{}.{}{}{}", stageIdx, chan_comp(swap.red), chan_comp(swap.green), chan_comp(swap.blue));
   }
   case GX_CC_TEXA: {
-    CHECK(stage.texMapId != GX_TEXMAP_NULL, "unmapped texture for stage {}", stageIdx);
+    if (stage.texMapId == GX_TEXMAP_NULL) {
+      return "vec3f(1.0)";
+    }
     CHECK(stage.texMapId >= GX_TEXMAP0 && stage.texMapId <= GX_TEXMAP7, "invalid texture {} for stage {}",
           underlying(stage.texMapId), stageIdx);
     const auto& swap = config.tevSwapTable[stage.tevSwapTex];
@@ -251,7 +258,9 @@ static std::string alpha_arg_reg(GXTevAlphaArg arg, size_t stageIdx, const Shade
   case GX_CA_A2:
     return "tevreg2.a";
   case GX_CA_TEXA: {
-    CHECK(stage.texMapId != GX_TEXMAP_NULL, "unmapped texture for stage {}", stageIdx);
+    if (stage.texMapId == GX_TEXMAP_NULL) {
+      return "1.0";
+    }
     CHECK(stage.texMapId >= GX_TEXMAP0 && stage.texMapId <= GX_TEXMAP7, "invalid texture {} for stage {}",
           underlying(stage.texMapId), stageIdx);
     const auto& swap = config.tevSwapTable[stage.tevSwapTex];
@@ -632,25 +641,35 @@ auto fetch_color_attr(const AttrConfig& mapping, std::string_view buf, std::stri
   }
 }
 
+struct AttrAddress {
+  std::string offs;
+  std::string_view buf;
+  bool le;
+};
+
+auto attr_address(const AttrConfig& mapping, GXAttr attr, std::string_view vidx, u32 vtxStride, u32 dlExtra, u32 within)
+    -> AttrAddress {
+  const u32 dlOffset = mapping.offset + dlExtra;
+  if (mapping.attrType == GX_INDEX8) {
+    return {fmt::format("ubuf.array_start[{}] + raw_fetch_u8_1(&vbuf, ubuf.vtx_start + {} * {}u + {}u) * {}u + {}u",
+                        attr - GX_VA_POS, vidx, vtxStride, dlOffset, mapping.stride, within),
+            "abuf"sv, mapping.le};
+  }
+  if (mapping.attrType == GX_INDEX16) {
+    return {
+        fmt::format("ubuf.array_start[{}] + raw_fetch_u16_1(&vbuf, ubuf.vtx_start + {} * {}u + {}u, false) * {}u + {}u",
+                    attr - GX_VA_POS, vidx, vtxStride, dlOffset, mapping.stride, within),
+        "abuf"sv, mapping.le};
+  }
+  return {fmt::format("ubuf.vtx_start + {} * {}u + {}u", vidx, vtxStride, dlOffset + within), "vbuf"sv, false};
+}
+
 auto attr_load(const ShaderConfig& config, GXAttr attr, std::string_view vidx) -> std::string {
   const auto& mapping = config.attrs[attr];
   if (mapping.attrType == GX_NONE) {
     return vtx_attr(config, attr);
   }
-  auto buf = "vbuf"sv;
-  auto offs = fmt::format("ubuf.vtx_start + {} * {}u + {}u", vidx, config.vtxStride, mapping.offset);
-  auto le = false; // Vertex buffer is always big endian (for now)
-  if (mapping.attrType == GX_INDEX8) {
-    offs = fmt::format("ubuf.array_start[{}] + raw_fetch_u8_1(&{}, {}) * {}u", attr - GX_VA_POS, buf, offs,
-                       mapping.stride);
-    buf = "abuf"sv;
-    le = mapping.le;
-  } else if (mapping.attrType == GX_INDEX16) {
-    offs = fmt::format("ubuf.array_start[{}] + raw_fetch_u16_1(&{}, {}, {}) * {}u", attr - GX_VA_POS, buf, offs, le,
-                       mapping.stride);
-    buf = "abuf"sv;
-    le = mapping.le;
-  }
+  const auto [offs, buf, le] = attr_address(mapping, attr, vidx, config.vtxStride, 0u, 0u);
   switch (attr) {
   case GX_VA_PNMTXIDX:
     return fmt::format("(raw_fetch_u8_1(&{}, {}) / 3u)", buf, offs);
@@ -671,7 +690,12 @@ auto attr_load(const ShaderConfig& config, GXAttr attr, std::string_view vidx) -
     return posLoad;
   }
   case GX_VA_NRM:
-    // TODO check for NBT/NBT3
+    // NBT: normal only here; binormal/tangent loaded via attr_load_nbt_slice
+    if (mapping.cnt > 3) {
+      auto nrmMapping = mapping;
+      nrmMapping.cnt = 3;
+      return fetch_attr(nrmMapping, buf, offs, le);
+    }
     return fetch_attr(mapping, buf, offs, le);
   case GX_VA_CLR0:
   case GX_VA_CLR1:
@@ -693,6 +717,42 @@ auto attr_load(const ShaderConfig& config, GXAttr attr, std::string_view vidx) -
   default:
     Log.fatal("attr_load: Unimplemented {}", attr);
   }
+}
+
+enum class NbtSlice : u8 {
+  N,
+  B,
+  T,
+};
+
+auto attr_load_nbt_slice(const ShaderConfig& config, NbtSlice slice, std::string_view vidx) -> std::string {
+  const auto& mapping = config.attrs[GX_VA_NRM];
+  if (mapping.attrType == GX_NONE || mapping.cnt != 9) {
+    Log.fatal("attr_load_nbt_slice: GX_TG_BINRM/TANGENT requires GX_NRM_NBT or GX_NRM_NBT3");
+  }
+  const auto sliceIdx = static_cast<u32>(slice);
+  const auto compsize = comp_type_size(GX_VA_NRM, static_cast<GXCompType>(mapping.compType));
+  u32 dlExtra = 0;
+  if (mapping.nbt3) {
+    if (mapping.attrType == GX_INDEX8) {
+      dlExtra = sliceIdx;
+    } else if (mapping.attrType == GX_INDEX16) {
+      dlExtra = sliceIdx * 2u;
+    }
+  }
+  const u32 within = sliceIdx * 3u * compsize;
+  const auto [offs, buf, le] = attr_address(mapping, GX_VA_NRM, vidx, config.vtxStride, dlExtra, within);
+  auto sliceMapping = mapping;
+  sliceMapping.cnt = 3;
+  return fetch_attr(sliceMapping, buf, offs, le);
+}
+
+static constexpr std::string_view nbt_slice_local(NbtSlice slice) noexcept {
+  return slice == NbtSlice::B ? "in_binrm" : "in_tangent";
+}
+
+static constexpr bool is_emboss_texgen(GXTexGenType type) noexcept {
+  return type >= GX_TG_BUMP0 && type <= GX_TG_BUMP7;
 }
 
 auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 i, bool alpha) -> std::string {
@@ -786,7 +846,7 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 
                      alpha ? "a"sv : ""sv);
 }
 
-wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
+std::string build_shader_source(const ShaderConfig& config) noexcept {
   ZoneScoped;
   const auto hash = xxh3_hash(config);
   const auto info = build_shader_info(config);
@@ -919,6 +979,24 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
       vtxXfrAttrsPre += fmt::format("\n    let {} = {};", vtx_attr(config, attr), attr_load(config, attr, vidxAttr));
     }
   }
+  bool needsBinrm = false;
+  bool needsTangent = false;
+  for (int i = 0; i < info.sampledTexCoords.size(); ++i) {
+    if (!info.sampledTexCoords.test(i)) {
+      continue;
+    }
+    const bool emboss = is_emboss_texgen(config.tcgs[i].type);
+    needsBinrm = needsBinrm || config.tcgs[i].src == GX_TG_BINRM || emboss;
+    needsTangent = needsTangent || config.tcgs[i].src == GX_TG_TANGENT || emboss;
+  }
+  if (needsBinrm) {
+    vtxXfrAttrsPre += fmt::format("\n    let {} = {};", nbt_slice_local(NbtSlice::B),
+                                  attr_load_nbt_slice(config, NbtSlice::B, vidxAttr));
+  }
+  if (needsTangent) {
+    vtxXfrAttrsPre += fmt::format("\n    let {} = {};", nbt_slice_local(NbtSlice::T),
+                                  attr_load_nbt_slice(config, NbtSlice::T, vidxAttr));
+  }
 
   if (config.lineMode == 0) {
     vtxXfrAttrsPre += fmt::format(
@@ -952,11 +1030,6 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
         "\n    let offset_ndc = (offset_px * 2.0) / ubuf.render_viewport_size;"
         "\n    let clip_base = select(clip_a, clip_b, use_b);"
         "\n    out.pos = vec4f(clip_base.xy + offset_ndc * clip_base.w, clip_base.zw);";
-  }
-  if constexpr (UseReversedZ) {
-    vtxXfrAttrsPre += "\n    out.pos.z = -out.pos.z;";
-  } else {
-    vtxXfrAttrsPre += "\n    out.pos.z += out.pos.w;";
   }
   vtxXfrAttrsPre +=
       "\n    out.clip_distances = array<f32, 2>(out.pos.z, out.pos.w - out.pos.z);"
@@ -1103,6 +1176,19 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
     } else {
       vtxOutAttrs += fmt::format("\n    @location({}) tex{}_uv: vec2f,", vtxOutIdx++, i);
     }
+    if (is_emboss_texgen(tcg.type)) {
+      // Emboss bump: offset the source texcoord by the light projected onto tangent/binormal
+      const u32 lightIdx = tcg.type - GX_TG_BUMP0;
+      vtxXfrAttrs += fmt::format(
+          "\n    let bump_ldir{0} = normalize(ubuf.lights[{1}].pos - mv_pos);"
+          "\n    let bump_tan{0} = vec4f(in_tangent, 0.0) * ubuf.nrm_mtx[in_pnmtxidx];"
+          "\n    let bump_bin{0} = vec4f(in_binrm, 0.0) * ubuf.nrm_mtx[in_pnmtxidx];"
+          "\n    out.tex{0}_uv = tc{2}_proj.xy + vec2f(dot(bump_ldir{0}, bump_tan{0}), dot(bump_ldir{0}, "
+          "bump_bin{0}));",
+          i, lightIdx, tcg.embossSrc);
+      fragmentFnPre += fmt::format("\n    var tex{0}_uv = in.tex{0}_uv.xy;", i);
+      continue;
+    }
     if (tcg.src >= GX_TG_TEX0 && tcg.src <= GX_TG_TEX7) {
       vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0, 1.0);", i,
                                  vtx_attr(config, GXAttr(GX_VA_TEX0 + (tcg.src - GX_TG_TEX0))));
@@ -1112,9 +1198,14 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
       vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0);", i, vtx_attr(config, GX_VA_POS));
     } else if (tcg.src == GX_TG_NRM) {
       vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0);", i, vtx_attr(config, GX_VA_NRM));
-    } else if (tcg.src == GX_TG_COLOR0 || tcg.src == GX_TG_COLOR1) {
-      vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}.rgb, 1.0);", i,
-                                 vtx_attr(config, static_cast<GXAttr>(GX_VA_CLR0 + (tcg.src - GX_TG_COLOR0))));
+    } else if (tcg.src == GX_TG_COLOR0) {
+      vtxXfrAttrs += fmt::format("\n    var tc{} = {};", i, vtx_attr(config, GX_VA_CLR0));
+    } else if (tcg.src == GX_TG_COLOR1) {
+      vtxXfrAttrs += fmt::format("\n    var tc{} = {};", i, vtx_attr(config, GX_VA_CLR1));
+    } else if (tcg.src == GX_TG_BINRM) {
+      vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0);", i, nbt_slice_local(NbtSlice::B));
+    } else if (tcg.src == GX_TG_TANGENT) {
+      vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0);", i, nbt_slice_local(NbtSlice::T));
     } else
       UNLIKELY FATAL("unhandled tcg src {}", underlying(tcg.src));
     if (tcg.type == GX_TG_MTX2x4 || tcg.type == GX_TG_MTX3x4) {
@@ -1198,18 +1289,19 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
       continue;
     }
     const auto& indStage = config.indStages[i];
-    std::string scaleExpr;
-    if (indStage.scaleS == GX_ITS_1 && indStage.scaleT == GX_ITS_1) {
-      scaleExpr = fmt::format("tex{0}_uv", underlying(indStage.texCoordId));
-    } else {
-      scaleExpr = fmt::format("tex{0}_uv * vec2f({1}, {2})", underlying(indStage.texCoordId),
-                              ind_scale(indStage.scaleS), ind_scale(indStage.scaleT));
-    }
+    const u32 texCoordId = underlying(indStage.texCoordId);
+    const u32 texMapId = underlying(indStage.texMapId);
+    // GX applies the SU texture-coordinate scale before the indirect stage scale.
+    // The shader carries normalized UVs, so convert that texel-space result back
+    // into normalized coordinates for the indirect texture sample.
+    const auto scaleExpr =
+        fmt::format("tex{0}_uv * ubuf.texcoord_scale[{0}].xy * vec2f({1}, {2}) / ubuf.tex{3}_size_bias.xy",
+                    texCoordId, ind_scale(indStage.scaleS), ind_scale(indStage.scaleT), texMapId);
     fragmentFnPre += fmt::format(
         "\n    // Indirect stage {0}"
         "\n    var t_IndTexCoord{0} = 255.0 * textureSampleBias(tex{1}, tex{1}_samp, {2}, "
         "ubuf.tex{1}_size_bias.z).abg;",
-        i, underlying(indStage.texMapId), scaleExpr);
+        i, texMapId, scaleExpr);
   }
   if (info.usedIndStages.any()) {
     fragmentFnPre += "\n    var t_TexCoord = vec2f(0.0);";
@@ -1291,23 +1383,21 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
               ") * ind{0}_c1.z",
               i);
         } else if (stage.indTexMtxId >= GX_ITM_S0 && stage.indTexMtxId <= GX_ITM_S2 && hasBaseCoord) {
-          // Dynamic S: result = uv * texDim * ind_coord.x * scale / 256
+          // Dynamic S: result = scaled texcoord * ind_coord.x * scale / 256
           u32 mtxIdx = stage.indTexMtxId - GX_ITM_S0;
           u32 regTexCoord = underlying(stage.texCoordId);
-          u32 regTexMap = underlying(stage.texMapId);
           indirectOffsetTexel = fmt::format(
-              "tex{1}_uv * ubuf.tex{2}_size_bias.xy * ind{0}_coord.x"
-              " * ubuf.ind_mtx[{3}][1][2] / 256.0",
-              i, regTexCoord, regTexMap, mtxIdx);
+              "tex{1}_uv * ubuf.texcoord_scale[{1}].xy * ind{0}_coord.x"
+              " * ubuf.ind_mtx[{2}][1][2] / 256.0",
+              i, regTexCoord, mtxIdx);
         } else if (stage.indTexMtxId >= GX_ITM_T0 && stage.indTexMtxId <= GX_ITM_T2 && hasBaseCoord) {
-          // Dynamic T: result = uv * texDim * ind_coord.y * scale / 256
+          // Dynamic T: result = scaled texcoord * ind_coord.y * scale / 256
           u32 mtxIdx = stage.indTexMtxId - GX_ITM_T0;
           u32 regTexCoord = underlying(stage.texCoordId);
-          u32 regTexMap = underlying(stage.texMapId);
           indirectOffsetTexel = fmt::format(
-              "tex{1}_uv * ubuf.tex{2}_size_bias.xy * ind{0}_coord.y"
-              " * ubuf.ind_mtx[{3}][1][2] / 256.0",
-              i, regTexCoord, regTexMap, mtxIdx);
+              "tex{1}_uv * ubuf.texcoord_scale[{1}].xy * ind{0}_coord.y"
+              " * ubuf.ind_mtx[{2}][1][2] / 256.0",
+              i, regTexCoord, mtxIdx);
         }
       }
 
@@ -1338,12 +1428,11 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
       std::string baseCoordExpr;
       if (hasBaseCoord) {
         u32 texCoordId = underlying(stage.texCoordId);
-        u32 texMapId = underlying(stage.texMapId);
         if (useSimpleCoords) {
           baseCoordExpr = fmt::format("tex{}_uv", texCoordId);
         } else {
           fragmentFnPre +=
-              fmt::format("\n    var ind{0}_texel = tex{1}_uv * ubuf.tex{2}_size_bias.xy;", i, texCoordId, texMapId);
+              fmt::format("\n    var ind{0}_texel = tex{1}_uv * ubuf.texcoord_scale[{1}].xy;", i, texCoordId);
           baseCoordExpr = fmt::format("ind{}_texel", i);
         }
       }
@@ -1449,6 +1538,7 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
     }
     fragmentFn += "\n    prev = vec4f(mix(prev.rgb, ubuf.fog.color.rgb, clamp(fogZ, 0.0, 1.0)), prev.a);";
   }
+  uniBufAttrs += fmt::format("\n    texcoord_scale: array<vec4f, {}>,", MaxTexCoord);
   if (info.usedIndTexMtxs.any()) {
     uniBufAttrs += "\n    ind_mtx: array<mat2x4f, 3>,";
   }
@@ -1488,8 +1578,9 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
     if (discard.constant == 1) {
       fragmentFn += "\n    // Alpha compare\n    discard;";
     } else if (discard.constant != 0) {
-      fragmentFn += "\n    // Alpha compare"
-                    "\n    let alphaCompare = u32(round(clamp(prev.a, 0.0, 1.0) * 255.0));";
+      fragmentFn +=
+          "\n    // Alpha compare"
+          "\n    let alphaCompare = u32(round(clamp(prev.a, 0.0, 1.0) * 255.0));";
       fragmentFn += fmt::format("\n    if ({}) {{ discard; }}", discard.expr);
     }
   }
@@ -1868,9 +1959,16 @@ fn fs_main(in: FragmentInput) -> @location(0) vec4f {{{6}{5}
                                         uniBufAttrs, texBindings, vtxOutAttrs, vtxInAttrs, vtxXfrAttrs, fragmentFn,
                                         fragmentFnPre, vtxXfrAttrsPre, uniformPre);
   if (EnableDebugPrints) {
-    Log.info("Generated shader: {}", shaderSource);
+    Log.info("Generated shader (hash {:x}): {}", hash, shaderSource);
   }
 
+  return shaderSource;
+}
+
+wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
+  ZoneScoped;
+  const auto shaderSource = build_shader_source(config);
+  const auto hash = xxh3_hash(config);
   wgpu::ShaderSourceWGSL wgslDescriptor{};
   wgslDescriptor.code = shaderSource.c_str();
   const auto label = fmt::format("GX Shader {:x}", hash);

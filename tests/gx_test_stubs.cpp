@@ -9,6 +9,7 @@
 #include "gfx/tex_copy_conv.hpp"
 #include "gfx/tex_palette_conv.hpp"
 #include "gfx/texture.hpp"
+#include "gfx/texture_replacement.hpp"
 #include "gx/pipeline.hpp"
 #include "gx/shader_info.hpp"
 #include "internal.hpp"
@@ -46,6 +47,7 @@ wgpu::Buffer g_storageBuffer;
 uint32_t g_drawCallCount = 0;
 uint32_t g_mergedDrawCallCount = 0;
 bool is_frame_active() noexcept { return false; }
+void gpu_synchronize() {}
 } // namespace aurora::gfx
 
 namespace aurora::webgpu {
@@ -65,14 +67,12 @@ Vec2<uint32_t> configured_fb_size() noexcept { return {640, 480}; }
 void configure(const GXRenderModeObj*) noexcept {}
 } // namespace aurora::vi
 
-// --- Texture uploads ---
-namespace aurora::gfx {
-std::vector<TextureUpload> g_textureUploads;
-} // namespace aurora::gfx
-
 // --- get_texture ---
 namespace aurora::gx {
 const gfx::TextureBind& get_texture(GXTexMapID id) noexcept { return g_gxState.textures[id]; }
+namespace texture {
+void invalidate_bindings() noexcept {}
+} // namespace texture
 void evict_texture_object(u32 texObjId) noexcept {
   for (auto& obj : g_gxState.loadedTextures) {
     if (obj.texObjId == texObjId) {
@@ -129,105 +129,13 @@ gfx::Range build_uniform(const ShaderInfo& info, uint32_t vtxStart, const BindGr
 }
 void resolve_sampled_textures(const ShaderInfo& info) noexcept {}
 u8 color_channel(GXChannelID id) noexcept { return 0; }
-u8 comp_type_size(GXAttr attr, GXCompType type) noexcept {
-  switch (attr) {
-  case GX_VA_PNMTXIDX:
-  case GX_VA_TEX0MTXIDX:
-  case GX_VA_TEX1MTXIDX:
-  case GX_VA_TEX2MTXIDX:
-  case GX_VA_TEX3MTXIDX:
-  case GX_VA_TEX4MTXIDX:
-  case GX_VA_TEX5MTXIDX:
-  case GX_VA_TEX6MTXIDX:
-  case GX_VA_TEX7MTXIDX:
-    return 1;
-  case GX_VA_CLR0:
-  case GX_VA_CLR1:
-    switch (type) {
-    case GX_RGB565:
-    case GX_RGBA4:
-      return 2;
-    case GX_RGB8:
-    case GX_RGBA6:
-      return 3;
-    case GX_RGBX8:
-    case GX_RGBA8:
-      return 4;
-    default:
-      break;
-    }
-    break;
-  default:
-    switch (type) {
-    case GX_U8:
-    case GX_S8:
-      return 1;
-    case GX_U16:
-    case GX_S16:
-      return 2;
-    case GX_F32:
-      return 4;
-    default:
-      break;
-    }
-  }
-  std::abort();
-}
-u8 comp_cnt_count(GXAttr attr, GXCompCnt cnt) noexcept {
-  switch (attr) {
-  case GX_VA_PNMTXIDX:
-  case GX_VA_TEX0MTXIDX:
-  case GX_VA_TEX1MTXIDX:
-  case GX_VA_TEX2MTXIDX:
-  case GX_VA_TEX3MTXIDX:
-  case GX_VA_TEX4MTXIDX:
-  case GX_VA_TEX5MTXIDX:
-  case GX_VA_TEX6MTXIDX:
-  case GX_VA_TEX7MTXIDX:
-    return 1;
-  case GX_VA_POS:
-    if (cnt == GX_POS_XY) {
-      return 2;
-    }
-    if (cnt == GX_POS_XYZ) {
-      return 3;
-    }
-    break;
-  case GX_VA_NRM:
-    if (cnt == GX_NRM_XYZ) {
-      return 3;
-    }
-    break;
-  case GX_VA_CLR0:
-  case GX_VA_CLR1:
-    return 1;
-  case GX_VA_TEX0:
-  case GX_VA_TEX1:
-  case GX_VA_TEX2:
-  case GX_VA_TEX3:
-  case GX_VA_TEX4:
-  case GX_VA_TEX5:
-  case GX_VA_TEX6:
-  case GX_VA_TEX7:
-    if (cnt == GX_TEX_S) {
-      return 1;
-    }
-    if (cnt == GX_TEX_ST) {
-      return 2;
-    }
-    break;
-  default:
-    break;
-  }
-  std::abort();
-}
 } // namespace aurora::gx
 
 // --- Buffer push stubs ---
 namespace aurora::gfx {
 std::vector<u8> g_lastStorageUpload;
-Range push_verts(const uint8_t* data, size_t length) { return {}; }
-Range push_indices(const uint8_t* data, size_t length) { return {}; }
+Range push_verts(const uint8_t* data, size_t length, size_t alignment) { return {}; }
+Range push_indices(const uint8_t* data, size_t length, size_t alignment) { return {}; }
 Range push_uniform(const uint8_t* data, size_t length) { return {}; }
 Range push_storage(const uint8_t* data, size_t length) {
   if (length == 0) {
@@ -257,9 +165,13 @@ template <>
 PipelineRef pipeline_ref<gx::PipelineConfig>(const gx::PipelineConfig& config) {
   return 0;
 }
+gx::DrawData g_testLastDraw{};
+uint32_t g_testDrawCount = 0;
+
 template <>
 void push_draw_command<gx::DrawData>(gx::DrawData data) {
-  // No-op
+  g_testLastDraw = data;
+  ++g_testDrawCount;
 }
 template <>
 gx::DrawData* get_last_draw_command() {
@@ -286,9 +198,12 @@ TextureHandle new_render_texture(uint32_t width, uint32_t height, u32 gxFormat, 
   return {};
 }
 TextureHandle new_conv_texture(uint32_t width, uint32_t height, u32 gxFormat, const char* label) noexcept { return {}; }
-void write_texture(const TextureRef& ref, ArrayRef<uint8_t> data) noexcept {}
-void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
-                  Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat) {}
+void write_texture(TextureRef& ref, ArrayRef<uint8_t> data) noexcept {}
+void queue_texture_upload(TextureUpload upload) {}
+void queue_texture_upload_data(const uint8_t* data, size_t length, uint32_t bytesPerRow, uint32_t rowsPerImage,
+                               wgpu::TexelCopyTextureInfo tex, wgpu::Extent3D size) {}
+void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
+                       Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat) {}
 void queue_palette_conv(tex_palette_conv::ConvRequest req) {}
 void begin_offscreen(uint32_t width, uint32_t height) {}
 void end_offscreen() {}
@@ -347,9 +262,8 @@ void queue(ConvRequest req) {}
 
 namespace aurora::gfx::texture_replacement {
 u32 compute_texture_upload_size(const GXTexObj_& obj) noexcept { return 0; }
-void register_tlut(const GXTlutObj*, const void*, GXTlutFmt, u16) noexcept {}
-void load_tlut(const GXTlutObj*, u32) noexcept {}
-std::optional<TextureHandle> find_replacement(const GXTexObj_&) noexcept { return std::nullopt; }
+bool has_replacement(const GXTexObj_&) noexcept { return false; }
+bool has_replacement(const GXTexObj_&, const GXTlutObj_&) noexcept { return false; }
 } // namespace aurora::gfx::texture_replacement
 
 extern "C" {

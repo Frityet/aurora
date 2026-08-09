@@ -41,8 +41,30 @@ struct DropShadowUniformBlock {
   Rml::Vector2f texCoordMax;
 };
 
-struct ColorMatrixUniformBlock {
+struct GlassUniformBlock {
+  Rml::Vector2f rectCenter;   // border-box center, framebuffer px
+  Rml::Vector2f rectHalfSize; // px
+  Rml::Vector4f cornerRadii;  // tl, tr, br, bl px
+  Rml::Vector4f tintColor;    // premultiplied
+  Rml::Vector2f frameSize;    // layer texture size px
+  Rml::Vector2f texCoordMin;  // valid-data clamp (extended scissor region)
+  Rml::Vector2f texCoordMax;
+  float bezelWidth; // px
+  float refraction; // max displacement px
+  float specular;
+  float saturation;
+  float profile;           // 0 = convex squircle, 1 = lip (fractional values blend)
+  float dome;              // full-surface magnification; rim sample offset = half-size * dome px
+  Rml::Vector4f edgeFades; // per-edge bezel strength (top, right, bottom, left), 0 = masked
+  Rml::Vector2f lightDir;  // screen-space direction from surfaces toward the specular light
+  Rml::Vector2f padding;
+};
+
+inline Rml::Vector2f g_glassLightDir{-0.7071f, -0.7071f};
+
+struct SimpleFilterUniformBlock {
   Rml::ColumnMajorMatrix4f matrix;
+  Rml::Vector4f opacity;
 };
 
 struct GradientUniformBlock {
@@ -60,7 +82,13 @@ struct TexCoordLimits {
   Rml::Vector2f max;
 };
 
+enum class BaseLayerContent {
+  Transparent,
+  Scene,
+};
+
 class WebGPURenderInterface : public Rml::RenderInterface {
+public:
   static constexpr wgpu::TextureFormat ClipMaskStencilFormat = wgpu::TextureFormat::Stencil8;
 
   enum class PipelineType {
@@ -79,59 +107,17 @@ class WebGPURenderInterface : public Rml::RenderInterface {
     Count,
   };
 
-  enum class FilterType {
-    Opacity,
-    Blur,
-    DropShadow,
-    ColorMatrix,
-    MaskImage,
-  };
-
+private:
   struct RenderTarget {
     wgpu::Texture texture;
     wgpu::TextureView view;
-    wgpu::BindGroup bindGroup;
     wgpu::Texture multisampleTexture;
     wgpu::TextureView multisampleView;
     wgpu::Extent3D size;
   };
 
-  struct CompiledFilter {
-    FilterType type = FilterType::Blur;
-    float opacity = 1.f;
-    float sigma = 0.f;
-    Rml::Vector2f offset;
-    Rml::ColourbPremultiplied color;
-    Rml::Matrix4f colorMatrix;
-  };
-
-  wgpu::CommandEncoder m_encoder;
-  wgpu::RenderPassEncoder m_pass;
   wgpu::TextureView m_frameSeedView;
 
-  std::array<wgpu::RenderPipeline, static_cast<size_t>(PipelineType::Count)> m_pipelines;
-  std::array<wgpu::RenderPipeline, static_cast<size_t>(BlitPipelineType::Count)> m_blitPipelines;
-  std::array<wgpu::RenderPipeline, static_cast<size_t>(BlitPipelineType::Count)> m_layerBlitPipelines;
-  wgpu::RenderPipeline m_opaqueBlitPipeline;
-  wgpu::RenderPipeline m_layerOpaqueBlitPipeline;
-  wgpu::RenderPipeline m_blurPipeline;
-  wgpu::RenderPipeline m_regionBlitPipeline;
-  wgpu::RenderPipeline m_dropShadowPipeline;
-  wgpu::RenderPipeline m_opacityPipeline;
-  wgpu::RenderPipeline m_colorMatrixPipeline;
-  wgpu::RenderPipeline m_maskImagePipeline;
-  std::array<wgpu::RenderPipeline, 2> m_gradientPipelines;
-  wgpu::PipelineLayout m_pipelineLayout;
-  wgpu::PipelineLayout m_blurPipelineLayout;
-  wgpu::PipelineLayout m_dropShadowPipelineLayout;
-  wgpu::PipelineLayout m_colorMatrixPipelineLayout;
-  wgpu::PipelineLayout m_maskImagePipelineLayout;
-  wgpu::PipelineLayout m_shaderPipelineLayout;
-  wgpu::Buffer m_uniformBuffer;
-  wgpu::Buffer m_blurUniformBuffer;
-  wgpu::Buffer m_dropShadowUniformBuffer;
-  wgpu::Buffer m_shaderUniformBuffer;
-  wgpu::Sampler m_sampler;
   wgpu::TextureFormat m_renderTargetFormat = wgpu::TextureFormat::Undefined;
   wgpu::Texture m_clipMaskStencilTexture;
   wgpu::TextureView m_clipMaskStencilView;
@@ -139,47 +125,34 @@ class WebGPURenderInterface : public Rml::RenderInterface {
   wgpu::Extent3D m_frameSize{};
   gfx::Viewport m_viewport{};
 
-  wgpu::BindGroupLayout m_commonBindGroupLayout;
-  wgpu::BindGroup m_commonBindGroup;
-  wgpu::BindGroupLayout m_imageBindGroupLayout;
-  wgpu::BindGroupLayout m_blurBindGroupLayout;
-  wgpu::BindGroup m_blurBindGroup;
-  wgpu::BindGroupLayout m_dropShadowBindGroupLayout;
-  wgpu::BindGroup m_dropShadowBindGroup;
-  wgpu::BindGroupLayout m_shaderBindGroupLayout;
-  wgpu::BindGroup m_shaderBindGroup;
   Rml::TextureHandle m_nullTexture = 0;
   Rml::CompiledGeometryHandle m_clipResetGeometry = 0;
   Rml::Vector2i m_clipResetGeometrySize{};
   std::vector<RenderTarget> m_layers;
   std::array<RenderTarget, 3> m_postprocessTargets{};
-  RenderTarget m_blendMaskTarget;
+  RenderTarget m_blendMaskTarget{};
   std::vector<Rml::LayerHandle> m_layerStack;
   Rml::LayerHandle m_activeLayer = 0;
   Rml::LayerHandle m_nextLayer = 1;
+  BaseLayerContent m_baseLayerContent = BaseLayerContent::Transparent;
 
   Rml::Vector2i m_windowSize{};
   Rml::Matrix4f m_translationMatrix = Rml::Matrix4f::Identity();
   Rml::Rectanglei m_scissorRegion{};
 
   float m_gamma = 0.0f;
-  uint32_t m_uniformCurrentOffset = 0;
-  uint32_t m_blurUniformCurrentOffset = 0;
-  uint32_t m_dropShadowUniformCurrentOffset = 0;
-  uint32_t m_shaderUniformCurrentOffset = 0;
   bool m_enableScissorRegion = false;
   bool m_clipMaskEnabled = false;
+  bool m_frameActive = false;
+  bool m_passActive = false;
   bool m_frameRenderingStarted = false;
   uint32_t m_stencilRef = 0;
 
-  void CreateUniformBuffer();
-
-  void SetupRenderState(const Rml::Vector2f& translation);
+  gfx::Range SetupRenderState(const Rml::Vector2f& translation);
 
   void EnsureRenderTarget(RenderTarget& target, const char* label, const wgpu::Extent3D& size,
                           bool multisampled = false);
   void EnsureFrameTargets(const wgpu::Extent3D& size);
-  wgpu::BindGroup CreateImageBindGroup(const wgpu::TextureView& view) const;
   Rml::Rectanglei GetActiveScissorRegion() const;
   TexCoordLimits GetPostprocessTexCoordLimits() const;
   TexCoordLimits GetPostprocessTexCoordLimits(Rml::Rectanglei region) const;
@@ -190,23 +163,24 @@ class WebGPURenderInterface : public Rml::RenderInterface {
   void EnsureFrameRenderingStarted();
   void EnsureActiveLayerPass(const char* label);
   void EndActivePass();
-  void ApplyViewport();
-  void ApplyFullFrameScissor();
-  void ApplyScissorRegion(Rml::Rectanglei region);
+  void ApplyViewport() const;
+  void ApplyFullFrameScissor() const;
+  void ApplyScissorRegion(Rml::Rectanglei region) const;
   void CreateNullTexture();
   void EnsureClipResetGeometry();
   void ApplyScissorRegion();
   void DrawGeometry(Rml::CompiledGeometryHandle geometry, Rml::Vector2f translation, Rml::TextureHandle texture,
-                    const wgpu::RenderPipeline& pipeline);
-  void DrawFullscreenTexture(const wgpu::BindGroup& bindGroup, const wgpu::RenderPipeline& pipeline,
-                             const wgpu::BindGroup* extraBindGroup = nullptr, uint32_t extraDynamicOffset = 0,
-                             bool extraBindGroupHasDynamicOffset = true);
-  void CompositeToTarget(const wgpu::BindGroup& bindGroup, const wgpu::TextureView& view, wgpu::LoadOp loadOp,
-                         const wgpu::RenderPipeline& pipeline, const char* label,
-                         const wgpu::BindGroup* extraBindGroup = nullptr, uint32_t extraDynamicOffset = 0,
-                         bool extraBindGroupHasDynamicOffset = true);
+                    gfx::PipelineRef pipeline);
+  void DrawFullscreenTexture(gfx::BindGroupRef bindGroup, gfx::PipelineRef pipeline,
+                             gfx::BindGroupRef extraBindGroup = 0, gfx::Range extraUniformRange = {},
+                             bool extraBindGroupHasDynamicOffset = true, std::array<float, 4> blendConstant = {},
+                             bool hasBlendConstant = false);
+  void CompositeToTarget(gfx::BindGroupRef bindGroup, const wgpu::TextureView& view, wgpu::LoadOp loadOp,
+                         gfx::PipelineRef pipeline, const char* label, gfx::BindGroupRef extraBindGroup = 0,
+                         gfx::Range extraUniformRange = {}, bool extraBindGroupHasDynamicOffset = true,
+                         std::array<float, 4> blendConstant = {}, bool hasBlendConstant = false);
   void RenderBlur(float sigma, const RenderTarget& sourceDestination, const RenderTarget& temp);
-  void RenderFilters(Rml::Span<const Rml::CompiledFilterHandle> filters);
+  size_t RenderFilters(Rml::Span<const Rml::CompiledFilterHandle> filters);
 
 public:
   Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
@@ -236,8 +210,8 @@ public:
                     Rml::TextureHandle texture) override;
   void ReleaseShader(Rml::CompiledShaderHandle shader) override;
 
-  void BeginFrame(const wgpu::CommandEncoder& encoder, const webgpu::TextureWithSampler& target,
-                  const webgpu::TextureWithSampler& seed_target);
+  void BeginFrame(const webgpu::TextureWithSampler& target, const webgpu::TextureWithSampler& scene_target,
+                  BaseLayerContent baseLayerContent);
   bool EndFrame();
   void SetWindowSize(const Rml::Vector2i& window_size) { m_windowSize = window_size; }
   void SetRenderTargetFormat(wgpu::TextureFormat render_target_format) { m_renderTargetFormat = render_target_format; }

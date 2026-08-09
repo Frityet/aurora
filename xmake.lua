@@ -36,19 +36,19 @@ option("aurora_cache_use_zstd")
 option_end()
 
 option("aurora_dawn_version")
-    set_default("v20260523.201736")
+    set_default("v20260618.032059")
     set_showmenu(true)
     set_description("Dawn version tag")
 option_end()
 
 option("aurora_sdl3_version")
-    set_default("3.4.8")
+    set_default("3.4.10")
     set_showmenu(true)
     set_description("SDL3 version tag")
 option_end()
 
 option("aurora_nod_version")
-    set_default("v2.0.0-alpha.8")
+    set_default("v2.0.0-alpha.10")
     set_showmenu(true)
     set_description("nod version tag")
 option_end()
@@ -95,6 +95,8 @@ option("aurora_nod_linkage")
     set_description("nod linkage type preference")
 option_end()
 
+add_requireconfs("dawn-build", {configs = {cxxflags = "-std=c++20"}})
+
 local function provider(name)
     return get_config(name) or "auto"
 end
@@ -103,7 +105,7 @@ local function shared_linkage(name)
     return (get_config(name) or "static") == "shared"
 end
 
-local sdl3_require = "libsdl3 " .. (get_config("aurora_sdl3_version") or "3.4.8")
+local sdl3_require = "libsdl3 " .. (get_config("aurora_sdl3_version") or "3.4.10")
 if provider("aurora_sdl3_provider") == "system" then
     sdl3_require = "libsdl3"
 end
@@ -122,15 +124,18 @@ if has_config("aurora_enable_gx") then
     if provider("aurora_dawn_provider") == "system" then
         add_requires("dawn-build", {system = true})
     else
-        add_requires("dawn-build " .. (get_config("aurora_dawn_version") or "v20260523.201736"),
+        add_requires("dawn-build " .. (get_config("aurora_dawn_version") or "v20260618.032059"),
                      {configs = {shared = shared_linkage("aurora_dawn_linkage")}})
     end
     add_requires("libpng v1.6.58")
     add_requires("zlib")
-    add_requires("imgui v1.91.9-docking",
+    local imgui_user_config = path.join(os.scriptdir(), "include", "aurora", "imgui_config.h")
+    local imgui_user_config_source = path.join(os.scriptdir(), "lib", "imgui_config.cpp")
+    add_requires("imgui v1.91.9b-docking",
                  {configs = {sdl3 = true, sdl3_renderer = true, wgpu = true, wgpu_backend = "dawn",
-                             dawn_version = get_config("aurora_dawn_version") or "v20260523.201736",
-                             freetype = true}})
+                             dawn_version = get_config("aurora_dawn_version") or "v20260618.032059",
+                             freetype = true, user_config = imgui_user_config,
+                             user_config_source = imgui_user_config_source}})
     if has_config("aurora_cache_use_zstd") then
         add_requires("zstd")
     end
@@ -140,7 +145,7 @@ if has_config("aurora_enable_dvd") then
     if provider("aurora_nod_provider") == "system" then
         add_requires("encounter-nod", {system = true})
     else
-        add_requires("encounter-nod " .. (get_config("aurora_nod_version") or "v2.0.0-alpha.8"),
+        add_requires("encounter-nod " .. (get_config("aurora_nod_version") or "v2.0.0-alpha.10"),
                      {configs = {shared = shared_linkage("aurora_nod_linkage")}})
     end
 end
@@ -158,9 +163,20 @@ local function add_aurora_common_settings(public_target)
 end
 
 local function add_dawn_backend_defines()
-    add_defines("WEBGPU_DAWN", "DAWN_ENABLE_BACKEND_VULKAN", "DAWN_ENABLE_BACKEND_OPENGL",
-                "DAWN_ENABLE_BACKEND_DESKTOP_GL", "DAWN_ENABLE_BACKEND_OPENGLES",
-                "DAWN_ENABLE_BACKEND_NULL", {public = true})
+    add_defines("WEBGPU_DAWN", "DAWN_ENABLE_BACKEND_NULL", {public = true})
+    if is_plat("windows", "mingw", "msys") then
+        add_defines("DAWN_ENABLE_BACKEND_D3D11", "DAWN_ENABLE_BACKEND_D3D12",
+                    "DAWN_ENABLE_BACKEND_VULKAN", {public = true})
+    elseif is_plat("macosx", "iphoneos") then
+        add_defines("DAWN_ENABLE_BACKEND_METAL", {public = true})
+    elseif is_plat("android") then
+        add_defines("DAWN_ENABLE_BACKEND_VULKAN", "DAWN_ENABLE_BACKEND_OPENGL",
+                    "DAWN_ENABLE_BACKEND_OPENGLES", {public = true})
+    else
+        add_defines("DAWN_ENABLE_BACKEND_VULKAN", "DAWN_ENABLE_BACKEND_OPENGL",
+                    "DAWN_ENABLE_BACKEND_DESKTOP_GL", "DAWN_ENABLE_BACKEND_OPENGLES",
+                    {public = true})
+    end
 end
 
 target("aurora-nw4r")
@@ -188,8 +204,17 @@ target("aurora-platform")
     add_packages("fmt", "libsdl3", "xxhash", {public = true})
     add_packages("abseil", "sqlite3", "tracy")
     if has_config("aurora_enable_gx") then
-        add_files("lib/imgui.cpp", "lib/imgui_config.cpp", "lib/webgpu/gpu.cpp", "lib/webgpu/gpu_cache.cpp",
-                  "lib/dawn/BackendBinding.cpp")
+        add_files("lib/imgui.cpp", "lib/webgpu/gpu.cpp", "lib/webgpu/gpu_cache.cpp",
+                  "lib/webgpu/gpu_prof.cpp", "lib/dawn/BackendBinding.cpp")
+        if is_plat("windows") then
+            add_files("lib/dawn/TracyPlatform.cpp")
+        else
+            add_files("lib/dawn/TracyPlatform.cpp", {cxflags = "-fno-rtti"})
+        end
+        if is_plat("macosx", "iphoneos") then
+            add_files("lib/dawn/MetalBinding.mm", {cxflags = "-fobjc-arc"})
+            add_frameworks("Metal")
+        end
         add_packages("dawn-build")
         add_packages("imgui", {public = true})
         add_defines("AURORA_ENABLE_GX", "IMGUI_USER_CONFIG=\"aurora/imgui_config.h\"", {public = true})
@@ -218,7 +243,8 @@ target("aurora-core")
         add_defines("AURORA_ENABLE_RMLUI", {public = true})
         add_files("lib/rmlui.cpp", "lib/rmlui/RuntimeTextureProvider.cpp",
                   "lib/rmlui/RmlUi_Backend_Aurora.cpp", "lib/rmlui/WebGPURenderInterface.cpp",
-                  "lib/rmlui/SystemInterface_Aurora.cpp", "lib/rmlui/FileInterface_SDL.cpp")
+                  "lib/rmlui/SystemInterface_Aurora.cpp", "lib/rmlui/FileInterface_SDL.cpp",
+                  "lib/rmlui/GlassFilter.cpp")
         add_packages("rmlui", {public = true})
     end
 
@@ -281,12 +307,13 @@ if has_config("aurora_enable_gx") then
         add_aurora_common_settings(true)
         add_dawn_backend_defines()
         add_files("lib/gfx/clear.cpp", "lib/gfx/common.cpp", "lib/gfx/depth_peek.cpp",
-                  "lib/gfx/pipeline_cache.cpp", "lib/gfx/dds_io.cpp", "lib/gfx/tex_copy_conv.cpp",
-                  "lib/gfx/tex_palette_conv.cpp", "lib/gfx/texture.cpp",
+                  "lib/gfx/pipeline_cache.cpp", "lib/gfx/render_worker.cpp", "lib/gfx/dds_io.cpp",
+                  "lib/gfx/tex_copy_conv.cpp", "lib/gfx/tex_palette_conv.cpp", "lib/gfx/texture.cpp",
+                  "lib/gfx/texture_format.cpp",
                   "lib/gfx/texture_convert.cpp", "lib/gfx/texture_replacement.cpp",
                   "lib/gfx/png_io.cpp",
-                  "lib/gx/command_processor.cpp", "lib/gx/destruction_state.cpp",
-                  "lib/gx/fifo.cpp", "lib/gx/gx.cpp",
+                  "lib/gx/attr_fmt.cpp", "lib/gx/command_processor.cpp", "lib/gx/destruction_state.cpp",
+                  "lib/gx/dl.cpp", "lib/gx/fifo.cpp", "lib/gx/gx.cpp", "lib/gx/texture.cpp",
                   "lib/gx/pipeline.cpp", "lib/gx/shader.cpp", "lib/gx/shader_info.cpp",
                   "lib/rfl/CharacterModel.cpp", "lib/rfl/CharacterResource.cpp",
                   "lib/dolphin/gx/GXBump.cpp", "lib/dolphin/gx/GXCull.cpp",
@@ -300,8 +327,14 @@ if has_config("aurora_enable_gx") then
                   "lib/dolphin/gx/GXTransform.cpp", "lib/dolphin/gx/GXVert.cpp",
                   "lib/dolphin/gx/GXAurora.cpp")
         add_headerfiles("include/(aurora/rfl/CharacterModel.hpp)")
+        if has_config("aurora_enable_rmlui") then
+            add_files("lib/rmlui/pipeline.cpp")
+            add_defines("AURORA_ENABLE_RMLUI")
+            add_packages("rmlui")
+        end
         add_deps("aurora-platform", "aurora-vi")
-        add_packages("dawn-build", "xxhash", "abseil", "sqlite3", "tracy", "libpng", "zlib")
+        add_packages("dawn-build", {public = true})
+        add_packages("xxhash", "abseil", "sqlite3", "tracy", "libpng", "zlib")
 
     target("aurora-gd")
         set_kind("static")
@@ -330,8 +363,8 @@ if has_config("aurora_enable_dvd") then
     target("aurora-dvd")
         set_kind("static")
         add_aurora_common_settings(true)
-        add_files("lib/dolphin/dvd/dvd.cpp")
+        add_files("lib/dolphin/dvd/dvd.cpp", "lib/dolphin/dvd/fst.cpp")
         add_deps("aurora-base")
         add_packages("encounter-nod", "libsdl3", {public = true})
-        add_packages("fmt")
+        add_packages("fmt", "tracy")
 end

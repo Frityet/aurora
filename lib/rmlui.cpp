@@ -1,8 +1,11 @@
 #include "rmlui.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <thread>
 
 #include <RmlUi/Core.h>
+#include <RmlUi/Core/Element.h>
 #include <RmlUi_Backend.h>
 #include <RmlUi_Platform_SDL.h>
 #include <tracy/Tracy.hpp>
@@ -11,6 +14,7 @@
 #include "internal.hpp"
 #include "imgui.hpp"
 #include "rmlui/FileInterface_SDL.h"
+#include "rmlui/GlassFilter.hpp"
 #include "rmlui/SystemInterface_Aurora.h"
 #include "rmlui/WebGPURenderInterface.hpp"
 #include "webgpu/gpu.hpp"
@@ -79,6 +83,32 @@ void ensure_render_target(Rml::Vector2i dimensions) noexcept {
   }
   s_renderTarget = webgpu::create_render_texture(width, height, false);
   s_renderTargetCopyBindGroup = webgpu::create_copy_bind_group(s_renderTarget);
+}
+
+bool element_has_visible_backdrop_filter(const Rml::Element* element) noexcept {
+  if (element == nullptr || !element->IsVisible(true)) {
+    return false;
+  }
+
+  const auto& computed = element->GetComputedValues();
+  if (computed.opacity() > 0.f && computed.has_backdrop_filter()) {
+    return true;
+  }
+
+  const int childCount = element->GetNumChildren();
+  for (int childIndex = 0; childIndex < childCount; ++childIndex) {
+    if (element_has_visible_backdrop_filter(element->GetChild(childIndex))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool context_has_visible_backdrop_filter(Rml::Context* context) noexcept {
+  if (context == nullptr) {
+    return false;
+  }
+  return element_has_visible_backdrop_filter(context->GetRootElement());
 }
 
 struct MappedPoint {
@@ -174,8 +204,8 @@ Rml::TouchList touch_list(SDL_FingerID id, Rml::Vector2f position) {
   return {Rml::Touch{static_cast<Rml::TouchId>(id), position}};
 }
 
-void dispatch_touch_event(
-    TrackedTouch& touch, const char* type, Rml::Vector2f position, bool inside, Rml::Vector2f delta = {}) noexcept {
+void dispatch_touch_event(TrackedTouch& touch, const char* type, Rml::Vector2f position, bool inside,
+                          Rml::Vector2f delta = {}) noexcept {
   if (touch.target == nullptr) {
     return;
   }
@@ -335,6 +365,10 @@ void initialize(const AuroraWindowSize& size) noexcept {
   renderInterface->CreateDeviceObjects();
 
   Rml::Initialise();
+
+  static GlassFilterInstancer s_glassInstancer;
+  Rml::Factory::RegisterFilterInstancer("glass", &s_glassInstancer);
+
   g_context = Rml::CreateContext("main", dim);
 
   if (g_context) {
@@ -350,11 +384,15 @@ Rml::Context* get_context() noexcept { return g_context; }
 
 bool is_initialized() noexcept { return g_context != nullptr; }
 
-void set_ui_scale(float scale) noexcept {
-  s_uiScale = scale > 0.0f ? std::clamp(scale, 0.25f, 4.0f) : 0.0f;
-}
+void set_ui_scale(float scale) noexcept { s_uiScale = scale > 0.0f ? std::clamp(scale, 0.25f, 4.0f) : 0.0f; }
 
 float get_ui_scale() noexcept { return s_uiScale; }
+
+void set_glass_light_dir(float x, float y) noexcept {
+  if (const float len = std::hypot(x, y); len > 1e-4f) {
+    g_glassLightDir = {x / len, y / len};
+  }
+}
 
 void set_input_type(InputType type) noexcept {
   auto* systemInterface = static_cast<SystemInterface_Aurora*>(Backend::GetSystemInterface());
@@ -410,8 +448,8 @@ void handle_event(const SDL_Event& event) noexcept {
   RmlSDL::InputEventHandler(g_context, window::get_sdl_window(), mutableEvent);
 }
 
-RenderOutput render(const wgpu::CommandEncoder& encoder, const webgpu::Viewport& presentViewport,
-                    const webgpu::TextureWithSampler& presentSource) noexcept {
+RecordedFrame record_frame(const webgpu::Viewport& presentViewport,
+                           const webgpu::TextureWithSampler& presentSource) noexcept {
   if (g_context == nullptr) {
     return {};
   }
@@ -425,10 +463,12 @@ RenderOutput render(const wgpu::CommandEncoder& encoder, const webgpu::Viewport&
 
   sync_context_metrics(dim);
   g_context->Update();
+  const bool needsBackdrop = context_has_visible_backdrop_filter(g_context);
 
   auto* renderInterface = get_render_interface();
   renderInterface->SetWindowSize(g_context->GetDimensions());
-  renderInterface->BeginFrame(encoder, s_renderTarget, presentSource);
+  renderInterface->BeginFrame(s_renderTarget, presentSource,
+                              needsBackdrop ? BaseLayerContent::Scene : BaseLayerContent::Transparent);
 
   Backend::BeginFrame();
   g_context->Render();
@@ -438,10 +478,9 @@ RenderOutput render(const wgpu::CommandEncoder& encoder, const webgpu::Viewport&
     // We didn't render anything
     return {};
   }
-
   return {
-      .texture = &s_renderTarget,
-      .copyBindGroup = s_renderTargetCopyBindGroup,
+      .bindGroup = s_renderTargetCopyBindGroup,
+      .overlay = !needsBackdrop,
   };
 }
 

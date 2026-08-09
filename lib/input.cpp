@@ -392,6 +392,9 @@ SDL_JoystickID add_controller(SDL_JoystickID which) noexcept {
     controller.m_hasRumble = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, true);
     controller.m_hasRgbLed = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false);
     SDL_JoystickID instance = SDL_GetJoystickID(SDL_GetGamepadJoystick(ctrl));
+    Log.info("Added controller '{}' (instance {}, vid {:04x}, pid {:04x}, type {})",
+             SDL_GetGamepadName(ctrl) != nullptr ? SDL_GetGamepadName(ctrl) : "unknown", instance, controller.m_vid,
+             controller.m_pid, static_cast<int>(SDL_GetGamepadType(ctrl)));
     g_GameControllers[instance] = controller;
     apply_port_preferences();
     return instance;
@@ -402,6 +405,10 @@ SDL_JoystickID add_controller(SDL_JoystickID which) noexcept {
 
 void remove_controller(Uint32 instance) noexcept {
   if (auto it = g_GameControllers.find(instance); it != g_GameControllers.end()) {
+    Log.info("Removed controller '{}' (instance {})",
+             SDL_GetGamepadName(it->second.m_controller) != nullptr ? SDL_GetGamepadName(it->second.m_controller)
+                                                                    : "unknown",
+             instance);
     SDL_CloseGamepad(it->second.m_controller);
     g_GameControllers.erase(it);
     apply_port_preferences();
@@ -486,7 +493,7 @@ void persist_controller_for_player(uint32_t player, const GameController* contro
 void initialize() noexcept {
   /* Make sure we initialize everything input related now, this will automatically add all of the connected controllers
    * as expected */
-  ASSERT(SDL_Init(SDL_INIT_HAPTIC | SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD | SDL_INIT_SENSOR),
+  AURORA_ASSERT(SDL_Init(SDL_INIT_HAPTIC | SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD | SDL_INIT_SENSOR),
          "Failed to initialize SDL subsystems: {}", SDL_GetError());
 }
 

@@ -8,14 +8,16 @@
 #include <dawn/webgpu_cpp.h>
 
 namespace aurora::rmlui {
-struct RenderOutput {
-  const webgpu::TextureWithSampler* texture = nullptr;
-  wgpu::BindGroup copyBindGroup;
+
+struct RecordedFrame {
+  wgpu::BindGroup bindGroup;
+  bool overlay = false;
 };
 
 void initialize(const AuroraWindowSize& size) noexcept;
 void handle_event(const SDL_Event& event) noexcept;
-RenderOutput render(const wgpu::CommandEncoder& encoder, const webgpu::Viewport& presentViewport,
-                    const webgpu::TextureWithSampler& presentSource) noexcept;
+RecordedFrame record_frame(const webgpu::Viewport& presentViewport,
+                           const webgpu::TextureWithSampler& presentSource) noexcept;
 void shutdown() noexcept;
+
 } // namespace aurora::rmlui

@@ -1,4 +1,5 @@
 #include "depth_peek.hpp"
+#include "depth_snapshot_store.hpp"
 
 #include "../dolphin/vi/vi_internal.hpp"
 #include "../gx/gx.hpp"
@@ -44,6 +45,7 @@ struct Params {
 static_assert(sizeof(Params) == 32);
 
 struct LatestSnapshot {
+  uint64_t sequence = 0;
   uint32_t width = 0;
   uint32_t height = 0;
   std::vector<uint32_t> data;
@@ -62,6 +64,8 @@ struct Slot {
   uint32_t width = 0;
   uint32_t height = 0;
   uint64_t byteSize = 0;
+  AuroraDepthSnapshotId snapshotId = AURORA_INVALID_DEPTH_SNAPSHOT_ID;
+  uint64_t legacySequence = 0;
   SlotState state = SlotState::Available;
 };
 
@@ -69,6 +73,8 @@ struct PendingMap {
   size_t slotIdx = 0;
   wgpu::Buffer readbackBuffer;
   uint64_t byteSize = 0;
+  AuroraDepthSnapshotId snapshotId = AURORA_INVALID_DEPTH_SNAPSHOT_ID;
+  uint64_t legacySequence = 0;
 };
 
 bool g_enabled = false;
@@ -78,7 +84,9 @@ wgpu::BindGroupLayout g_bindGroupLayout;
 wgpu::ComputePipeline g_pipeline;
 bool g_snapshotRequested = false;
 Clock::time_point g_nextSnapshotTime;
+uint64_t g_nextLegacySequence = 1;
 LatestSnapshot g_latest;
+detail::SnapshotStore g_snapshots;
 std::mutex g_mutex;
 
 constexpr std::string_view ShaderPreamble = R"(
@@ -199,7 +207,7 @@ wgpu::BindGroupLayout create_bind_group_layout(const char* label) {
   return g_device.CreateBindGroupLayout(&descriptor);
 }
 
-Params make_params(wgpu::Extent3D sourceSize, Vec2<uint32_t> dstSize) noexcept {
+Params make_params(wgpu::Extent3D sourceSize, Vec2<uint32_t> dstSize, AuroraViewportPolicy viewportPolicy) noexcept {
   Params params{
       .dstWidth = dstSize.x,
       .dstHeight = dstSize.y,
@@ -207,25 +215,24 @@ Params make_params(wgpu::Extent3D sourceSize, Vec2<uint32_t> dstSize) noexcept {
       .srcHeight = sourceSize.height,
   };
 
-  if (gx::g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE) {
+  if (viewportPolicy == AURORA_VIEWPORT_NATIVE) {
     return params;
   }
 
-  const auto logicalSize = vi::configured_fb_size();
-  if (logicalSize.x == 0 || logicalSize.y == 0 || sourceSize.width == 0 || sourceSize.height == 0) {
+  if (dstSize.x == 0 || dstSize.y == 0 || sourceSize.width == 0 || sourceSize.height == 0) {
     return params;
   }
 
-  const bool stretch = gx::g_gxState.viewportPolicy == AURORA_VIEWPORT_STRETCH;
-  const float scaleX = static_cast<float>(sourceSize.width) / static_cast<float>(logicalSize.x);
-  const float scaleY = static_cast<float>(sourceSize.height) / static_cast<float>(logicalSize.y);
+  const bool stretch = viewportPolicy == AURORA_VIEWPORT_STRETCH;
+  const float scaleX = static_cast<float>(sourceSize.width) / static_cast<float>(dstSize.x);
+  const float scaleY = static_cast<float>(sourceSize.height) / static_cast<float>(dstSize.y);
   const float scale = std::min(scaleX, scaleY);
   params.scaleX = stretch ? scaleX : scale;
   params.scaleY = stretch ? scaleY : scale;
   params.offsetX =
-      stretch ? 0.f : (static_cast<float>(sourceSize.width) - static_cast<float>(logicalSize.x) * scale) * 0.5f;
+      stretch ? 0.f : (static_cast<float>(sourceSize.width) - static_cast<float>(dstSize.x) * scale) * 0.5f;
   params.offsetY =
-      stretch ? 0.f : (static_cast<float>(sourceSize.height) - static_cast<float>(logicalSize.y) * scale) * 0.5f;
+      stretch ? 0.f : (static_cast<float>(sourceSize.height) - static_cast<float>(dstSize.y) * scale) * 0.5f;
   return params;
 }
 
@@ -285,36 +292,65 @@ Slot* find_available_slot(uint32_t width, uint32_t height) {
   return nullptr;
 }
 
-void complete_slot(size_t slotIdx, wgpu::MapAsyncStatus status, wgpu::StringView message) {
-  std::lock_guard lock{g_mutex};
-  auto& slot = g_slots[slotIdx];
-  if (status == wgpu::MapAsyncStatus::Success) {
-    const auto valueCount = static_cast<size_t>(slot.width) * static_cast<size_t>(slot.height);
-    const auto* mapped =
-        static_cast<const uint32_t*>(slot.readbackBuffer.GetConstMappedRange(0, valueCount * sizeof(uint32_t)));
-    if (mapped != nullptr) {
+void complete_slot(size_t slotIdx, AuroraDepthSnapshotId expectedSnapshotId, uint64_t expectedLegacySequence,
+                   wgpu::MapAsyncStatus status, wgpu::StringView message) {
+  std::vector<uint32_t> data;
+  bool succeeded = false;
+  {
+    std::lock_guard lock{g_mutex};
+    auto& slot = g_slots[slotIdx];
+    if (slot.state != SlotState::MapPending || slot.snapshotId != expectedSnapshotId ||
+        slot.legacySequence != expectedLegacySequence) {
+      return;
+    }
+
+    if (status == wgpu::MapAsyncStatus::Success) {
+      const auto valueCount = static_cast<size_t>(slot.width) * static_cast<size_t>(slot.height);
+      const auto* mapped =
+          static_cast<const uint32_t*>(slot.readbackBuffer.GetConstMappedRange(0, valueCount * sizeof(uint32_t)));
+      if (mapped != nullptr) {
+        data.assign(mapped, mapped + valueCount);
+        succeeded = true;
+      }
+      slot.readbackBuffer.Unmap();
+    } else if (status != wgpu::MapAsyncStatus::CallbackCancelled && status != wgpu::MapAsyncStatus::Aborted) {
+      Log.warn("Depth Peek readback mapping failed {}: {}", magic_enum::enum_name(status), message);
+    }
+
+    if (succeeded && expectedSnapshotId == AURORA_INVALID_DEPTH_SNAPSHOT_ID &&
+        expectedLegacySequence > g_latest.sequence) {
+      g_latest.sequence = expectedLegacySequence;
       g_latest.width = slot.width;
       g_latest.height = slot.height;
-      g_latest.data.assign(mapped, mapped + valueCount);
+      g_latest.data = data;
     }
-    slot.readbackBuffer.Unmap();
-  } else if (status != wgpu::MapAsyncStatus::CallbackCancelled && status != wgpu::MapAsyncStatus::Aborted) {
-    Log.warn("Depth Peek readback mapping failed {}: {}", magic_enum::enum_name(status), message);
+    slot.snapshotId = AURORA_INVALID_DEPTH_SNAPSHOT_ID;
+    slot.legacySequence = 0;
+    slot.state = SlotState::Available;
   }
-  slot.state = SlotState::Available;
+
+  if (expectedSnapshotId != AURORA_INVALID_DEPTH_SNAPSHOT_ID) {
+    if (succeeded) {
+      g_snapshots.complete(expectedSnapshotId, std::move(data));
+    } else {
+      g_snapshots.drop(expectedSnapshotId);
+    }
+  }
 }
 } // namespace
 
 void initialize() {
+  g_enabled = false;
   if (!webgpu::g_hasCoreFeatures) {
     return;
   }
   g_bindGroupLayout = create_bind_group_layout("Depth Peek Bind Group Layout");
   g_pipeline = create_pipeline(g_bindGroupLayout, "Depth Peek Pipeline");
-  g_enabled = true;
+  g_enabled = g_bindGroupLayout && g_pipeline;
 }
 
 void shutdown() {
+  g_enabled = false;
   testing::reset();
   g_pipeline = {};
   g_bindGroupLayout = {};
@@ -323,12 +359,35 @@ void shutdown() {
   }
 }
 
+AuroraDepthSnapshotId create_snapshot() noexcept { return g_snapshots.create(); }
+
+bool set_snapshot_info(AuroraDepthSnapshotId id, const AuroraDepthSnapshotInfo& info) noexcept {
+  return g_snapshots.set_info(id, info);
+}
+
+AuroraDepthSnapshotStatus get_snapshot_info(AuroraDepthSnapshotId id, AuroraDepthSnapshotInfo* info) noexcept {
+  return g_snapshots.status(id, info);
+}
+
+bool read_snapshot(AuroraDepthSnapshotId id, uint16_t x, uint16_t y, uint32_t& z) noexcept {
+  return g_snapshots.read(id, x, y, z);
+}
+
+void release_snapshot(AuroraDepthSnapshotId id) noexcept { g_snapshots.release(id); }
+
+void drop_snapshot(AuroraDepthSnapshotId id) noexcept { g_snapshots.drop(id); }
+
 void request_snapshot() noexcept {
   if (!g_enabled) {
     return;
   }
   std::lock_guard lock{g_mutex};
   g_snapshotRequested = true;
+}
+
+bool snapshot_requested() noexcept {
+  std::lock_guard lock{g_mutex};
+  return g_enabled && g_snapshotRequested;
 }
 
 bool read_latest(uint16_t x, uint16_t y, uint32_t& z) noexcept {
@@ -340,43 +399,43 @@ bool read_latest(uint16_t x, uint16_t y, uint32_t& z) noexcept {
   return true;
 }
 
-void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
-                           wgpu::Extent3D sourceSize, uint32_t msaaSamples) noexcept {
-  if (!g_enabled) {
-    return;
-  }
-
+static void encode_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
+                            wgpu::Extent3D sourceSize, uint32_t msaaSamples, Vec2<uint32_t> dstSize,
+                            AuroraViewportPolicy viewportPolicy, AuroraDepthSnapshotId snapshotId,
+                            uint64_t legacySequence) noexcept {
   ZoneScoped;
-  const auto now = Clock::now();
-  {
-    std::lock_guard lock{g_mutex};
-    if (!g_snapshotRequested || now < g_nextSnapshotTime) {
-      return;
+  const auto drop = [snapshotId] {
+    if (snapshotId != AURORA_INVALID_DEPTH_SNAPSHOT_ID) {
+      g_snapshots.drop(snapshotId);
     }
-    g_snapshotRequested = false;
-    g_nextSnapshotTime = now + SnapshotInterval;
-  }
-
-  const auto dstSize = vi::configured_fb_size();
-  if (!depthView || dstSize.x == 0 || dstSize.y == 0 || sourceSize.width == 0 || sourceSize.height == 0) {
+  };
+  if (!g_enabled || !depthView || dstSize.x == 0 || dstSize.y == 0 || sourceSize.width == 0 || sourceSize.height == 0) {
+    drop();
     return;
   }
   if (msaaSamples > 1) {
-    Log.fatal("Depth Peek from multisampled EFB targets is not supported");
+    Log.warn("Dropping depth snapshot {}: multisampled EFB targets are unsupported", snapshotId);
+    drop();
+    return;
   }
 
-  const Params params = make_params(sourceSize, dstSize);
+  const Params params = make_params(sourceSize, dstSize, viewportPolicy);
   wgpu::Buffer storageBuffer;
   wgpu::Buffer readbackBuffer;
   wgpu::Buffer paramsBuffer;
   uint64_t byteSize = 0;
+  size_t slotIdx = 0;
   {
     std::lock_guard lock{g_mutex};
     auto* slot = find_available_slot(dstSize.x, dstSize.y);
     if (slot == nullptr) {
+      drop();
       return;
     }
+    slotIdx = static_cast<size_t>(slot - g_slots.data());
     slot->state = SlotState::CopySubmitted;
+    slot->snapshotId = snapshotId;
+    slot->legacySequence = legacySequence;
     storageBuffer = slot->storageBuffer;
     readbackBuffer = slot->readbackBuffer;
     paramsBuffer = slot->paramsBuffer;
@@ -409,6 +468,19 @@ void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureV
       .entries = bindGroupEntries.data(),
   };
   const auto bindGroup = g_device.CreateBindGroup(&bindGroupDescriptor);
+  if (!bindGroup) {
+    {
+      std::lock_guard lock{g_mutex};
+      auto& slot = g_slots[slotIdx];
+      if (slot.snapshotId == snapshotId && slot.legacySequence == legacySequence) {
+        slot.snapshotId = AURORA_INVALID_DEPTH_SNAPSHOT_ID;
+        slot.legacySequence = 0;
+        slot.state = SlotState::Available;
+      }
+    }
+    drop();
+    return;
+  }
 
   const wgpu::ComputePassDescriptor passDescriptor{
       .label = "Depth Peek Compute Pass",
@@ -422,6 +494,43 @@ void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureV
   pass.End();
 
   cmd.CopyBufferToBuffer(storageBuffer, 0, readbackBuffer, 0, byteSize);
+}
+
+void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
+                           wgpu::Extent3D sourceSize, uint32_t msaaSamples) noexcept {
+  if (!g_enabled) {
+    return;
+  }
+
+  uint64_t legacySequence = 0;
+  const auto now = Clock::now();
+  {
+    std::lock_guard lock{g_mutex};
+    if (!g_snapshotRequested || now < g_nextSnapshotTime) {
+      return;
+    }
+    g_snapshotRequested = false;
+    g_nextSnapshotTime = now + SnapshotInterval;
+    legacySequence = g_nextLegacySequence++;
+  }
+
+  auto dstSize = vi::configured_fb_size();
+  const auto viewportPolicy = gx::g_gxState.viewportPolicy;
+  if (viewportPolicy == AURORA_VIEWPORT_NATIVE) {
+    dstSize = {sourceSize.width, sourceSize.height};
+  }
+  encode_snapshot(cmd, depthView, sourceSize, msaaSamples, dstSize, viewportPolicy, AURORA_INVALID_DEPTH_SNAPSHOT_ID,
+                  legacySequence);
+}
+
+void encode_tagged_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
+                            wgpu::Extent3D sourceSize, uint32_t msaaSamples, const SnapshotCapture& capture) noexcept {
+  if (capture.info.id == AURORA_INVALID_DEPTH_SNAPSHOT_ID ||
+      get_snapshot_info(capture.info.id, nullptr) != AURORA_DEPTH_SNAPSHOT_PENDING) {
+    return;
+  }
+  encode_snapshot(cmd, depthView, sourceSize, msaaSamples, {capture.info.width, capture.info.height},
+                  capture.viewportPolicy, capture.info.id, 0);
 }
 
 void after_submit() noexcept {
@@ -442,6 +551,8 @@ void after_submit() noexcept {
           .slotIdx = i,
           .readbackBuffer = slot.readbackBuffer,
           .byteSize = slot.byteSize,
+          .snapshotId = slot.snapshotId,
+          .legacySequence = slot.legacySequence,
       });
     }
   }
@@ -449,22 +560,29 @@ void after_submit() noexcept {
   for (const auto& pending : pendingMaps) {
     pending.readbackBuffer.MapAsync(
         wgpu::MapMode::Read, 0, pending.byteSize, wgpu::CallbackMode::AllowSpontaneous,
-        [slotIdx = pending.slotIdx](wgpu::MapAsyncStatus status, wgpu::StringView message) {
-          complete_slot(slotIdx, status, message);
+        [slotIdx = pending.slotIdx, snapshotId = pending.snapshotId,
+         legacySequence = pending.legacySequence](wgpu::MapAsyncStatus status, wgpu::StringView message) {
+          complete_slot(slotIdx, snapshotId, legacySequence, status, message);
         });
   }
 }
 
 namespace testing {
 void reset() noexcept {
-  std::lock_guard lock{g_mutex};
-  g_snapshotRequested = false;
-  g_nextSlot = 0;
-  g_nextSnapshotTime = {};
-  g_latest = {};
-  for (auto& slot : g_slots) {
-    slot.state = SlotState::Available;
+  {
+    std::lock_guard lock{g_mutex};
+    g_snapshotRequested = false;
+    g_nextSlot = 0;
+    g_nextSnapshotTime = {};
+    g_nextLegacySequence = 1;
+    g_latest = {};
+    for (auto& slot : g_slots) {
+      slot.snapshotId = AURORA_INVALID_DEPTH_SNAPSHOT_ID;
+      slot.legacySequence = 0;
+      slot.state = SlotState::Available;
+    }
   }
+  g_snapshots.reset();
 }
 
 bool snapshot_requested() noexcept {
@@ -474,9 +592,17 @@ bool snapshot_requested() noexcept {
 
 void set_latest(uint32_t width, uint32_t height, const std::vector<uint32_t>& data) {
   std::lock_guard lock{g_mutex};
+  g_latest.sequence = g_nextLegacySequence++;
   g_latest.width = width;
   g_latest.height = height;
   g_latest.data = data;
+}
+
+void complete_snapshot(AuroraDepthSnapshotId id, const AuroraDepthSnapshotInfo& info,
+                       std::vector<uint32_t> data) noexcept {
+  if (g_snapshots.set_info(id, info)) {
+    g_snapshots.complete(id, std::move(data));
+  }
 }
 } // namespace testing
 

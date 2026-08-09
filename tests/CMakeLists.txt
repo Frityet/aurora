@@ -80,6 +80,80 @@ if (AURORA_ENABLE_GX)
   endif ()
   set_tests_properties(gx_z_scale_offset_render PROPERTIES LABELS gpu RUN_SERIAL TRUE)
 
+  add_executable(gx_depth_snapshot_render_test
+    gx_depth_snapshot_render_test.cpp
+    ../lib/compat.cpp
+  )
+  target_link_libraries(gx_depth_snapshot_render_test PRIVATE aurora::core)
+
+  set(AURORA_GX_DEPTH_SNAPSHOT_RUNTIME_DIR "${CMAKE_CURRENT_BINARY_DIR}/gx_depth_snapshot_runtime")
+  set(AURORA_GX_DEPTH_SNAPSHOT_CONFIG_DIR "${CMAKE_CURRENT_BINARY_DIR}/gx_depth_snapshot_config")
+  set(AURORA_GX_DEPTH_SNAPSHOT_CACHE_DIR "${CMAKE_CURRENT_BINARY_DIR}/gx_depth_snapshot_cache")
+  file(MAKE_DIRECTORY
+    "${AURORA_GX_DEPTH_SNAPSHOT_RUNTIME_DIR}"
+    "${AURORA_GX_DEPTH_SNAPSHOT_CONFIG_DIR}"
+    "${AURORA_GX_DEPTH_SNAPSHOT_CACHE_DIR}"
+  )
+  file(CHMOD "${AURORA_GX_DEPTH_SNAPSHOT_RUNTIME_DIR}"
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+  )
+
+  if (AURORA_XVFB_RUN_EXECUTABLE)
+    add_test(NAME gx_depth_snapshot_render
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "XDG_RUNTIME_DIR=${AURORA_GX_DEPTH_SNAPSHOT_RUNTIME_DIR}"
+        "XDG_CONFIG_HOME=${AURORA_GX_DEPTH_SNAPSHOT_CONFIG_DIR}"
+        "XDG_CACHE_HOME=${AURORA_GX_DEPTH_SNAPSHOT_CACHE_DIR}"
+        "${AURORA_XVFB_RUN_EXECUTABLE}" -a $<TARGET_FILE:gx_depth_snapshot_render_test>
+    )
+  else ()
+    add_test(NAME gx_depth_snapshot_render
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "XDG_RUNTIME_DIR=${AURORA_GX_DEPTH_SNAPSHOT_RUNTIME_DIR}"
+        "XDG_CONFIG_HOME=${AURORA_GX_DEPTH_SNAPSHOT_CONFIG_DIR}"
+        "XDG_CACHE_HOME=${AURORA_GX_DEPTH_SNAPSHOT_CACHE_DIR}"
+        $<TARGET_FILE:gx_depth_snapshot_render_test>
+    )
+  endif ()
+  set_tests_properties(gx_depth_snapshot_render PROPERTIES LABELS gpu RUN_SERIAL TRUE)
+
+  add_executable(gx_copy_filter_render_test
+    gx_copy_filter_render_test.cpp
+    ../lib/compat.cpp
+  )
+  target_link_libraries(gx_copy_filter_render_test PRIVATE aurora::core)
+
+  set(AURORA_GX_COPY_FILTER_RUNTIME_DIR "${CMAKE_CURRENT_BINARY_DIR}/gx_copy_filter_runtime")
+  set(AURORA_GX_COPY_FILTER_CONFIG_DIR "${CMAKE_CURRENT_BINARY_DIR}/gx_copy_filter_config")
+  set(AURORA_GX_COPY_FILTER_CACHE_DIR "${CMAKE_CURRENT_BINARY_DIR}/gx_copy_filter_cache")
+  file(MAKE_DIRECTORY
+    "${AURORA_GX_COPY_FILTER_RUNTIME_DIR}"
+    "${AURORA_GX_COPY_FILTER_CONFIG_DIR}"
+    "${AURORA_GX_COPY_FILTER_CACHE_DIR}"
+  )
+  file(CHMOD "${AURORA_GX_COPY_FILTER_RUNTIME_DIR}"
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+  )
+
+  if (AURORA_XVFB_RUN_EXECUTABLE)
+    add_test(NAME gx_copy_filter_render
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "XDG_RUNTIME_DIR=${AURORA_GX_COPY_FILTER_RUNTIME_DIR}"
+        "XDG_CONFIG_HOME=${AURORA_GX_COPY_FILTER_CONFIG_DIR}"
+        "XDG_CACHE_HOME=${AURORA_GX_COPY_FILTER_CACHE_DIR}"
+        "${AURORA_XVFB_RUN_EXECUTABLE}" -a $<TARGET_FILE:gx_copy_filter_render_test>
+    )
+  else ()
+    add_test(NAME gx_copy_filter_render
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "XDG_RUNTIME_DIR=${AURORA_GX_COPY_FILTER_RUNTIME_DIR}"
+        "XDG_CONFIG_HOME=${AURORA_GX_COPY_FILTER_CONFIG_DIR}"
+        "XDG_CACHE_HOME=${AURORA_GX_COPY_FILTER_CACHE_DIR}"
+        $<TARGET_FILE:gx_copy_filter_render_test>
+    )
+  endif ()
+  set_tests_properties(gx_copy_filter_render PROPERTIES LABELS gpu RUN_SERIAL TRUE)
+
   add_executable(rfl_character_resource_tests
     rfl_character_resource_test.cpp
     ../lib/rfl/CharacterResource.cpp

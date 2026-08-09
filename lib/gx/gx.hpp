@@ -353,6 +353,8 @@ struct GXState {
   bool texCopyDstWide = false;
   const void* texCopyDest = nullptr;
   struct DisplayCopyState {
+    static constexpr std::array<u8, 7> DefaultVFilter{0, 0, 21, 22, 21, 0, 0};
+
     gfx::ClipRect src{0, 0, 640, 480};
     u16 dstWidth = 640;
     u16 dstHeight = 480;
@@ -361,6 +363,14 @@ struct GXState {
     GXGamma gamma = GX_GM_1_0;
     GXFBClamp clamp = static_cast<GXFBClamp>(GX_CLAMP_TOP | GX_CLAMP_BOTTOM);
     u32 frame2Field = 0;
+    bool aa = false;
+    bool vfilterEnabled = false;
+    std::array<std::array<u8, 2>, 12> samplePattern = [] {
+      std::array<std::array<u8, 2>, 12> pattern{};
+      pattern.fill({6, 6});
+      return pattern;
+    }();
+    std::array<u8, 7> vfilter = DefaultVFilter;
   };
   DisplayCopyState dispCopy;
   struct CopyTextureKey {

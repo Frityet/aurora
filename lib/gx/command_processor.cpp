@@ -1969,8 +1969,25 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     CHECK(pos + 8 <= size, "GX_AURORA_LOAD_COPY_DEST read overrun");
     g_gxState.texCopyDest = reinterpret_cast<const void*>(read_u64(data + pos, bigEndian));
     pos += 8;
+  } else if (subCmd == GX_AURORA_LOAD_COPY_FILTER) {
+    CHECK(pos + 33 <= size, "GX_AURORA_LOAD_COPY_FILTER read overrun");
+    auto& copy = g_gxState.dispCopy;
+    copy.aa = data[pos++] != 0;
+    copy.vfilterEnabled = data[pos++] != 0;
+    for (auto& sample : copy.samplePattern) {
+      sample[0] = data[pos++];
+      sample[1] = data[pos++];
+    }
+    for (auto& coefficient : copy.vfilter) {
+      coefficient = data[pos++];
+    }
   } else if (subCmd == GX_AURORA_REQUEST_DEPTH_SNAPSHOT) {
     gfx::depth_peek::request_snapshot();
+  } else if (subCmd == GX_AURORA_REQUEST_TAGGED_DEPTH_SNAPSHOT) {
+    CHECK(pos + 8 <= size, "GX_AURORA_REQUEST_TAGGED_DEPTH_SNAPSHOT read overrun");
+    const auto id = read_u64(data + pos, bigEndian);
+    pos += 8;
+    gfx::request_depth_snapshot(id);
   } else if (subCmd == GX_AURORA_BEGIN_OFFSCREEN) {
     CHECK(pos + 8 <= size, "GX_AURORA_BEGIN_OFFSCREEN read overrun");
     const u32 width = read_u32(data + pos, bigEndian);

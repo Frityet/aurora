@@ -7,6 +7,7 @@
 #include "../../window.hpp"
 
 #include "../../gfx/common.hpp"
+#include "../../gfx/depth_peek.hpp"
 #include "../../gx/fifo.hpp"
 
 static void GXWriteString(const char* label) {
@@ -47,6 +48,36 @@ void AuroraGetRenderSize(u32* width, u32* height) {
     *height = windowSize.fb_height;
   }
 }
+
+AuroraDepthSnapshotId GXAuroraRequestDepthSnapshot(void) {
+  if (aurora::gx::fifo::in_display_list()) {
+    Log.warn("GXAuroraRequestDepthSnapshot cannot be recorded in a display list");
+    return AURORA_INVALID_DEPTH_SNAPSHOT_ID;
+  }
+
+  const auto id = aurora::gfx::depth_peek::create_snapshot();
+  GX_WRITE_AURORA(GX_AURORA_REQUEST_TAGGED_DEPTH_SNAPSHOT);
+  GX_WRITE_U64(id);
+  return id;
+}
+
+AuroraDepthSnapshotStatus GXAuroraGetDepthSnapshotInfo(AuroraDepthSnapshotId id, AuroraDepthSnapshotInfo* info) {
+  return aurora::gfx::depth_peek::get_snapshot_info(id, info);
+}
+
+BOOL GXAuroraReadDepthSnapshotZ(AuroraDepthSnapshotId id, u16 x, u16 y, u32* z) {
+  if (z == nullptr) {
+    return FALSE;
+  }
+  uint32_t value = 0;
+  if (!aurora::gfx::depth_peek::read_snapshot(id, x, y, value)) {
+    return FALSE;
+  }
+  *z = value;
+  return TRUE;
+}
+
+void GXAuroraReleaseDepthSnapshot(AuroraDepthSnapshotId id) { aurora::gfx::depth_peek::release_snapshot(id); }
 
 BOOL AuroraIsFrameActive(void) { return aurora::gfx::is_frame_active() ? TRUE : FALSE; }
 

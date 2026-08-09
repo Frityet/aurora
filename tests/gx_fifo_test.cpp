@@ -5,10 +5,12 @@
 // validate the decoded state matches expected values.
 
 #include "gx_test_common.hpp"
+#include "gfx/depth_snapshot_store.hpp"
 
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 
@@ -16,6 +18,7 @@ using aurora::gx::g_gxState;
 
 namespace aurora::gfx {
 extern std::vector<u8> g_lastStorageUpload;
+extern std::vector<CopyFilter> g_testResolvedCopyFilters;
 }
 
 static bool has_bp_write(const std::vector<u8>& bytes, u8 reg) {
@@ -244,6 +247,60 @@ TEST_F(GXFifoTest, PixelFmt_U8_Decode) {
   EXPECT_EQ(g_gxState.zFmt, GX_ZC_MID);
   EXPECT_EQ(g_gxState.dstAlpha, UINT32_MAX);
   EXPECT_TRUE(g_gxState.zCompLocBeforeTex);
+}
+
+TEST_F(GXFifoTest, CopyFilter_RetainsEffectiveStateInFifoOrder) {
+  constexpr u8 samplePattern[12][2]{
+      {0, 1},   {2, 3},   {4, 5},   {6, 7},   {8, 9},   {10, 11},
+      {12, 13}, {14, 15}, {16, 17}, {18, 19}, {20, 21}, {22, 23},
+  };
+  constexpr u8 vfilter[7]{1, 2, 3, 4, 5, 6, 7};
+
+  GXSetCopyFilter(GX_TRUE, samplePattern, GX_TRUE, vfilter);
+  const auto bytes = capture_fifo();
+
+  reset_gx_state();
+  decode_fifo(bytes);
+
+  EXPECT_TRUE(g_gxState.dispCopy.aa);
+  EXPECT_TRUE(g_gxState.dispCopy.vfilterEnabled);
+  for (size_t sample = 0; sample < g_gxState.dispCopy.samplePattern.size(); ++sample) {
+    EXPECT_EQ(g_gxState.dispCopy.samplePattern[sample][0], samplePattern[sample][0] & 0x0f);
+    EXPECT_EQ(g_gxState.dispCopy.samplePattern[sample][1], samplePattern[sample][1] & 0x0f);
+  }
+  EXPECT_EQ(g_gxState.dispCopy.vfilter, (std::array<u8, 7>{1, 2, 3, 4, 5, 6, 7}));
+
+  GXSetCopyFilter(GX_FALSE, nullptr, GX_FALSE, nullptr);
+  const auto disabledBytes = capture_fifo();
+  decode_fifo(disabledBytes);
+  EXPECT_FALSE(g_gxState.dispCopy.aa);
+  EXPECT_FALSE(g_gxState.dispCopy.vfilterEnabled);
+  for (const auto& sample : g_gxState.dispCopy.samplePattern) {
+    EXPECT_EQ(sample, (std::array<u8, 2>{6, 6}));
+  }
+  EXPECT_EQ(g_gxState.dispCopy.vfilter, aurora::gx::GXState::DisplayCopyState::DefaultVFilter);
+}
+
+TEST_F(GXFifoTest, CopyFilter_IsSnapshottedForEachTextureCopy) {
+  aurora::gfx::g_testResolvedCopyFilters.clear();
+  GXSetTexCopySrc(0, 0, 8, 8);
+  GXSetTexCopyDst(8, 8, GX_TF_RGBA8, GX_FALSE);
+
+  constexpr u8 firstFilter[7]{16, 0, 32, 0, 0, 0, 16};
+  GXSetCopyFilter(GX_FALSE, nullptr, GX_TRUE, firstFilter);
+  GXCopyTex(reinterpret_cast<void*>(std::uintptr_t{0x1000}), GX_FALSE);
+
+  constexpr u8 secondFilter[7]{0, 0, 21, 22, 21, 0, 0};
+  GXSetCopyFilter(GX_FALSE, nullptr, GX_TRUE, secondFilter);
+  GXCopyTex(reinterpret_cast<void*>(std::uintptr_t{0x2000}), GX_FALSE);
+
+  const auto bytes = capture_fifo();
+  reset_gx_state();
+  decode_fifo(bytes);
+
+  ASSERT_EQ(aurora::gfx::g_testResolvedCopyFilters.size(), 2u);
+  EXPECT_EQ(aurora::gfx::g_testResolvedCopyFilters[0].coefficients, (std::array<u32, 3>{16, 32, 16}));
+  EXPECT_EQ(aurora::gfx::g_testResolvedCopyFilters[1].coefficients, (std::array<u32, 3>{0, 64, 0}));
 }
 
 // ============================================================================
@@ -3436,6 +3493,101 @@ TEST_F(GXFifoTest, PeekZ_OutOfRangeFallsBackToZero) {
   auto bytes = capture_fifo();
   decode_fifo(bytes);
   EXPECT_TRUE(aurora::gfx::depth_peek::testing::snapshot_requested());
+}
+
+TEST_F(GXFifoTest, TaggedDepthSnapshot_EncodesAndDecodesExactId) {
+  const auto id = GXAuroraRequestDepthSnapshot();
+  ASSERT_NE(id, AURORA_INVALID_DEPTH_SNAPSHOT_ID);
+
+  AuroraDepthSnapshotInfo info{};
+  EXPECT_EQ(GXAuroraGetDepthSnapshotInfo(id, &info), AURORA_DEPTH_SNAPSHOT_PENDING);
+  EXPECT_EQ(info.id, id);
+
+  const auto bytes = capture_fifo();
+  ASSERT_EQ(bytes.size(), 11u);
+  EXPECT_EQ(bytes[0], GX_AURORA);
+  EXPECT_EQ(bytes[1], static_cast<u8>(GX_AURORA_REQUEST_TAGGED_DEPTH_SNAPSHOT >> 8));
+  EXPECT_EQ(bytes[2], static_cast<u8>(GX_AURORA_REQUEST_TAGGED_DEPTH_SNAPSHOT));
+  u64 encodedId = 0;
+  for (size_t i = 3; i < bytes.size(); ++i) {
+    encodedId = (encodedId << 8) | bytes[i];
+  }
+  EXPECT_EQ(encodedId, id);
+
+  decode_fifo(bytes);
+  EXPECT_EQ(GXAuroraGetDepthSnapshotInfo(id, nullptr), AURORA_DEPTH_SNAPSHOT_DROPPED);
+}
+
+TEST_F(GXFifoTest, TaggedDepthSnapshot_OutOfOrderCompletionStaysKeyedById) {
+  const auto first = aurora::gfx::depth_peek::create_snapshot();
+  const auto second = aurora::gfx::depth_peek::create_snapshot();
+  const AuroraDepthSnapshotInfo firstInfo{
+      .id = first,
+      .frameId = 7,
+      .width = 2,
+      .height = 1,
+      .viewportNear = 0.1f,
+      .viewportFar = 0.9f,
+  };
+  const AuroraDepthSnapshotInfo secondInfo{
+      .id = second,
+      .frameId = 8,
+      .width = 2,
+      .height = 1,
+      .viewportNear = 0.2f,
+      .viewportFar = 0.8f,
+  };
+
+  aurora::gfx::depth_peek::testing::complete_snapshot(second, secondInfo, {0x20, 0x21});
+  aurora::gfx::depth_peek::testing::complete_snapshot(first, firstInfo, {0x10, 0x11});
+
+  AuroraDepthSnapshotInfo info{};
+  u32 z = 0;
+  EXPECT_EQ(GXAuroraGetDepthSnapshotInfo(first, &info), AURORA_DEPTH_SNAPSHOT_READY);
+  EXPECT_EQ(info.frameId, 7u);
+  EXPECT_EQ(GXAuroraReadDepthSnapshotZ(first, 1, 0, &z), TRUE);
+  EXPECT_EQ(z, 0x11u);
+  EXPECT_EQ(GXAuroraGetDepthSnapshotInfo(second, &info), AURORA_DEPTH_SNAPSHOT_READY);
+  EXPECT_EQ(info.frameId, 8u);
+  EXPECT_EQ(GXAuroraReadDepthSnapshotZ(second, 1, 0, &z), TRUE);
+  EXPECT_EQ(z, 0x21u);
+}
+
+TEST_F(GXFifoTest, TaggedDepthSnapshot_FailsClosedForShortDataAndBounds) {
+  const auto shortId = aurora::gfx::depth_peek::create_snapshot();
+  const AuroraDepthSnapshotInfo shortInfo{
+      .id = shortId,
+      .frameId = 1,
+      .width = 2,
+      .height = 2,
+      .viewportNear = 0.f,
+      .viewportFar = 1.f,
+  };
+  aurora::gfx::depth_peek::testing::complete_snapshot(shortId, shortInfo, {1, 2, 3});
+  EXPECT_EQ(GXAuroraGetDepthSnapshotInfo(shortId, nullptr), AURORA_DEPTH_SNAPSHOT_DROPPED);
+
+  const auto readyId = aurora::gfx::depth_peek::create_snapshot();
+  auto readyInfo = shortInfo;
+  readyInfo.id = readyId;
+  aurora::gfx::depth_peek::testing::complete_snapshot(readyId, readyInfo, {1, 2, 3, 0x01000004});
+  u32 z = 0;
+  EXPECT_EQ(GXAuroraReadDepthSnapshotZ(readyId, 2, 0, &z), FALSE);
+  EXPECT_EQ(GXAuroraReadDepthSnapshotZ(readyId, 0, 2, &z), FALSE);
+  EXPECT_EQ(GXAuroraReadDepthSnapshotZ(readyId, 1, 1, &z), TRUE);
+  EXPECT_EQ(z, 4u);
+  EXPECT_EQ(GXAuroraReadDepthSnapshotZ(readyId, 0, 0, nullptr), FALSE);
+}
+
+TEST_F(GXFifoTest, TaggedDepthSnapshot_StoreIsBoundedAndReleaseExpiresIds) {
+  std::vector<AuroraDepthSnapshotId> ids;
+  for (size_t i = 0; i < aurora::gfx::depth_peek::detail::SnapshotStore::Capacity + 1; ++i) {
+    ids.push_back(aurora::gfx::depth_peek::create_snapshot());
+  }
+  EXPECT_EQ(GXAuroraGetDepthSnapshotInfo(ids.front(), nullptr), AURORA_DEPTH_SNAPSHOT_UNKNOWN);
+  EXPECT_EQ(GXAuroraGetDepthSnapshotInfo(ids.back(), nullptr), AURORA_DEPTH_SNAPSHOT_PENDING);
+
+  GXAuroraReleaseDepthSnapshot(ids.back());
+  EXPECT_EQ(GXAuroraGetDepthSnapshotInfo(ids.back(), nullptr), AURORA_DEPTH_SNAPSHOT_UNKNOWN);
 }
 
 // ============================================================================

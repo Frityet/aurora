@@ -22,11 +22,13 @@ static constexpr std::string_view ShaderPreamble = R"(
 @group(0) @binding(0) var src_samp: sampler;
 @group(0) @binding(1) var src: texture_2d<f32>;
 
-struct UVTransform {
+struct CopyParams {
     offset: vec2f,
     scale: vec2f,
+    filter_coefficients: vec4u,
+    clamp_flags: vec4u,
 };
-@group(0) @binding(2) var<uniform> uv_xf: UVTransform;
+@group(0) @binding(2) var<uniform> copy_params: CopyParams;
 
 struct VertexOutput {
     @builtin(position) pos: vec4f,
@@ -47,8 +49,38 @@ var<private> uvs: array<vec2f, 3> = array(
 @vertex fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     var out: VertexOutput;
     out.pos = vec4f(positions[vi], 0.0, 1.0);
-    out.uv = uvs[vi] * uv_xf.scale + uv_xf.offset;
+    out.uv = uvs[vi] * copy_params.scale + copy_params.offset;
     return out;
+}
+
+fn source_sample(uv: vec2f, row_offset: f32) -> vec4f {
+    let source_size = vec2f(textureDimensions(src));
+    let source_row = 1.0 / source_size.y;
+    var sample_uv = vec2f(uv.x, uv.y + row_offset * source_row);
+    if (row_offset < 0.0 && copy_params.clamp_flags.x != 0u) {
+        sample_uv.y = max(sample_uv.y, copy_params.offset.y + 0.5 * source_row);
+    }
+    if (row_offset > 0.0 && copy_params.clamp_flags.y != 0u) {
+        sample_uv.y = min(sample_uv.y, copy_params.offset.y + copy_params.scale.y - 0.5 * source_row);
+    }
+    return textureSample(src, src_samp, sample_uv);
+}
+
+fn sample_copy(uv: vec2f) -> vec4f {
+    let previous = source_sample(uv, -1.0);
+    let current = source_sample(uv, 0.0);
+    let next = source_sample(uv, 1.0);
+    let previous_rgb = vec3u(clamp(previous.rgb, vec3f(0.0), vec3f(1.0)) * 255.0);
+    let current_rgb = vec3u(clamp(current.rgb, vec3f(0.0), vec3f(1.0)) * 255.0);
+    let next_rgb = vec3u(clamp(next.rgb, vec3f(0.0), vec3f(1.0)) * 255.0);
+    let coefficients = copy_params.filter_coefficients.xyz;
+    let combined = previous_rgb * coefficients.x + current_rgb * coefficients.y + next_rgb * coefficients.z;
+    var filtered = combined / 64u;
+    if (coefficients.x + coefficients.y + coefficients.z >= 128u) {
+        filtered = filtered & vec3u(0x1ffu);
+    }
+    filtered = min(filtered, vec3u(255u));
+    return vec4f(vec3f(filtered) / 255.0, current.a);
 }
 
 fn intensity(rgb: vec3f) -> f32 {
@@ -112,14 +144,14 @@ fn gx_z24(uv: vec2f) -> u32 {
 // Passthrough blit (for scaling)
 static constexpr std::string_view FragPassthrough = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    return textureSample(src, src_samp, in.uv);
+    return sample_copy(in.uv);
 }
 )"sv;
 
 // GX_TF_I4: 4-bit intensity -> R8Unorm (quantized)
 static constexpr std::string_view FragI4 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let rgb = textureSample(src, src_samp, in.uv).rgb;
+    let rgb = sample_copy(in.uv).rgb;
     let i = quantize4(intensity(rgb));
     return vec4f(i, i, i, i);
 }
@@ -128,7 +160,7 @@ static constexpr std::string_view FragI4 = R"(
 // GX_TF_I8: 8-bit intensity -> R8Unorm
 static constexpr std::string_view FragI8 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let rgb = textureSample(src, src_samp, in.uv).rgb;
+    let rgb = sample_copy(in.uv).rgb;
     let i = intensity(rgb);
     return vec4f(i, i, i, i);
 }
@@ -137,7 +169,7 @@ static constexpr std::string_view FragI8 = R"(
 // GX_TF_IA4: 4-bit intensity + 4-bit alpha -> RG8Unorm
 static constexpr std::string_view FragIA4 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let c = textureSample(src, src_samp, in.uv);
+    let c = sample_copy(in.uv);
     let i = quantize4(intensity(c.rgb));
     let a = quantize4(c.a);
     return vec4f(i, i, i, a);
@@ -147,7 +179,7 @@ static constexpr std::string_view FragIA4 = R"(
 // GX_TF_IA8: 8-bit intensity + 8-bit alpha -> RG8Unorm
 static constexpr std::string_view FragIA8 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let c = textureSample(src, src_samp, in.uv);
+    let c = sample_copy(in.uv);
     let i = intensity(c.rgb);
     return vec4f(i, i, i, c.a);
 }
@@ -156,7 +188,7 @@ static constexpr std::string_view FragIA8 = R"(
 // GX_TF_RGB565: Blit alpha to 1.0
 static constexpr std::string_view FragRGB565 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let c = textureSample(src, src_samp, in.uv);
+    let c = sample_copy(in.uv);
     return vec4f(c.rgb, 1.0);
 }
 )"sv;
@@ -164,7 +196,7 @@ static constexpr std::string_view FragRGB565 = R"(
 // GX_CTF_R4: 4-bit red -> R8Unorm
 static constexpr std::string_view FragR4 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let r = quantize4(textureSample(src, src_samp, in.uv).r);
+    let r = quantize4(sample_copy(in.uv).r);
     return vec4f(r, r, r, r);
 }
 )"sv;
@@ -172,7 +204,7 @@ static constexpr std::string_view FragR4 = R"(
 // GX_CTF_RA4: 4-bit red + 4-bit alpha -> RG8Unorm
 static constexpr std::string_view FragRA4 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let c = textureSample(src, src_samp, in.uv);
+    let c = sample_copy(in.uv);
     let r = quantize4(c.r);
     return vec4f(r, r, r, quantize4(c.a));
 }
@@ -181,7 +213,7 @@ static constexpr std::string_view FragRA4 = R"(
 // GX_CTF_RA8: 8-bit red + 8-bit alpha -> RG8Unorm
 static constexpr std::string_view FragRA8 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let c = textureSample(src, src_samp, in.uv);
+    let c = sample_copy(in.uv);
     return vec4f(c.r, c.r, c.r, c.a);
 }
 )"sv;
@@ -189,7 +221,7 @@ static constexpr std::string_view FragRA8 = R"(
 // GX_CTF_A8: 8-bit alpha -> R8Unorm
 static constexpr std::string_view FragA8 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let a = textureSample(src, src_samp, in.uv).a;
+    let a = sample_copy(in.uv).a;
     return vec4f(a, a, a, a);
 }
 )"sv;
@@ -197,7 +229,7 @@ static constexpr std::string_view FragA8 = R"(
 // GX_CTF_R8: 8-bit red -> R8Unorm
 static constexpr std::string_view FragR8 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let r = textureSample(src, src_samp, in.uv).r;
+    let r = sample_copy(in.uv).r;
     return vec4f(r, r, r, r);
 }
 )"sv;
@@ -205,7 +237,7 @@ static constexpr std::string_view FragR8 = R"(
 // GX_CTF_G8: 8-bit green -> R8Unorm
 static constexpr std::string_view FragG8 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let g = textureSample(src, src_samp, in.uv).g;
+    let g = sample_copy(in.uv).g;
     return vec4f(g, g, g, g);
 }
 )"sv;
@@ -213,7 +245,7 @@ static constexpr std::string_view FragG8 = R"(
 // GX_CTF_B8: 8-bit blue -> R8Unorm
 static constexpr std::string_view FragB8 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let b = textureSample(src, src_samp, in.uv).b;
+    let b = sample_copy(in.uv).b;
     return vec4f(b, b, b, b);
 }
 )"sv;
@@ -221,7 +253,7 @@ static constexpr std::string_view FragB8 = R"(
 // GX_CTF_RG8: 8-bit red + 8-bit green -> RG8Unorm
 static constexpr std::string_view FragRG8 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let c = textureSample(src, src_samp, in.uv);
+    let c = sample_copy(in.uv);
     return vec4f(c.r, c.r, c.r, c.g);
 }
 )"sv;
@@ -229,7 +261,7 @@ static constexpr std::string_view FragRG8 = R"(
 // GX_CTF_GB8: 8-bit green + 8-bit blue -> RG8Unorm
 static constexpr std::string_view FragGB8 = R"(
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let c = textureSample(src, src_samp, in.uv);
+    let c = sample_copy(in.uv);
     return vec4f(c.g, c.g, c.g, c.b);
 }
 )"sv;
@@ -468,7 +500,7 @@ void initialize() {
       },
       wgpu::BindGroupLayoutEntry{
           .binding = 2,
-          .visibility = wgpu::ShaderStage::Vertex,
+          .visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment,
           .buffer =
               wgpu::BufferBindingLayout{
                   .type = wgpu::BufferBindingType::Uniform,

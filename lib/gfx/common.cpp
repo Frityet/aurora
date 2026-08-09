@@ -3,6 +3,7 @@
 #include "clear.hpp"
 #include "depth_peek.hpp"
 #include "../internal.hpp"
+#include "../dolphin/vi/vi_internal.hpp"
 #include "../webgpu/gpu.hpp"
 #include "../webgpu/gpu_prof.hpp"
 #include "../gx/pipeline.hpp"
@@ -233,6 +234,7 @@ struct RenderPass {
   GXTexFmt resolveFormat = GX_TF_RGBA8;
   ClipRect resolveRect;
   Range resolveUniformRange;
+  CopyFilter copyFilter;
   // Full-target snapshots for the public resolve_pass API
   wgpu::Texture snapshotColorDst;
   wgpu::TextureView snapshotDepthDst;
@@ -252,12 +254,16 @@ struct RenderPass {
   bool hasStencil = false;
   bool hasDraws = false;
   bool discardable = false;
-  bool captureDepthSnapshot = false;
+  bool captureLegacyDepthSnapshot = false;
+  std::optional<depth_peek::SnapshotCapture> taggedDepthSnapshot;
   bool sealed = false;
   std::vector<tex_palette_conv::ConvRequest> paletteConvs;
 
   // Something copies this pass's output after it ends: a GX resolve or resolve_pass snapshots.
-  bool has_consumer() const { return resolveTarget || snapshotColorDst || snapshotDepthDst; }
+  bool has_consumer() const {
+    return resolveTarget || snapshotColorDst || snapshotDepthDst || captureLegacyDepthSnapshot ||
+           taggedDepthSnapshot.has_value();
+  }
   // The pass mutates its attachments: draws or pending clears.
   bool has_content() const { return hasDraws || clearColor || clearDepth; }
 };
@@ -825,22 +831,47 @@ PipelineRef pipeline_ref(const clear::PipelineConfig& config) {
 }
 
 void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
-                       Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat) {
+                       Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat,
+                       CopyFilter copyFilter) {
   // Resolve current render pass
   auto& prevPass = current_render_passes()[g_currentRenderPass];
   prevPass.resolveTarget = std::move(texture);
   prevPass.resolveRect = rect;
   prevPass.resolveFormat = resolveFormat;
+  prevPass.copyFilter = copyFilter;
   // Push UV transform uniform for tex_copy_conv (crop region in UV space)
   const auto srcW = static_cast<float>(prevPass.targetSize.width);
   const auto srcH = static_cast<float>(prevPass.targetSize.height);
-  const std::array uvTransform{
-      static_cast<float>(rect.x) / srcW,
-      static_cast<float>(rect.y) / srcH,
-      static_cast<float>(rect.width) / srcW,
-      static_cast<float>(rect.height) / srcH,
+  struct CopyUniformBlock {
+    std::array<float, 4> uvTransform;
+    std::array<uint32_t, 4> filterCoefficients;
+    std::array<uint32_t, 4> clampFlags;
   };
-  prevPass.resolveUniformRange = push_uniform(uvTransform);
+  const CopyUniformBlock uniforms{
+      .uvTransform =
+          {
+              static_cast<float>(rect.x) / srcW,
+              static_cast<float>(rect.y) / srcH,
+              static_cast<float>(rect.width) / srcW,
+              static_cast<float>(rect.height) / srcH,
+          },
+      .filterCoefficients =
+          {
+              copyFilter.coefficients[0],
+              copyFilter.coefficients[1],
+              copyFilter.coefficients[2],
+              0,
+          },
+      .clampFlags =
+          {
+              copyFilter.clampTop ? 1u : 0u,
+              copyFilter.clampBottom ? 1u : 0u,
+              0,
+              0,
+          },
+  };
+  static_assert(sizeof(CopyUniformBlock) == 48);
+  prevPass.resolveUniformRange = push_uniform(uniforms);
   enqueue_pass(current_frame_packet(), g_recordingFrameSlot, g_currentRenderPass);
 
   // Populate new render pass from previous
@@ -1228,6 +1259,46 @@ static void resume_efb_pass_loading(const RenderPass& prevPass) {
   ++g_currentRenderPass;
   push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
+}
+
+void request_depth_snapshot(uint64_t rawId) noexcept {
+  const auto id = static_cast<AuroraDepthSnapshotId>(rawId);
+  if (id == AURORA_INVALID_DEPTH_SNAPSHOT_ID) {
+    return;
+  }
+  if (g_recordingFrame == nullptr || g_currentRenderPass == UINT32_MAX || g_inOffscreen) {
+    depth_peek::drop_snapshot(id);
+    return;
+  }
+
+  auto& frame = current_frame_packet();
+  auto& prevPass = current_render_passes()[g_currentRenderPass];
+  auto snapshotSize = vi::configured_fb_size();
+  const auto viewportPolicy = gx::g_gxState.viewportPolicy;
+  if (viewportPolicy == AURORA_VIEWPORT_NATIVE) {
+    snapshotSize = {prevPass.targetSize.width, prevPass.targetSize.height};
+  }
+
+  depth_peek::SnapshotCapture capture{
+      .info =
+          {
+              .id = id,
+              .frameId = frame.frameId,
+              .width = snapshotSize.x,
+              .height = snapshotSize.y,
+              .viewportNear = gx::g_gxState.logicalViewport.znear,
+              .viewportFar = gx::g_gxState.logicalViewport.zfar,
+          },
+      .viewportPolicy = viewportPolicy,
+  };
+  if (!depth_peek::set_snapshot_info(id, capture.info)) {
+    return;
+  }
+
+  prevPass.taggedDepthSnapshot = capture;
+  prevPass.discardable = false;
+  enqueue_pass(frame, g_recordingFrameSlot, g_currentRenderPass);
+  resume_efb_pass_loading(prevPass);
 }
 
 EncoderTaskId register_encoder_task_type(const EncoderTaskDescriptor& desc) {
@@ -1669,7 +1740,7 @@ void finish() {
     auto& frame = current_frame_packet();
     frame.uniforms.append_zeroes(gx::MaxUniformSize);
     auto& pass = frame.renderPasses[g_currentRenderPass];
-    pass.captureDepthSnapshot = true;
+    pass.captureLegacyDepthSnapshot = depth_peek::snapshot_requested();
     enqueue_pass(frame, g_recordingFrameSlot, g_currentRenderPass);
     g_currentRenderPass = UINT32_MAX;
   }
@@ -1762,7 +1833,7 @@ static void expire_cached_bind_groups() {
 }
 
 static void wait_for_copy_pass_pipelines(const RenderPass& pass) {
-  if (!pass.resolveTarget) {
+  if (!pass.has_consumer()) {
     return;
   }
 
@@ -1942,8 +2013,12 @@ static void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& pa
   render_pass(pass, frame, passInfo);
   pass.End();
 
-  if (passInfo.captureDepthSnapshot) {
+  if (passInfo.captureLegacyDepthSnapshot) {
     depth_peek::encode_frame_snapshot(cmd, passInfo.copySourceDepthView, passInfo.targetSize, passInfo.msaaSamples);
+  }
+  if (passInfo.taggedDepthSnapshot) {
+    depth_peek::encode_tagged_snapshot(cmd, passInfo.copySourceDepthView, passInfo.targetSize, passInfo.msaaSamples,
+                                       *passInfo.taggedDepthSnapshot);
   }
 
   if (passInfo.resolveTarget) {
@@ -1951,6 +2026,7 @@ static void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& pa
     const bool needsConversion = tex_copy_conv::needs_conversion(passInfo.resolveFormat);
     const bool needsScaling = dstSize.width != static_cast<uint32_t>(passInfo.resolveRect.width) ||
                               dstSize.height != static_cast<uint32_t>(passInfo.resolveRect.height);
+    const bool needsFiltering = passInfo.copyFilter.has_effect();
     const bool isDepth = gx::is_depth_format(passInfo.resolveFormat);
     if (isDepth && passInfo.msaaSamples > 1) {
       Log.fatal("Depth tex copies from multisampled EFB targets are not supported");
@@ -1964,7 +2040,7 @@ static void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& pa
     };
     if (needsConversion) {
       tex_copy_conv::run(cmd, convReq);
-    } else if (needsScaling) {
+    } else if (needsScaling || needsFiltering) {
       tex_copy_conv::blit(cmd, convReq);
     } else {
       const webgpu::gpu_prof::Zone zone{cmd, "EFB copy"};

@@ -82,6 +82,18 @@ extern "C" {
 #define GX_AURORA_END_OFFSCREEN 0x003A
 
 /**
+ * Captures the depth buffer at this exact point in the GX FIFO stream.
+ * Must be followed by an AuroraDepthSnapshotId.
+ */
+#define GX_AURORA_REQUEST_TAGGED_DEPTH_SNAPSHOT 0x003B
+
+/**
+ * Loads the effective GX display-copy sample pattern and vertical filter in FIFO order.
+ * Followed by aa/vfilter enable bytes, 24 sample-position bytes, and seven filter coefficients.
+ */
+#define GX_AURORA_LOAD_COPY_FILTER 0x003C
+
+/**
  * Draw primitives with the vertex count derived from a byte length, as written by
  * GXBegin(prim, fmt, GX_AUTO). Must be followed by a u8 draw opcode (vtxfmt|prim),
  * a u32 vertex data byte length, then that many bytes of vertex data. The byte length
@@ -126,6 +138,50 @@ typedef enum _AuroraViewportPolicy {
   AURORA_VIEWPORT_STRETCH = 1, // Match content framebuffer aspect to the native surface
   AURORA_VIEWPORT_NATIVE = 2,  // Use active framebuffer pixels directly
 } AuroraViewportPolicy;
+
+typedef u64 AuroraDepthSnapshotId;
+
+#define AURORA_INVALID_DEPTH_SNAPSHOT_ID ((AuroraDepthSnapshotId)0)
+
+typedef enum _AuroraDepthSnapshotStatus {
+  AURORA_DEPTH_SNAPSHOT_UNKNOWN = 0,
+  AURORA_DEPTH_SNAPSHOT_PENDING = 1,
+  AURORA_DEPTH_SNAPSHOT_READY = 2,
+  AURORA_DEPTH_SNAPSHOT_DROPPED = 3,
+} AuroraDepthSnapshotStatus;
+
+typedef struct _AuroraDepthSnapshotInfo {
+  AuroraDepthSnapshotId id;
+  u64 frameId;
+  u32 width;
+  u32 height;
+  f32 viewportNear;
+  f32 viewportFar;
+} AuroraDepthSnapshotInfo;
+
+/**
+ * Requests an asynchronous depth snapshot at this exact point in the GX FIFO.
+ * The returned ID remains queryable until released or expired by the bounded
+ * snapshot store. Zero is never returned for a valid request.
+ */
+AuroraDepthSnapshotId GXAuroraRequestDepthSnapshot(void);
+
+/**
+ * Returns the request status and, when known, its immutable frame/viewport
+ * metadata. The snapshot pixel grid is width by height.
+ */
+AuroraDepthSnapshotStatus GXAuroraGetDepthSnapshotInfo(AuroraDepthSnapshotId id, AuroraDepthSnapshotInfo* info);
+
+/**
+ * Reads one GX Z24 value from a completed snapshot. Returns FALSE unless the
+ * exact requested ID is ready and the coordinates are in bounds.
+ */
+BOOL GXAuroraReadDepthSnapshotZ(AuroraDepthSnapshotId id, u16 x, u16 y, u32* z);
+
+/**
+ * Releases a tagged snapshot. Subsequent queries for the ID return UNKNOWN.
+ */
+void GXAuroraReleaseDepthSnapshot(AuroraDepthSnapshotId id);
 
 /**
  * Configures content framebuffer sizing and how GXSetViewport/GXSetScissor parameters are applied to rendering.

@@ -67,6 +67,23 @@ u32 align_copy_row_pitch(u32 bytesPerRow) {
   constexpr u32 kTextureBytesPerRowAlignment = 256;
   return (bytesPerRow + kTextureBytesPerRowAlignment - 1u) & ~(kTextureBytesPerRowAlignment - 1u);
 }
+
+aurora::gfx::CopyFilter current_copy_filter() noexcept {
+  // GX's non-AA copy path groups its seven vertical taps onto the previous,
+  // current, and next EFB rows. The programmable 12-position AA resolve is
+  // retained in GXState but deliberately not approximated here.
+  const auto& filter = g_gxState.dispCopy.vfilter;
+  return {
+      .coefficients =
+          {
+              static_cast<u32>(filter[0]) + static_cast<u32>(filter[1]),
+              static_cast<u32>(filter[2]) + static_cast<u32>(filter[3]) + static_cast<u32>(filter[4]),
+              static_cast<u32>(filter[5]) + static_cast<u32>(filter[6]),
+          },
+      .clampTop = (g_gxState.dispCopy.clamp & GX_CLAMP_TOP) != 0,
+      .clampBottom = (g_gxState.dispCopy.clamp & GX_CLAMP_BOTTOM) != 0,
+  };
+}
 } // namespace
 
 namespace aurora::gx {
@@ -272,7 +289,7 @@ void copy_tex(const void* dest, GXBool clear) noexcept {
   const auto clearAlpha = clear && g_gxState.alphaUpdate;
   const auto clearDepth = clear && g_gxState.depthUpdate;
   gfx::resolve_pass_into(handle.handle, rect, clearColor, clearAlpha, clearDepth, g_gxState.clearColor,
-                         clear_depth_value(), texCopyFmt);
+                         clear_depth_value(), texCopyFmt, current_copy_filter());
   ++handle.revision;
   g_gxState.copyTextures[dest] = handle;
   texture::invalidate_bindings();
@@ -412,7 +429,42 @@ void GXSetCopyClear(GXColor color, u32 depth) {
   __gx->bpSent = 1;
 }
 
-void GXSetCopyFilter(GXBool aa, u8 sample_pattern[12][2], GXBool vf, u8 vfilter[7]) {}
+void GXSetCopyFilter(GXBool aa, const u8 sample_pattern[12][2], GXBool vf, const u8 vfilter[7]) {
+  const bool aaEnabled = aa != GX_FALSE;
+  const bool vfilterEnabled = vf != GX_FALSE;
+  auto effectiveSamplePattern = g_gxState.dispCopy.samplePattern;
+  auto effectiveVFilter = g_gxState.dispCopy.vfilter;
+
+  if (aaEnabled && sample_pattern != nullptr) {
+    for (size_t sample = 0; sample < effectiveSamplePattern.size(); ++sample) {
+      effectiveSamplePattern[sample][0] = sample_pattern[sample][0];
+      effectiveSamplePattern[sample][0] &= 0x0f;
+      effectiveSamplePattern[sample][1] = sample_pattern[sample][1] & 0x0f;
+    }
+  } else {
+    effectiveSamplePattern.fill({6, 6});
+  }
+
+  if (vfilterEnabled && vfilter != nullptr) {
+    std::copy_n(vfilter, effectiveVFilter.size(), effectiveVFilter.begin());
+    for (auto& coefficient : effectiveVFilter) {
+      coefficient &= 0x3f;
+    }
+  } else {
+    effectiveVFilter = aurora::gx::GXState::DisplayCopyState::DefaultVFilter;
+  }
+
+  GX_WRITE_AURORA(GX_AURORA_LOAD_COPY_FILTER);
+  GX_WRITE_U8(aaEnabled);
+  GX_WRITE_U8(vfilterEnabled);
+  for (const auto& sample : effectiveSamplePattern) {
+    GX_WRITE_U8(sample[0]);
+    GX_WRITE_U8(sample[1]);
+  }
+  for (const auto coefficient : effectiveVFilter) {
+    GX_WRITE_U8(coefficient);
+  }
+}
 
 void GXSetDispCopyGamma(GXGamma gamma) { g_gxState.dispCopy.gamma = gamma; }
 
@@ -445,7 +497,7 @@ void GXCopyDisp(void* dest, GXBool clear) {
   const auto clearAlpha = clear && g_gxState.alphaUpdate;
   const auto clearDepth = clear && g_gxState.depthUpdate;
   aurora::gfx::resolve_pass_into(handle.handle, rect, clearColor, clearAlpha, clearDepth, g_gxState.clearColor,
-                                 aurora::gx::clear_depth_value(), GX_TF_RGBA8);
+                                 aurora::gx::clear_depth_value(), GX_TF_RGBA8, current_copy_filter());
   ++handle.revision;
   g_gxState.frameDisplayCopyKey = key;
   g_gxState.frameDisplayCopyValid = true;

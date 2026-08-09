@@ -6,6 +6,7 @@
 #include "gfx/clear.hpp"
 #include "gfx/common.hpp"
 #include "gfx/depth_peek.hpp"
+#include "gfx/depth_snapshot_store.hpp"
 #include "gfx/tex_copy_conv.hpp"
 #include "gfx/tex_palette_conv.hpp"
 #include "gfx/texture.hpp"
@@ -48,6 +49,7 @@ uint32_t g_drawCallCount = 0;
 uint32_t g_mergedDrawCallCount = 0;
 bool is_frame_active() noexcept { return false; }
 void gpu_synchronize() {}
+void request_depth_snapshot(uint64_t id) noexcept { depth_peek::drop_snapshot(id); }
 } // namespace aurora::gfx
 
 namespace aurora::webgpu {
@@ -186,6 +188,8 @@ wgpu::SamplerDescriptor TextureBind::get_descriptor() const noexcept { return wg
 
 // --- Texture creation/write/replacement stubs ---
 namespace aurora::gfx {
+std::vector<CopyFilter> g_testResolvedCopyFilters;
+
 TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mips, u32 gxFormat,
                                     ArrayRef<uint8_t> data, bool tlut, const char* label) noexcept {
   return {};
@@ -203,7 +207,10 @@ void queue_texture_upload(TextureUpload upload) {}
 void queue_texture_upload_data(const uint8_t* data, size_t length, uint32_t bytesPerRow, uint32_t rowsPerImage,
                                wgpu::TexelCopyTextureInfo tex, wgpu::Extent3D size) {}
 void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
-                       Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat) {}
+                       Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat,
+                       CopyFilter copyFilter) {
+  g_testResolvedCopyFilters.push_back(copyFilter);
+}
 void queue_palette_conv(tex_palette_conv::ConvRequest req) {}
 void begin_offscreen(uint32_t width, uint32_t height) {}
 void end_offscreen() {}
@@ -216,14 +223,30 @@ bool s_snapshotRequested = false;
 uint32_t s_width = 0;
 uint32_t s_height = 0;
 std::vector<uint32_t> s_data;
+detail::SnapshotStore s_snapshots;
 } // namespace
 
 void initialize() {}
 void shutdown() {}
+AuroraDepthSnapshotId create_snapshot() noexcept { return s_snapshots.create(); }
+bool set_snapshot_info(AuroraDepthSnapshotId id, const AuroraDepthSnapshotInfo& info) noexcept {
+  return s_snapshots.set_info(id, info);
+}
+AuroraDepthSnapshotStatus get_snapshot_info(AuroraDepthSnapshotId id, AuroraDepthSnapshotInfo* info) noexcept {
+  return s_snapshots.status(id, info);
+}
+bool read_snapshot(AuroraDepthSnapshotId id, uint16_t x, uint16_t y, uint32_t& z) noexcept {
+  return s_snapshots.read(id, x, y, z);
+}
+void release_snapshot(AuroraDepthSnapshotId id) noexcept { s_snapshots.release(id); }
+void drop_snapshot(AuroraDepthSnapshotId id) noexcept { s_snapshots.drop(id); }
 void request_snapshot() noexcept { s_snapshotRequested = true; }
+bool snapshot_requested() noexcept { return s_snapshotRequested; }
 void poll() noexcept {}
 void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
                            wgpu::Extent3D sourceSize, uint32_t msaaSamples) noexcept {}
+void encode_tagged_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
+                            wgpu::Extent3D sourceSize, uint32_t msaaSamples, const SnapshotCapture& capture) noexcept {}
 void after_submit() noexcept {}
 
 bool read_latest(uint16_t x, uint16_t y, uint32_t& z) noexcept {
@@ -240,6 +263,7 @@ void reset() noexcept {
   s_width = 0;
   s_height = 0;
   s_data.clear();
+  s_snapshots.reset();
 }
 
 bool snapshot_requested() noexcept { return s_snapshotRequested; }
@@ -248,6 +272,13 @@ void set_latest(uint32_t width, uint32_t height, const std::vector<uint32_t>& da
   s_width = width;
   s_height = height;
   s_data = data;
+}
+
+void complete_snapshot(AuroraDepthSnapshotId id, const AuroraDepthSnapshotInfo& info,
+                       std::vector<uint32_t> data) noexcept {
+  if (s_snapshots.set_info(id, info)) {
+    s_snapshots.complete(id, std::move(data));
+  }
 }
 } // namespace testing
 } // namespace aurora::gfx::depth_peek

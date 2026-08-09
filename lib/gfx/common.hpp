@@ -174,7 +174,7 @@ private:
 namespace aurora::gfx {
 inline constexpr bool UseTextureBuffer = true;
 inline constexpr uint64_t UniformBufferSize = 25165824;  // 24mb
-inline constexpr uint64_t VertexBufferSize = 5242880;    // 5mb
+inline constexpr uint64_t VertexBufferSize = 16777216;   // 16mb
 inline constexpr uint64_t IndexBufferSize = 2097152;     // 2mb
 inline constexpr uint64_t StorageBufferSize = 8388608;   // 8mb
 inline constexpr uint64_t TextureUploadSize = 25165824;  // 24mb
@@ -226,14 +226,23 @@ void invalidate_surface_resources() noexcept;
 bool begin_frame();
 void finish();
 void end_frame(EndFrameCallback callback);
+void request_depth_snapshot(uint64_t id) noexcept;
 uint32_t current_frame() noexcept;
 void render_pass(const wgpu::RenderPassEncoder& pass, uint32_t idx);
 void after_submit() noexcept;
 void gpu_synchronize();
 void after_present() noexcept;
 float calculate_fps() noexcept;
+struct CopyFilter {
+  std::array<uint32_t, 3> coefficients{0, 64, 0};
+  bool clampTop = false;
+  bool clampBottom = false;
+
+  [[nodiscard]] bool has_effect() const noexcept { return coefficients != std::array<uint32_t, 3>{0, 64, 0}; }
+};
 void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
-                       Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat = GX_TF_RGBA8);
+                       Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat = GX_TF_RGBA8,
+                       CopyFilter copyFilter = {});
 
 struct ColorPassDescriptor {
   const char* label = nullptr;

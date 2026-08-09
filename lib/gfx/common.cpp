@@ -765,6 +765,24 @@ static void expire_cached_bind_groups() {
   }
 }
 
+static void wait_for_copy_pass_pipelines(const RenderPass& pass) {
+  if (!pass.resolveTarget) {
+    return;
+  }
+
+  for (const auto& command : pass.commands) {
+    if (command.type != CommandType::Draw) {
+      continue;
+    }
+
+    const auto& draw = command.data.draw;
+    const PipelineRef pipeline = draw.type == ShaderType::Clear ? draw.clear.pipeline : draw.gx.pipeline;
+    if (!wait_for_pipeline(pipeline)) {
+      Log.fatal("GX copy source pipeline {:016x} was neither cached nor pending", pipeline);
+    }
+  }
+}
+
 void render(wgpu::CommandEncoder& cmd) {
   ZoneScoped;
   for (u32 i = 0; i < g_renderPasses.size(); ++i) {
@@ -778,6 +796,11 @@ void render(wgpu::CommandEncoder& cmd) {
       // Skip intermediate render passes without resolve target
       continue;
     }
+
+    // A GX copy observes every draw issued before it. Cold pipeline creation may
+    // remain asynchronous for ordinary presentation, but a copied pass cannot
+    // legally drop a draw whose pipeline is still being compiled.
+    wait_for_copy_pass_pipelines(passInfo);
 
     const std::array attachments{
         wgpu::RenderPassColorAttachment{

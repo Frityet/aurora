@@ -3,6 +3,7 @@
 
 #include "../../gfx/tex_copy_conv.hpp"
 #include "../../gfx/texture.hpp"
+#include "../../gx/fifo.hpp"
 #include "../../window.hpp"
 #include "../../gfx/clear.hpp"
 #include "../../webgpu/gpu.hpp"
@@ -353,6 +354,7 @@ void GXCopyDisp(void* dest, GXBool clear) {
   if (!gpu_copy_ready()) {
     return;
   }
+  aurora::gx::fifo::drain();
 
   const auto rect = aurora::gx::map_logical_scissor(g_gxState.dispCopy.src);
   const auto [scaledWidth, scaledHeight] =
@@ -387,6 +389,7 @@ void GXCopyTex(void* dest, GXBool clear) {
   if (!gpu_copy_ready()) {
     return;
   }
+  aurora::gx::fifo::drain();
 
   const auto rect = aurora::gx::map_logical_scissor(g_gxState.texCopySrc);
   const auto [dstWidth, dstHeight] = scale_copy_dst(g_gxState.texCopyDstWidth, g_gxState.texCopyDstHeight);

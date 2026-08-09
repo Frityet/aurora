@@ -11,6 +11,7 @@
 #include <deque>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 #include <absl/container/flat_hash_map.h>
@@ -483,6 +484,7 @@ static void pipeline_worker() {
       g_pendingPipelines.erase(pending.hash);
       hasMore = !g_priorityPipelines.empty() || !g_backgroundPipelines.empty();
     }
+    g_pipelineCv.notify_all();
     if (!g_hasPipelineThread) {
       ++g_pipelinesPerFrame;
     }
@@ -650,6 +652,56 @@ bool get_pipeline(PipelineRef ref, wgpu::RenderPipeline& pipeline) {
     return false;
   }
   pipeline = it->second.pipeline;
+  return true;
+}
+
+bool wait_for_pipeline(PipelineRef ref) {
+  std::optional<PendingPipeline> pending;
+  {
+    std::unique_lock lock{g_pipelineMutex};
+    if (g_pipelines.contains(ref)) {
+      return true;
+    }
+    if (!g_pendingPipelines.contains(ref)) {
+      return false;
+    }
+
+    if (g_hasPipelineThread) {
+      g_pipelineCv.wait(lock, [ref] {
+        return g_pipelines.contains(ref) || !g_pendingPipelines.contains(ref) || g_pipelineThreadEnd;
+      });
+      return g_pipelines.contains(ref);
+    }
+
+    auto priorityIt = find_pending_pipeline(g_priorityPipelines, ref);
+    if (priorityIt != g_priorityPipelines.end()) {
+      pending.emplace(std::move(*priorityIt));
+      g_priorityPipelines.erase(priorityIt);
+    } else {
+      auto backgroundIt = find_pending_pipeline(g_backgroundPipelines, ref);
+      if (backgroundIt != g_backgroundPipelines.end()) {
+        pending.emplace(std::move(*backgroundIt));
+        g_backgroundPipelines.erase(backgroundIt);
+      }
+    }
+  }
+
+  if (!pending.has_value()) {
+    return false;
+  }
+
+  auto result = pending->create();
+  {
+    std::lock_guard lock{g_pipelineMutex};
+    g_pipelines.try_emplace(pending->hash, CachedPipeline{
+                                               .pipeline = std::move(result),
+                                               .firstFrameUsed = pending->firstFrameUsed,
+                                           });
+    g_pendingPipelines.erase(pending->hash);
+  }
+  g_pipelineCv.notify_all();
+  ++createdPipelines;
+  --queuedPipelines;
   return true;
 }
 

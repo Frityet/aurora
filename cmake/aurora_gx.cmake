@@ -16,6 +16,8 @@ add_library(aurora_gx STATIC
         lib/gx/pipeline.cpp
         lib/gx/shader.cpp
         lib/gx/shader_info.cpp
+        lib/rfl/CharacterResource.cpp
+        lib/rfl/CharacterModel.cpp
         lib/dolphin/gx/GXBump.cpp
         lib/dolphin/gx/GXCull.cpp
         lib/dolphin/gx/GXCpu2Efb.cpp

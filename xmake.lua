@@ -176,7 +176,7 @@ target("aurora-base")
               "lib/j_audio_stream.cpp", "lib/device.cpp", "lib/input.cpp", "lib/logging.cpp",
               "lib/system_info.cpp", "lib/rfl/ResourceArchive.cpp")
     add_headerfiles("include/(aurora/audio.hpp)", "include/(aurora/j_audio_sound_archive.hpp)",
-                    "include/(aurora/j_audio_stream.hpp)", "include/(aurora/rfl/**.hpp)")
+                    "include/(aurora/j_audio_stream.hpp)", "include/(aurora/rfl/ResourceArchive.hpp)")
     add_packages("fmt", "libsdl3", "xxhash", {public = true})
     add_packages("abseil", "sqlite3", "tracy")
 
@@ -288,6 +288,7 @@ if has_config("aurora_enable_gx") then
                   "lib/gx/command_processor.cpp", "lib/gx/destruction_state.cpp",
                   "lib/gx/fifo.cpp", "lib/gx/gx.cpp",
                   "lib/gx/pipeline.cpp", "lib/gx/shader.cpp", "lib/gx/shader_info.cpp",
+                  "lib/rfl/CharacterModel.cpp", "lib/rfl/CharacterResource.cpp",
                   "lib/dolphin/gx/GXBump.cpp", "lib/dolphin/gx/GXCull.cpp",
                   "lib/dolphin/gx/GXCpu2Efb.cpp", "lib/dolphin/gx/GXDispList.cpp",
                   "lib/dolphin/gx/GXDraw.cpp", "lib/dolphin/gx/GXExtra.cpp",
@@ -298,6 +299,7 @@ if has_config("aurora_enable_gx") then
                   "lib/dolphin/gx/GXTev.cpp", "lib/dolphin/gx/GXTexture.cpp",
                   "lib/dolphin/gx/GXTransform.cpp", "lib/dolphin/gx/GXVert.cpp",
                   "lib/dolphin/gx/GXAurora.cpp")
+        add_headerfiles("include/(aurora/rfl/CharacterModel.hpp)")
         add_deps("aurora-platform", "aurora-vi")
         add_packages("dawn-build", "xxhash", "abseil", "sqlite3", "tracy", "libpng", "zlib")
 

@@ -9,6 +9,7 @@
 #include "../gfx/texture.hpp"
 #include "../gfx/texture_convert.hpp"
 #include "../gfx/texture_replacement.hpp"
+#include "destruction_state.hpp"
 #include "gx_fmt.hpp"
 
 #include <absl/container/flat_hash_map.h>
@@ -584,6 +585,7 @@ static inline wgpu::PrimitiveState to_primitive_state(GXCullMode gx_cullMode) {
       .stripIndexFormat = wgpu::IndexFormat::Undefined,
       .frontFace = wgpu::FrontFace::CW,
       .cullMode = cullMode,
+      .unclippedDepth = true,
   };
 }
 
@@ -934,6 +936,9 @@ void initialize() noexcept {
 }
 
 void shutdown() noexcept {
+  // Stop late resource destructors before dismantling GX-owned caches. The
+  // lifecycle lock also waits for any command that was already being emitted.
+  shutdown_destruction_state();
   // TODO we should probably store this all in g_state.gx instead
   sSamplerBindGroupLayout = {};
   sTextureBindGroupLayout = {};

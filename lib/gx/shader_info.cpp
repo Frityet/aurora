@@ -1,5 +1,6 @@
 #include "shader_info.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include <tracy/Tracy.hpp>
@@ -362,7 +363,10 @@ gfx::Range build_uniform(const ShaderInfo& info, u32 vtxStart, const BindGroupRa
   buf.append<f32>(g_gxState.renderViewport.height);
   buf.append<f32>(g_gxState.logicalViewport.width);
   buf.append<f32>(g_gxState.logicalViewport.height);
-  buf.append_zeroes(8); // pad
+  const auto minDepth = UseReversedZ ? 1.f - g_gxState.logicalViewport.zfar : g_gxState.logicalViewport.znear;
+  const auto maxDepth = UseReversedZ ? 1.f - g_gxState.logicalViewport.znear : g_gxState.logicalViewport.zfar;
+  buf.append<f32>(minDepth);
+  buf.append<f32>(maxDepth);
   for (const auto& vaRange : ranges.vaRanges) {
     buf.append<u32>(vaRange.offset);
   }

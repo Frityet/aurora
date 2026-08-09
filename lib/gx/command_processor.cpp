@@ -1280,6 +1280,10 @@ static void handle_xf(const u8* data, u32& pos, u32 size, bool bigEndian) {
       u32 reg = xfAddr + i;
       u32 val = read_u32(xfData + i * 4, bigEndian);
 
+      if (reg == 0x05 && val != GX_CLIP_ENABLE) {
+        FATAL("GX_CLIP_DISABLE is unsupported by Aurora's exact GX depth path");
+      }
+
       // Skip scalar register writes that haven't changed (viewport/projection handled below)
       if (reg <= 0x19 && val == g_gxState.xfRegCache[reg]) continue;
       if (reg <= 0x19) g_gxState.xfRegCache[reg] = val;
@@ -1384,12 +1388,12 @@ static void handle_xf(const u8* data, u32& pos, u32 size, bool bigEndian) {
           f32 width = sx * 2.0f;
           f32 height = -sy * 2.0f;
           set_logical_viewport({
-              .left = ox - 340.0f - width / 2.0f,
-              .top = oy - 340.0f - height / 2.0f,
+              .left = ox - 342.0f - width / 2.0f,
+              .top = oy - 342.0f - height / 2.0f,
               .width = width,
               .height = height,
-              .znear = (oz - sz) / 1.6777215e7f,
-              .zfar = oz / 1.6777215e7f,
+              .znear = (oz - sz) / 16777216.0f,
+              .zfar = oz / 16777216.0f,
           });
         }
         break;

@@ -1,6 +1,7 @@
 #include "gx.hpp"
 #include "__gx.h"
 
+#include "../../gx/destruction_state.hpp"
 #include "../../gx/fifo.hpp"
 
 #include <cstring>
@@ -27,9 +28,12 @@ GXFifoObj* GXInit(void* base, u32 size) {
   __gx->dlSaveContext = 1;
   __gx->tcsManEnab = 0;
   __gx->vNum = 0;
+  __gx->zScale = 16777216.0f;
+  __gx->zOffset = 0.0f;
 
   // Initialize FIFO subsystem
   aurora::gx::fifo::init();
+  aurora::gx::initialize_destruction_state();
   GXInitFifoBase(&sFifoObj, base, size);
   GXSetCPUFifo(&sFifoObj);
   GXSetGPFifo(&sFifoObj);
@@ -310,6 +314,9 @@ void __GXSetDirtyState() {
   }
   if (__gx->dirtyState & 0x10) {
     __GXSetVAT();
+  }
+  if (__gx->dirtyState & 0x10000000) {
+    __GXSetViewport();
   }
   __gx->dirtyState = 0;
 }

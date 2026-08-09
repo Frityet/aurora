@@ -30,10 +30,59 @@ target_link_libraries(wpad_tests PRIVATE gtest gtest_main)
 gtest_discover_tests(wpad_tests)
 
 if (AURORA_ENABLE_GX)
+  add_executable(gx_destruction_state_tests
+    gx_destruction_state_test.cpp
+    ../lib/gx/destruction_state.cpp
+  )
+  target_include_directories(gx_destruction_state_tests PRIVATE ../lib)
+  target_link_libraries(gx_destruction_state_tests PRIVATE gtest gtest_main)
+  gtest_discover_tests(gx_destruction_state_tests)
+
+  add_executable(gx_z_scale_offset_render_test
+    gx_z_scale_offset_render_test.cpp
+    ../lib/compat.cpp
+  )
+  target_link_libraries(gx_z_scale_offset_render_test PRIVATE aurora::core)
+
+  set(AURORA_GX_RENDER_TEST_RUNTIME_DIR "${CMAKE_CURRENT_BINARY_DIR}/gx_z_scale_offset_runtime")
+  set(AURORA_GX_RENDER_TEST_CONFIG_DIR "${CMAKE_CURRENT_BINARY_DIR}/gx_z_scale_offset_config")
+  set(AURORA_GX_RENDER_TEST_CACHE_DIR "${CMAKE_CURRENT_BINARY_DIR}/gx_z_scale_offset_cache")
+  file(MAKE_DIRECTORY
+    "${AURORA_GX_RENDER_TEST_RUNTIME_DIR}"
+    "${AURORA_GX_RENDER_TEST_CONFIG_DIR}"
+    "${AURORA_GX_RENDER_TEST_CACHE_DIR}"
+  )
+  file(CHMOD "${AURORA_GX_RENDER_TEST_RUNTIME_DIR}"
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+  )
+
+  find_program(AURORA_XVFB_RUN_EXECUTABLE xvfb-run)
+  if (AURORA_XVFB_RUN_EXECUTABLE)
+    add_test(NAME gx_z_scale_offset_render
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "XDG_RUNTIME_DIR=${AURORA_GX_RENDER_TEST_RUNTIME_DIR}"
+        "XDG_CONFIG_HOME=${AURORA_GX_RENDER_TEST_CONFIG_DIR}"
+        "XDG_CACHE_HOME=${AURORA_GX_RENDER_TEST_CACHE_DIR}"
+        "${AURORA_XVFB_RUN_EXECUTABLE}" -a $<TARGET_FILE:gx_z_scale_offset_render_test>
+    )
+  else ()
+    message(WARNING "xvfb-run was not found; gx_z_scale_offset_render will run directly and requires a usable display")
+    add_test(NAME gx_z_scale_offset_render
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "XDG_RUNTIME_DIR=${AURORA_GX_RENDER_TEST_RUNTIME_DIR}"
+        "XDG_CONFIG_HOME=${AURORA_GX_RENDER_TEST_CONFIG_DIR}"
+        "XDG_CACHE_HOME=${AURORA_GX_RENDER_TEST_CACHE_DIR}"
+        $<TARGET_FILE:gx_z_scale_offset_render_test>
+    )
+  endif ()
+  set_tests_properties(gx_z_scale_offset_render PROPERTIES LABELS gpu RUN_SERIAL TRUE)
+
+
   # GX FIFO round-trip tests
   # Compile GX sources directly to avoid pulling in the full renderer/WebGPU runtime
   add_executable(gx_fifo_tests
     gx_fifo_test.cpp
+    gx_z_scale_offset_test.cpp
     gx_test_stubs.cpp
     # GX API implementations (encoders)
     ../lib/dolphin/gx/GXBump.cpp
@@ -57,6 +106,7 @@ if (AURORA_ENABLE_GX)
     ../lib/dolphin/gx/GXVert.cpp
     # FIFO/command processor (encoder + decoder)
     ../lib/gx/fifo.cpp
+    ../lib/gx/destruction_state.cpp
     ../lib/gx/command_processor.cpp
   )
 

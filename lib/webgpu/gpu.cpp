@@ -704,6 +704,7 @@ static bool create_surface() {
 bool initialize(AuroraBackend auroraBackend, bool allowCpu, SwapchainInvalidationCallback invalidationCallback) {
   ASSERT(invalidationCallback != nullptr, "WebGPU requires a swapchain resource invalidator");
   g_swapchainInvalidationCallback = invalidationCallback;
+  g_bcTexturesSupported = false;
   if (!g_instance) {
     Log.info("Creating WebGPU instance");
     const std::array requiredInstanceFeatures{
@@ -821,6 +822,8 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu, SwapchainInvalidatio
         requiredLimits.maxDynamicStorageBuffersPerPipelineLayout, requiredLimits.maxStorageBuffersPerShaderStage,
         requiredLimits.minUniformBufferOffsetAlignment, requiredLimits.minStorageBufferOffsetAlignment);
     std::vector<wgpu::FeatureName> requiredFeatures;
+    auto depthClipControlSupported = false;
+    auto clipDistancesSupported = false;
     wgpu::SupportedFeatures supportedFeatures;
     g_adapter.GetFeatures(&supportedFeatures);
     for (size_t i = 0; i < supportedFeatures.featureCount; ++i) {
@@ -828,7 +831,21 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu, SwapchainInvalidatio
       if (feature == wgpu::FeatureName::TextureCompressionBC) {
         g_bcTexturesSupported = true;
         requiredFeatures.push_back(feature);
+      } else if (feature == wgpu::FeatureName::DepthClipControl) {
+        depthClipControlSupported = true;
+        requiredFeatures.push_back(feature);
+      } else if (feature == wgpu::FeatureName::ClipDistances) {
+        clipDistancesSupported = true;
+        requiredFeatures.push_back(feature);
       }
+    }
+    if (!depthClipControlSupported) {
+      Log.error("Graphics adapter does not support the required DepthClipControl feature");
+      return false;
+    }
+    if (!clipDistancesSupported) {
+      Log.error("Graphics adapter does not support the required ClipDistances feature");
+      return false;
     }
 #ifdef WEBGPU_DAWN
     wgpu::DawnCacheDeviceDescriptor cacheDescriptor({
@@ -959,6 +976,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu, SwapchainInvalidatio
 }
 
 void shutdown() {
+  g_bcTexturesSupported = false;
   g_CopyBindGroupLayout = {};
   g_CopyPipeline = {};
   g_CopyBindGroup = {};

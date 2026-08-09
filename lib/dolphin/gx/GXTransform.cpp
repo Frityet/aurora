@@ -116,35 +116,15 @@ void GXSetViewport(float left, float top, float width, float height, float nearZ
   GXSetViewportJitter(left, top, width, height, nearZ, farZ, 1);
 }
 
-void GXSetViewportJitter(float left, float top, float width, float height, float nearZ, float farZ, u32 field) {
-  float sx;
-  float sy;
-  float sz;
-  float ox;
-  float oy;
-  float oz;
-  float zmin;
-  float zmax;
-
-  if (field == 0) {
-    top -= 0.5f;
-  }
-
-  sx = width / 2.0f;
-  sy = -height / 2.0f;
-  ox = 340.0f + (left + width / 2.0f);
-  oy = 340.0f + (top + height / 2.0f);
-  zmin = 1.6777215e7f * nearZ;
-  zmax = 1.6777215e7f * farZ;
-  sz = zmax - zmin;
-  oz = zmax;
-
-  __gx->vpLeft = left;
-  __gx->vpTop = top;
-  __gx->vpWd = width;
-  __gx->vpHt = height;
-  __gx->vpNearz = nearZ;
-  __gx->vpFarz = farZ;
+void __GXSetViewport() {
+  const float sx = __gx->vpWd / 2.0f;
+  const float sy = -__gx->vpHt / 2.0f;
+  const float ox = __gx->vpLeft + (__gx->vpWd / 2.0f) + 342.0f;
+  const float oy = __gx->vpTop + (__gx->vpHt / 2.0f) + 342.0f;
+  const float zmin = __gx->vpNearz * __gx->zScale;
+  const float zmax = __gx->vpFarz * __gx->zScale;
+  const float sz = zmax - zmin;
+  const float oz = zmax + __gx->zOffset;
 
   GX_WRITE_U8(0x10);
   GX_WRITE_U32(0x0005101A);
@@ -155,6 +135,24 @@ void GXSetViewportJitter(float left, float top, float width, float height, float
   GX_WRITE_XF_REG_F(30, oy);
   GX_WRITE_XF_REG_F(31, oz);
   __gx->bpSent = 0;
+}
+
+void GXSetViewportJitter(float left, float top, float width, float height, float nearZ, float farZ, u32 field) {
+  if (field == 0) {
+    top -= 0.5f;
+  }
+
+  __gx->vpLeft = left;
+  __gx->vpTop = top;
+  __gx->vpWd = width;
+  __gx->vpHt = height;
+  __gx->vpNearz = nearZ;
+  __gx->vpFarz = farZ;
+
+  // Aurora's GXSetViewport path is eager, unlike the retail dirty-state path.
+  // Apply any pending Z scale/offset here and prevent a duplicate dirty flush.
+  __GXSetViewport();
+  __gx->dirtyState &= ~0x10000000u;
 }
 
 void GXProject(f32 x, f32 y, f32 z, const f32 mtx[3][4], const f32* pm, const f32* vp, f32* sx,
@@ -188,5 +186,10 @@ void GXProject(f32 x, f32 y, f32 z, const f32 mtx[3][4], const f32* pm, const f3
 // TODO GXLoadNrmMtxImm3x3
 // TODO GXLoadNrmMtxIndx3x3
 // TODO GXLoadTexMtxIndx
-// TODO GXSetZScaleOffset
+
+void GXSetZScaleOffset(f32 scale, f32 offset) {
+  __gx->zOffset = offset * 16777215.0f;
+  __gx->zScale = scale * 16777215.0f + 1.0f;
+  __gx->dirtyState |= 0x10000000u;
+}
 }

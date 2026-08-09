@@ -44,10 +44,14 @@ wgpu::Buffer g_indexBuffer;
 wgpu::Buffer g_storageBuffer;
 uint32_t g_drawCallCount = 0;
 uint32_t g_mergedDrawCallCount = 0;
+bool is_frame_active() noexcept { return false; }
 } // namespace aurora::gfx
 
 namespace aurora::webgpu {
 GraphicsConfig g_graphicsConfig{};
+wgpu::Device g_device;
+wgpu::Queue g_queue;
+wgpu::Instance g_instance;
 } // namespace aurora::webgpu
 
 // --- GXState (the real instance -- tests validate this) ---
@@ -91,6 +95,10 @@ void evict_copy_texture(const void* dest) noexcept {
       ++it;
     }
   }
+}
+bool has_copy_texture(const void* dest) noexcept {
+  const auto it = g_gxState.copyTextures.find(dest);
+  return it != g_gxState.copyTextures.end() && it->second.handle;
 }
 void shutdown() noexcept {}
 Vec2<uint32_t> logical_fb_size() noexcept { return {640, 480}; }
@@ -244,6 +252,21 @@ void register_tlut(const GXTlutObj*, const void*, GXTlutFmt, u16) noexcept {}
 void load_tlut(const GXTlutObj*, u32) noexcept {}
 std::optional<TextureHandle> find_replacement(const GXTexObj_&) noexcept { return std::nullopt; }
 } // namespace aurora::gfx::texture_replacement
+
+extern "C" {
+const void* wgpuBufferGetConstMappedRange(WGPUBuffer, size_t, size_t) { return nullptr; }
+WGPUFuture wgpuBufferMapAsync(WGPUBuffer, WGPUMapMode, size_t, size_t, WGPUBufferMapCallbackInfo) { return {}; }
+void wgpuBufferUnmap(WGPUBuffer) {}
+void wgpuCommandBufferRelease(WGPUCommandBuffer) {}
+void wgpuCommandEncoderCopyTextureToBuffer(WGPUCommandEncoder, const WGPUTexelCopyTextureInfo*,
+                                           const WGPUTexelCopyBufferInfo*, const WGPUExtent3D*) {}
+WGPUCommandBuffer wgpuCommandEncoderFinish(WGPUCommandEncoder, const WGPUCommandBufferDescriptor*) { return nullptr; }
+void wgpuCommandEncoderRelease(WGPUCommandEncoder) {}
+WGPUBuffer wgpuDeviceCreateBuffer(WGPUDevice, const WGPUBufferDescriptor*) { return nullptr; }
+WGPUCommandEncoder wgpuDeviceCreateCommandEncoder(WGPUDevice, const WGPUCommandEncoderDescriptor*) { return nullptr; }
+void wgpuInstanceProcessEvents(WGPUInstance) {}
+void wgpuQueueSubmit(WGPUQueue, size_t, const WGPUCommandBuffer*) {}
+}
 
 // --- Window stub ---
 #include "../lib/window.hpp"

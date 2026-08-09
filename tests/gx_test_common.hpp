@@ -6,6 +6,7 @@
 
 #include "gx/gx.hpp"
 #include "gx/fifo.hpp"
+#include "gx/destruction_state.hpp"
 #include "gx/command_processor.hpp"
 #include "gfx/depth_peek.hpp"
 
@@ -23,6 +24,8 @@ protected:
     aurora::gx::g_gxState = aurora::gx::GXState{};
     aurora::gfx::depth_peek::testing::reset();
   }
+
+  void TearDown() override { aurora::gx::shutdown_destruction_state(); }
 
   // Copy the internal FIFO buffer contents and clear it
   std::vector<u8> capture_fifo() {

@@ -958,6 +958,9 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
   } else {
     vtxXfrAttrsPre += "\n    out.pos.z += out.pos.w;";
   }
+  vtxXfrAttrsPre +=
+      "\n    out.clip_distances = array<f32, 2>(out.pos.z, out.pos.w - out.pos.z);"
+      "\n    out.pos.z = out.pos.w * ubuf.depth_range.x + out.pos.z * (ubuf.depth_range.y - ubuf.depth_range.x);";
   vtxXfrAttrsPre += fmt::format(
       "\n    let nrm_tmp = vec4f({}, 0.0) * ubuf.nrm_mtx[in_pnmtxidx];"
       "\n    let mv_nrm = select(nrm_tmp, normalize(nrm_tmp), dot(nrm_tmp, nrm_tmp) > 1e-10);",
@@ -1495,6 +1498,8 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
   }
 
   const auto shaderSource = fmt::format(R"""(
+enable clip_distances;
+
 fn bswap32(v: u32, le: bool) -> u32 {{
   if (le) {{
     return v;
@@ -1828,7 +1833,7 @@ struct Uniform {{
     current_pnmtx: u32,
     render_viewport_size: vec2f,
     logical_viewport_size: vec2f,
-    pad: vec2u,
+    depth_range: vec2f,
     array_start: array<u32, 12>,{0}
 }};
 @group(0) @binding(0)
@@ -1839,6 +1844,11 @@ var<storage, read> abuf: array<u32>;
 var<uniform> ubuf: Uniform;{1}
 
 struct VertexOutput {{
+    @builtin(position) pos: vec4f,
+    @builtin(clip_distances) clip_distances: array<f32, 2>,{2}
+}};
+
+struct FragmentInput {{
     @builtin(position) pos: vec4f,{2}
 }};
 
@@ -1851,7 +1861,7 @@ fn vs_main(
 }}
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4f {{{6}{5}
+fn fs_main(in: FragmentInput) -> @location(0) vec4f {{{6}{5}
     return prev;
 }}
 )""",

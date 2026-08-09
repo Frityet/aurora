@@ -24,6 +24,7 @@ void GXLoadNrmMtxImm(f32 mtx[3][4], u32 id);
 void GXLoadTexMtxImm(f32 mtx[][4], u32 id, GXTexMtxType type);
 #endif
 void GXSetViewport(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz);
+void GXSetZScaleOffset(f32 scale, f32 offset);
 void GXSetCurrentMtx(u32 id);
 void GXSetViewportJitter(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz, u32 field);
 void GXSetScissorBoxOffset(s32 x_off, s32 y_off);

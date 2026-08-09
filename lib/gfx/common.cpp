@@ -931,9 +931,7 @@ void render_pass(const wgpu::RenderPassEncoder& pass, u32 idx) {
     switch (cmd.type) {
     case CommandType::SetViewport: {
       const auto& vp = cmd.data.setViewport;
-      const float minDepth = gx::UseReversedZ ? 1.f - vp.zfar : vp.znear;
-      const float maxDepth = gx::UseReversedZ ? 1.f - vp.znear : vp.zfar;
-      pass.SetViewport(vp.left, vp.top, vp.width, vp.height, minDepth, maxDepth);
+      pass.SetViewport(vp.left, vp.top, vp.width, vp.height, 0.f, 1.f);
     } break;
     case CommandType::SetScissor: {
       const auto& sc = cmd.data.setScissor;

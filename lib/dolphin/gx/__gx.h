@@ -146,6 +146,8 @@ struct __GXData_struct {
   f32 vpHt;         // viewport height
   f32 vpNearz;      // viewport near Z
   f32 vpFarz;       // viewport far Z
+  f32 zOffset;      // viewport Z offset in EFB depth units
+  f32 zScale;       // viewport Z scale in EFB depth units
 
   u8 fgRange;       // fog range adjustment enabled
   f32 fgSideX;      // fog range side X
@@ -174,6 +176,7 @@ void __GXSetSUTexRegs();
 void __GXSetDirtyState();
 void __GXSetGenMode();
 void __GXSetMatrixIndex(GXAttr matIdxAttr);
+void __GXSetViewport();
 void __GXSendFlushPrim();
 void __GXFlushTextureState();
 };

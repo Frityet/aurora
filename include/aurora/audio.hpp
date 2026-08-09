@@ -55,8 +55,14 @@ struct PcmLayer {
   std::size_t loop_end = 0;
   float gain = 1.0F;
   float pitch_ratio = 1.0F;
+  float pitch_sweep_semitones = 0.0F;
+  double pitch_sweep_seconds = 0.0;
   float pan = 0.5F;
   double start_delay_seconds = 0.0;
+  // A nonzero gate schedules the layer's release independently of the host
+  // thread. This is how finite JAS sequence notes retain sample-accurate note
+  // timing while sharing the PCM mixer with streams and persistent sounds.
+  double gate_seconds = 0.0;
   double attack_seconds = 0.0;
   double release_seconds = 0.0;
   EnvelopeCurve attack_curve = EnvelopeCurve::Linear;
@@ -130,6 +136,10 @@ public:
   [[nodiscard]] std::optional<float> voice_gain_multiplier(VoiceToken token) const;
   [[nodiscard]] std::optional<float> voice_pitch_multiplier(VoiceToken token) const;
   [[nodiscard]] std::optional<bool> voice_paused(VoiceToken token) const;
+  // Counts output frames for which this voice actually advanced. Paused
+  // voices retain their exact source/envelope/ramp position and therefore do
+  // not increment this counter.
+  [[nodiscard]] std::optional<std::uint64_t> voice_rendered_frames(VoiceToken token) const;
 
   // Writes interleaved stereo float samples. The span length must be even.
   void render_interleaved(std::span<float> output);

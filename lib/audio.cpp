@@ -137,6 +137,7 @@ struct PcmAudioMixer::Impl {
   struct VoiceState {
     VoiceToken token;
     std::vector<LayerState> layers;
+    std::uint64_t rendered_frames = 0;
     float pitch_multiplier = 1.0F;
     GainRamp gain_ramp;
     bool stop_after_gain_ramp = false;
@@ -182,18 +183,25 @@ struct PcmAudioMixer::Impl {
     return 1.0F - remaining;
   }
 
+  void begin_layer_release(LayerState& layer) const {
+    if (layer.release_started || layer.finished) {
+      return;
+    }
+    layer.release_start_envelope = attack_envelope(layer);
+    layer.release_elapsed_seconds = 0.0;
+    layer.release_started = true;
+    if (layer.release_start_envelope <= 0.0F || layer.spec.release_seconds <= 0.0) {
+      layer.finished = true;
+    }
+  }
+
   void begin_release(VoiceState& voice) {
     if (voice.releasing) {
       return;
     }
     voice.releasing = true;
     for (auto& layer : voice.layers) {
-      layer.release_start_envelope = attack_envelope(layer);
-      layer.release_elapsed_seconds = 0.0;
-      layer.release_started = true;
-      if (layer.release_start_envelope <= 0.0F || layer.spec.release_seconds <= 0.0) {
-        layer.finished = true;
-      }
+      begin_layer_release(layer);
     }
   }
 
@@ -209,8 +217,10 @@ struct PcmAudioMixer::Impl {
         layer.samples != nullptr && layer.loop_start < layer.loop_end && layer.loop_end <= layer.samples->size();
     return layer.samples != nullptr && !layer.samples->empty() && layer.sample_rate != 0U && (finite || valid_loop) &&
            std::isfinite(layer.gain) && layer.gain >= 0.0F && std::isfinite(layer.pitch_ratio) &&
-           layer.pitch_ratio > 0.0F && std::isfinite(layer.pan) && layer.pan >= 0.0F && layer.pan <= 1.0F &&
-           std::isfinite(layer.start_delay_seconds) && layer.start_delay_seconds >= 0.0 &&
+           layer.pitch_ratio > 0.0F && std::isfinite(layer.pitch_sweep_semitones) &&
+           std::isfinite(layer.pitch_sweep_seconds) && layer.pitch_sweep_seconds >= 0.0 && std::isfinite(layer.pan) &&
+           layer.pan >= 0.0F && layer.pan <= 1.0F && std::isfinite(layer.start_delay_seconds) &&
+           layer.start_delay_seconds >= 0.0 && std::isfinite(layer.gate_seconds) && layer.gate_seconds >= 0.0 &&
            std::isfinite(layer.attack_seconds) && layer.attack_seconds >= 0.0 && std::isfinite(layer.release_seconds) &&
            layer.release_seconds >= 0.0;
   }
@@ -222,6 +232,17 @@ struct PcmAudioMixer::Impl {
       ++layer.elapsed_output_frames;
       layer.gain_ramp.advance();
       return 0.0F;
+    }
+
+    if (!layer.release_started && layer.spec.gate_seconds > 0.0) {
+      const auto gate_frames =
+          static_cast<std::uint64_t>(std::llround(layer.spec.gate_seconds * static_cast<double>(output_rate)));
+      if (layer.elapsed_output_frames - delay_frames >= gate_frames) {
+        begin_layer_release(layer);
+        if (layer.finished) {
+          return 0.0F;
+        }
+      }
     }
 
     auto envelope = attack_envelope(layer);
@@ -248,8 +269,16 @@ struct PcmAudioMixer::Impl {
     const auto sample = std::lerp(samples[position_floor], samples[next_position], fraction) * layer.spec.gain *
                         layer.gain_ramp.value() * envelope;
 
-    const auto step = static_cast<double>(layer.spec.sample_rate) / static_cast<double>(output_rate) *
-                      static_cast<double>(layer.spec.pitch_ratio) * static_cast<double>(voice_pitch);
+    auto layer_pitch = static_cast<double>(layer.spec.pitch_ratio);
+    if (layer.spec.pitch_sweep_seconds > 0.0) {
+      const auto age_frames = layer.elapsed_output_frames - delay_frames;
+      const auto progress = std::clamp(static_cast<double>(age_frames) /
+                                           (layer.spec.pitch_sweep_seconds * static_cast<double>(output_rate)),
+                                       0.0, 1.0);
+      layer_pitch *= std::exp2(static_cast<double>(layer.spec.pitch_sweep_semitones) * progress / 12.0);
+    }
+    const auto step = static_cast<double>(layer.spec.sample_rate) / static_cast<double>(output_rate) * layer_pitch *
+                      static_cast<double>(voice_pitch);
     layer.source_position += step;
     if (looping) {
       while (layer.source_position >= static_cast<double>(layer.spec.loop_end)) {
@@ -294,6 +323,7 @@ struct PcmAudioMixer::Impl {
             layer.finished = true;
           }
         }
+        ++voice.rendered_frames;
       }
       output[frame * 2U] = std::clamp(left, -1.0F, 1.0F);
       output[frame * 2U + 1U] = std::clamp(right, -1.0F, 1.0F);
@@ -669,6 +699,16 @@ std::optional<bool> PcmAudioMixer::voice_paused(VoiceToken token) const {
     return std::nullopt;
   }
   return voice->paused;
+}
+
+std::optional<std::uint64_t> PcmAudioMixer::voice_rendered_frames(VoiceToken token) const {
+  const auto lock = std::scoped_lock(m_impl->mutex);
+  m_impl->reclaim_finished_voices();
+  const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
+  if (voice == m_impl->voices.end()) {
+    return std::nullopt;
+  }
+  return voice->rendered_frames;
 }
 
 void PcmAudioMixer::render_interleaved(std::span<float> output) {

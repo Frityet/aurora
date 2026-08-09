@@ -115,6 +115,30 @@ void draw_quad(float left, float top, float right, float bottom, float z, GXColo
   GXEnd();
 }
 
+void draw_indexed_quad(float left, float top, float right, float bottom, float z, GXColor color) {
+  const std::array<std::array<float, 3>, 4> positions{{
+      {left, top, z},
+      {right, top, z},
+      {right, bottom, z},
+      {left, bottom, z},
+  }};
+
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+  GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+  GXSetArray(GX_VA_POS, positions.data(), sizeof(positions[0]));
+  GXBegin(GX_QUADS, GX_VTXFMT0, 4);
+  for (u8 index = 0; index < positions.size(); ++index) {
+    GXPosition1x8(index);
+    GXColor4u8(color.r, color.g, color.b, color.a);
+  }
+  GXEnd();
+
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+}
+
 [[nodiscard]] std::vector<std::uint8_t> read_display_copy() {
   auto width = 0U;
   auto height = 0U;
@@ -204,7 +228,10 @@ void prove_exact_mario_z_scale_offset() {
   // Moving nearer by more than the offset must still pass depth testing. This
   // also proves the exact-state pipeline really executed, rather than merely
   // leaving the reference image untouched after a validation failure.
-  draw_quad(0.0F, 0.0F, 1.0F, 1.0F, -0.4999F, Green);
+  // Use the retail three-argument indexed-array surface for the passing half.
+  // Native host floats must be decoded as little endian, and Aurora must
+  // derive exactly the four referenced position records before uploading.
+  draw_indexed_quad(0.0F, 0.0F, 1.0F, 1.0F, -0.4999F, Green);
 
   // The offset places the far endpoint just outside WebGPU's normal [0, 1]
   // clip volume. DepthClipControl must preserve it so viewport depth clamping
@@ -257,7 +284,7 @@ void prove_exact_mario_z_scale_offset() {
 int main() {
   try {
     prove_exact_mario_z_scale_offset();
-    std::cout << "[ok] exact GXSetZScaleOffset(1, 0.00001) rendered with correct depth behavior\n";
+    std::cout << "[ok] retail GXSetArray and exact GXSetZScaleOffset rendered with correct geometry/depth behavior\n";
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << "[fail] exact GXSetZScaleOffset render proof: " << exception.what() << '\n';

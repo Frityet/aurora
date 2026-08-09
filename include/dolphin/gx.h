@@ -29,6 +29,14 @@ extern "C" {
 
 #ifdef __cplusplus
 }
+
+#ifdef TARGET_PC
+// Native Aurora callers may supply an explicit span and byte order while exact
+// retail callers retain the three-argument C symbol from GXGeometry.h.
+static inline void GXSetArray(GXAttr attr, const void* data, u32 size, u8 stride, bool le) {
+  GXSetArraySized(attr, data, size, stride, le);
+}
+#endif
 #endif
 
 #endif

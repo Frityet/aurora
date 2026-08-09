@@ -8,8 +8,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <memory>
 
 using aurora::gx::g_gxState;
+
+namespace aurora::gfx {
+extern std::vector<u8> g_lastStorageUpload;
+}
 
 static bool has_bp_write(const std::vector<u8>& bytes, u8 reg) {
   const std::array<u8, 2> pattern{0x61, reg};
@@ -1130,6 +1136,224 @@ TEST_F(GXFifoTest, GetVtxAttrFmt_UsesShadowState) {
 }
 
 // --- GXSetArray (Aurora array-base command + CP stride command) ---
+
+static std::vector<u8> record_indexed_pos_draw(const void* data, u8 stride, u8 index, bool sizeKnown = false,
+                                                u32 size = 0, bool littleEndian = true) {
+  std::array<u8, 512> displayList{};
+  GXBeginDisplayList(displayList.data(), displayList.size());
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+  if (sizeKnown) {
+    GXSetArray(GX_VA_POS, data, size, stride, littleEndian);
+  } else {
+    GXSetArray(GX_VA_POS, data, stride);
+  }
+  GXBegin(GX_TRIANGLES, GX_VTXFMT0, 1);
+  GXPosition1x8(index);
+  GXEnd();
+  const u32 written = GXEndDisplayList();
+  return {displayList.begin(), displayList.begin() + written};
+}
+
+static std::vector<u8> indexed_pos_draw(u8 index) { return {GX_TRIANGLES, 0, 1, index}; }
+
+TEST_F(GXFifoTest, RetailEnumTagsRemainAvailable) {
+  _GXAttr attr = GX_VA_POS;
+  _GXTlutSize tlutSize = GX_TLUT_256;
+  EXPECT_EQ(attr, GX_VA_POS);
+  EXPECT_EQ(tlutSize, GX_TLUT_256);
+}
+
+TEST_F(GXFifoTest, SetArray_RetailDerivesNativeHostSpanFromDraw) {
+  std::array<f32, 12> positions{};
+  for (u32 i = 0; i < positions.size(); ++i) {
+    positions[i] = static_cast<f32>(i) + 0.25f;
+  }
+
+  const auto bytes = record_indexed_pos_draw(positions.data(), 12, 2);
+  EXPECT_TRUE(has_aurora_cmd(bytes, GX_LOAD_AURORA_ARRAYBASE));
+
+  reset_gx_state();
+  aurora::gfx::g_lastStorageUpload.clear();
+  decode_fifo(bytes);
+
+  const auto& array = gxState().arrays[GX_VA_POS];
+  EXPECT_FALSE(array.sizeKnown);
+  EXPECT_TRUE(array.le);
+  EXPECT_EQ(array.requiredSize, 36u);
+  EXPECT_EQ(array.cachedRange.size, 36u);
+  ASSERT_EQ(aurora::gfx::g_lastStorageUpload.size(), 36u);
+  EXPECT_TRUE(std::equal(aurora::gfx::g_lastStorageUpload.begin(), aurora::gfx::g_lastStorageUpload.end(),
+                         reinterpret_cast<const u8*>(positions.data())));
+}
+
+TEST_F(GXFifoTest, SetArray_SizedKeepsExplicitBigEndianResourceContract) {
+  std::array<u8, 48> resourceBytes{};
+  for (u32 i = 0; i < resourceBytes.size(); ++i) {
+    resourceBytes[i] = static_cast<u8>(0x80 + i);
+  }
+  const auto bytes = record_indexed_pos_draw(resourceBytes.data(), 12, 1, true, resourceBytes.size(), false);
+
+  reset_gx_state();
+  aurora::gfx::g_lastStorageUpload.clear();
+  decode_fifo(bytes);
+
+  const auto& array = gxState().arrays[GX_VA_POS];
+  EXPECT_TRUE(array.sizeKnown);
+  EXPECT_FALSE(array.le);
+  EXPECT_EQ(array.size, resourceBytes.size());
+  EXPECT_EQ(array.requiredSize, 24u);
+  ASSERT_EQ(aurora::gfx::g_lastStorageUpload.size(), resourceBytes.size());
+  EXPECT_EQ(aurora::gfx::g_lastStorageUpload, std::vector<u8>(resourceBytes.begin(), resourceBytes.end()));
+}
+
+TEST_F(GXFifoTest, SetArray_RetailWidensCachedSpanForLaterIndex) {
+  std::array<f32, 12> positions{};
+  const auto firstDraw = record_indexed_pos_draw(positions.data(), 12, 0);
+
+  reset_gx_state();
+  decode_fifo(firstDraw);
+  EXPECT_EQ(gxState().arrays[GX_VA_POS].requiredSize, 12u);
+  EXPECT_EQ(gxState().arrays[GX_VA_POS].cachedRange.size, 12u);
+
+  decode_fifo(indexed_pos_draw(3));
+  EXPECT_EQ(gxState().arrays[GX_VA_POS].requiredSize, 48u);
+  EXPECT_EQ(gxState().arrays[GX_VA_POS].cachedRange.size, 48u);
+  EXPECT_EQ(aurora::gfx::g_lastStorageUpload.size(), 48u);
+}
+
+TEST_F(GXFifoTest, InvalidateVtxCacheRefreshesMutatedRetailArray) {
+  std::array<f32, 3> position{1.0f, 2.0f, 3.0f};
+  const auto firstDraw = record_indexed_pos_draw(position.data(), 12, 0);
+
+  reset_gx_state();
+  decode_fifo(firstDraw);
+  const auto firstUpload = aurora::gfx::g_lastStorageUpload;
+  ASSERT_EQ(firstUpload.size(), sizeof(position));
+
+  position[0] = 42.0f;
+  decode_fifo(std::vector<u8>{GX_CMD_INVL_VC});
+  EXPECT_EQ(gxState().arrays[GX_VA_POS].cachedRange.size, 0u);
+  decode_fifo(indexed_pos_draw(0));
+
+  EXPECT_EQ(gxState().arrays[GX_VA_POS].cachedRange.size, sizeof(position));
+  EXPECT_NE(aurora::gfx::g_lastStorageUpload, firstUpload);
+  EXPECT_TRUE(std::equal(aurora::gfx::g_lastStorageUpload.begin(), aurora::gfx::g_lastStorageUpload.end(),
+                         reinterpret_cast<const u8*>(position.data())));
+}
+
+TEST_F(GXFifoTest, CachedRetailSpanOwnsUploadForItsCacheLifetime) {
+  auto position = std::make_unique<std::array<f32, 3>>(std::array<f32, 3>{1.0f, 2.0f, 3.0f});
+  const auto firstDraw = record_indexed_pos_draw(position->data(), 12, 0);
+
+  reset_gx_state();
+  decode_fifo(firstDraw);
+  const auto firstUpload = aurora::gfx::g_lastStorageUpload;
+  ASSERT_EQ(gxState().arrays[GX_VA_POS].cachedRange.size, sizeof(*position));
+
+  position.reset();
+  decode_fifo(indexed_pos_draw(0));
+  EXPECT_EQ(gxState().arrays[GX_VA_POS].cachedRange.size, 12u);
+  EXPECT_EQ(aurora::gfx::g_lastStorageUpload, firstUpload);
+}
+
+TEST_F(GXFifoTest, SetArray_RetailDerivesIndexedXfOnlySpanAndHostEndianness) {
+  std::array<f32, 24> matrices{};
+  for (u32 i = 0; i < 12; ++i) {
+    matrices[12 + i] = static_cast<f32>(100 + i);
+  }
+
+  GXSetArray(GX_POS_MTX_ARRAY, matrices.data(), 48);
+  auto bytes = capture_fifo();
+  bytes.insert(bytes.end(), {GX_LOAD_INDX_A, 0x00, 0x01, 0xB0, 0x00});
+
+  reset_gx_state();
+  decode_fifo(bytes);
+
+  const auto& array = gxState().arrays[GX_POS_MTX_ARRAY];
+  EXPECT_FALSE(array.sizeKnown);
+  EXPECT_TRUE(array.le);
+  EXPECT_EQ(array.requiredSize, 96u);
+  const f32* loaded = reinterpret_cast<const f32*>(&gxState().pnMtx[0].pos);
+  for (u32 i = 0; i < 12; ++i) {
+    EXPECT_FLOAT_EQ(loaded[i], matrices[12 + i]);
+  }
+}
+
+TEST_F(GXFifoTest, SetArray_SizedIndexedXfDecodesBigEndianResourceData) {
+  std::array<u8, 48> resourceMatrix{};
+  for (u32 i = 0; i < 12; ++i) {
+    const f32 value = static_cast<f32>(200 + i);
+    u32 bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    resourceMatrix[i * 4] = static_cast<u8>(bits >> 24);
+    resourceMatrix[i * 4 + 1] = static_cast<u8>(bits >> 16);
+    resourceMatrix[i * 4 + 2] = static_cast<u8>(bits >> 8);
+    resourceMatrix[i * 4 + 3] = static_cast<u8>(bits);
+  }
+
+  GXSetArray(GX_POS_MTX_ARRAY, resourceMatrix.data(), resourceMatrix.size(), 48, false);
+  auto bytes = capture_fifo();
+  bytes.insert(bytes.end(), {GX_LOAD_INDX_A, 0x00, 0x00, 0xB0, 0x00});
+
+  reset_gx_state();
+  decode_fifo(bytes);
+
+  const auto& array = gxState().arrays[GX_POS_MTX_ARRAY];
+  EXPECT_TRUE(array.sizeKnown);
+  EXPECT_FALSE(array.le);
+  EXPECT_EQ(array.requiredSize, resourceMatrix.size());
+  const f32* loaded = reinterpret_cast<const f32*>(&gxState().pnMtx[0].pos);
+  for (u32 i = 0; i < 12; ++i) {
+    EXPECT_FLOAT_EQ(loaded[i], static_cast<f32>(200 + i));
+  }
+}
+
+TEST_F(GXFifoTest, SetArray_RejectsNullRetailSourceWhenReferenced) {
+  const auto bytes = record_indexed_pos_draw(nullptr, 12, 0);
+  reset_gx_state();
+  EXPECT_DEATH(decode_fifo(bytes), "null GX array");
+}
+
+TEST_F(GXFifoTest, SetArray_RejectsKnownSizeOverrun) {
+  std::array<f32, 3> position{};
+  const auto bytes = record_indexed_pos_draw(position.data(), 12, 1, true, sizeof(position), true);
+  reset_gx_state();
+  EXPECT_DEATH(decode_fifo(bytes), "indexed draw array read overrun");
+}
+
+TEST_F(GXFifoTest, SetArray_SpanArithmeticRejectsOverflow) {
+  u32 end = 0;
+  EXPECT_TRUE(aurora::gx::fifo::detail::checked_array_span_end(12, 24, &end));
+  EXPECT_EQ(end, 36u);
+  EXPECT_FALSE(aurora::gx::fifo::detail::checked_array_span_end(std::numeric_limits<u32>::max(), 2, &end));
+  EXPECT_FALSE(aurora::gx::fifo::detail::checked_array_span_end(0, 1, nullptr));
+}
+
+TEST_F(GXFifoTest, SetArray_RejectsTruncatedArrayBaseCommand) {
+  std::array<f32, 3> position{};
+  auto bytes = record_indexed_pos_draw(position.data(), 12, 0);
+  ASSERT_GT(bytes.size(), 15u);
+  bytes.resize(15);
+  reset_gx_state();
+  EXPECT_DEATH(decode_fifo(bytes), "GX_LOAD_AURORA_ARRAYBASE read overrun");
+}
+
+TEST_F(GXFifoTest, SetArray_RejectsInvalidArrayBaseFlags) {
+  std::array<f32, 3> position{};
+  auto bytes = record_indexed_pos_draw(position.data(), 12, 0);
+  ASSERT_GT(bytes.size(), 15u);
+  bytes[15] = 0x80;
+  reset_gx_state();
+  EXPECT_DEATH(decode_fifo(bytes), "invalid flags");
+}
+
+TEST_F(GXFifoTest, SetArray_RejectsTruncatedIndexedXfCommand) {
+  reset_gx_state();
+  const std::vector<u8> bytes{GX_LOAD_INDX_A, 0x00, 0x00, 0x00};
+  EXPECT_DEATH(decode_fifo(bytes), "indexed XF read overrun");
+}
 
 TEST_F(GXFifoTest, SetArray_Pos_EncodesAuroraArrayBaseAndStride) {
   u8 posData[32]{};

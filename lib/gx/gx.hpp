@@ -271,14 +271,17 @@ struct Fog {
 };
 static_assert(sizeof(Fog) == 32);
 struct AttrArray {
-  const void* data;
-  u32 size;
-  u8 stride;
+  const void* data = nullptr;
+  u32 size = 0;
+  u32 requiredSize = 0;
+  u8 stride = 0;
   bool le = true;
+  bool sizeKnown = true;
   gfx::Range cachedRange;
 };
 inline bool operator==(const AttrArray& lhs, const AttrArray& rhs) {
-  return lhs.data == rhs.data && lhs.size == rhs.size && lhs.stride == rhs.stride && lhs.le == rhs.le;
+  return lhs.data == rhs.data && lhs.size == rhs.size && lhs.requiredSize == rhs.requiredSize &&
+         lhs.stride == rhs.stride && lhs.le == rhs.le && lhs.sizeKnown == rhs.sizeKnown;
 }
 inline bool operator!=(const AttrArray& lhs, const AttrArray& rhs) { return !(lhs == rhs); }
 

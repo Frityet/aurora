@@ -25,7 +25,9 @@ extern "C" {
 
 /**
  * Aurora equivalent of CP_REG_ARRAYBASE_ID: sets the base address and size of a vertex array.
- * This command must be followed by a 64-bit memory address, 32-bit size, and 1-byte little-endian flag.
+ * This command must be followed by a 64-bit memory address, 32-bit size, and 1-byte flags field.
+ * Bit 0 of the flags field marks little-endian array data. Bit 1 marks the retail unsized form: its
+ * required source span is derived from indexed FIFO draws and indexed XF loads instead of being guessed.
  * The index of the vertex array is given by the lowest 4 bits of the command ID,
  * e.g. writing GX_LOAD_AURORA_ARRAYBASE + 5 will set the vertex array for the sixth vertex attribute.
  * To set strides, use the normal CP_REG_ARRAYSTRIDE_ID register.

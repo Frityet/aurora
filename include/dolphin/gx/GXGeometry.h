@@ -19,11 +19,13 @@ void GXSetTexCoordGen2(GXTexCoordID dst_coord, GXTexGenType func, GXTexGenSrc sr
 void GXSetLineWidth(u8 width, GXTexOffset texOffsets);
 void GXSetPointSize(u8 pointSize, GXTexOffset texOffsets);
 void GXEnableTexOffsets(GXTexCoordID coord, GXBool line_enable, GXBool point_enable);
-#ifdef TARGET_PC
-void GXSetArray(GXAttr attr, const void* data, u32 size, u8 stride, bool le);
-#define GXSETARRAY(attr, data, size, stride, le) GXSetArray((attr), (data), (size), (stride), (le))
-#else
 void GXSetArray(GXAttr attr, const void* data, u8 stride);
+#ifdef TARGET_PC
+void GXSetArraySized(GXAttr attr, const void* data, u32 size, u8 stride, bool le);
+#endif
+#ifdef TARGET_PC
+#define GXSETARRAY(attr, data, size, stride, le) GXSetArraySized((attr), (data), (size), (stride), (le))
+#else
 #define GXSETARRAY(attr, data, size, stride, le) GXSetArray((attr), (data), (stride))
 #endif
 void GXInvalidateVtxCache(void);

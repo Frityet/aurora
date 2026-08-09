@@ -215,23 +215,33 @@ void GXSetVtxAttrFmtv(GXVtxFmt vtxfmt, const GXVtxAttrFmtList* list) {
   __gx->dirtyVAT |= static_cast<u8>(1 << vtxfmt);
 }
 
-void GXSetArray(GXAttr attr, const void* data, u32 size, u8 stride, bool le) {
+static void set_array(GXAttr attr, const void* data, u32 size, u8 stride, bool le, bool sizeKnown) {
   GXAttr cpAttr = static_cast<GXAttr>(attr);
   if (attr == GX_VA_NBT) {
     cpAttr = GX_VA_NRM;
   }
   u32 cpIdx = cpAttr - GX_VA_POS;
 
-  assert((cpIdx & ~0xF) == 0);
+  ASSERT((cpIdx & ~0xF) == 0, "invalid GX array attribute {}", underlying(attr));
 
   // Write array base
   GX_WRITE_AURORA(GX_LOAD_AURORA_ARRAYBASE | cpIdx);
   GX_WRITE_U64(reinterpret_cast<u64>(data));
   GX_WRITE_U32(size);
-  GX_WRITE_U8(le ? 1 : 0);
+  GX_WRITE_U8((le ? 1 : 0) | (sizeKnown ? 0 : 2));
 
   // Write array stride
   GX_WRITE_CP_REG(CP_REG_ARRAYSTRIDE_ID | cpIdx, stride);
+}
+
+void GXSetArray(GXAttr attr, const void* data, u8 stride) {
+  // Exact Game code builds its arrays in native host memory. The decoder still
+  // supports explicitly big-endian resource buffers through the sized overload.
+  set_array(attr, data, 0, stride, true, false);
+}
+
+void GXSetArraySized(GXAttr attr, const void* data, u32 size, u8 stride, bool le) {
+  set_array(attr, data, size, stride, le, true);
 }
 
 void GXSetTexCoordGen2(GXTexCoordID dst, GXTexGenType type, GXTexGenSrc src, u32 mtx, GXBool normalize, u32 postMtx) {

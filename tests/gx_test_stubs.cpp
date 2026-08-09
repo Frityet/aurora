@@ -15,6 +15,7 @@
 #include "webgpu/gpu.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <fmt/format.h>
 
 // --- aurora::g_config ---
@@ -128,16 +129,114 @@ gfx::Range build_uniform(const ShaderInfo& info, uint32_t vtxStart, const BindGr
 }
 void resolve_sampled_textures(const ShaderInfo& info) noexcept {}
 u8 color_channel(GXChannelID id) noexcept { return 0; }
-u8 comp_type_size(GXAttr attr, GXCompType type) noexcept { return 0; }
-u8 comp_cnt_count(GXAttr attr, GXCompCnt cnt) noexcept { return 0; }
+u8 comp_type_size(GXAttr attr, GXCompType type) noexcept {
+  switch (attr) {
+  case GX_VA_PNMTXIDX:
+  case GX_VA_TEX0MTXIDX:
+  case GX_VA_TEX1MTXIDX:
+  case GX_VA_TEX2MTXIDX:
+  case GX_VA_TEX3MTXIDX:
+  case GX_VA_TEX4MTXIDX:
+  case GX_VA_TEX5MTXIDX:
+  case GX_VA_TEX6MTXIDX:
+  case GX_VA_TEX7MTXIDX:
+    return 1;
+  case GX_VA_CLR0:
+  case GX_VA_CLR1:
+    switch (type) {
+    case GX_RGB565:
+    case GX_RGBA4:
+      return 2;
+    case GX_RGB8:
+    case GX_RGBA6:
+      return 3;
+    case GX_RGBX8:
+    case GX_RGBA8:
+      return 4;
+    default:
+      break;
+    }
+    break;
+  default:
+    switch (type) {
+    case GX_U8:
+    case GX_S8:
+      return 1;
+    case GX_U16:
+    case GX_S16:
+      return 2;
+    case GX_F32:
+      return 4;
+    default:
+      break;
+    }
+  }
+  std::abort();
+}
+u8 comp_cnt_count(GXAttr attr, GXCompCnt cnt) noexcept {
+  switch (attr) {
+  case GX_VA_PNMTXIDX:
+  case GX_VA_TEX0MTXIDX:
+  case GX_VA_TEX1MTXIDX:
+  case GX_VA_TEX2MTXIDX:
+  case GX_VA_TEX3MTXIDX:
+  case GX_VA_TEX4MTXIDX:
+  case GX_VA_TEX5MTXIDX:
+  case GX_VA_TEX6MTXIDX:
+  case GX_VA_TEX7MTXIDX:
+    return 1;
+  case GX_VA_POS:
+    if (cnt == GX_POS_XY) {
+      return 2;
+    }
+    if (cnt == GX_POS_XYZ) {
+      return 3;
+    }
+    break;
+  case GX_VA_NRM:
+    if (cnt == GX_NRM_XYZ) {
+      return 3;
+    }
+    break;
+  case GX_VA_CLR0:
+  case GX_VA_CLR1:
+    return 1;
+  case GX_VA_TEX0:
+  case GX_VA_TEX1:
+  case GX_VA_TEX2:
+  case GX_VA_TEX3:
+  case GX_VA_TEX4:
+  case GX_VA_TEX5:
+  case GX_VA_TEX6:
+  case GX_VA_TEX7:
+    if (cnt == GX_TEX_S) {
+      return 1;
+    }
+    if (cnt == GX_TEX_ST) {
+      return 2;
+    }
+    break;
+  default:
+    break;
+  }
+  std::abort();
+}
 } // namespace aurora::gx
 
 // --- Buffer push stubs ---
 namespace aurora::gfx {
+std::vector<u8> g_lastStorageUpload;
 Range push_verts(const uint8_t* data, size_t length) { return {}; }
 Range push_indices(const uint8_t* data, size_t length) { return {}; }
 Range push_uniform(const uint8_t* data, size_t length) { return {}; }
-Range push_storage(const uint8_t* data, size_t length) { return {}; }
+Range push_storage(const uint8_t* data, size_t length) {
+  if (length == 0) {
+    g_lastStorageUpload.clear();
+  } else {
+    g_lastStorageUpload.assign(data, data + length);
+  }
+  return {1, static_cast<u32>(length)};
+}
 
 Vec2<uint32_t> get_render_target_size() noexcept { return {640, 480}; }
 void set_viewport(const Viewport& viewport) noexcept {}

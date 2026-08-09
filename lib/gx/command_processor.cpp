@@ -14,6 +14,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <optional>
 
 namespace aurora::gx::fifo {
@@ -238,6 +239,35 @@ static inline f32 read_f32(const u8* ptr, bool bigEndian) {
   return val;
 }
 
+bool detail::checked_array_span_end(uint64_t offset, uint64_t length, uint32_t* end) noexcept {
+  if (end == nullptr || offset > std::numeric_limits<u32>::max() ||
+      length > std::numeric_limits<u32>::max() - offset) {
+    return false;
+  }
+  *end = static_cast<u32>(offset + length);
+  return true;
+}
+
+static void require_array_span(AttrArray& array, u64 offset, u64 length, const char* operation) {
+  u32 end = 0;
+  ASSERT(detail::checked_array_span_end(offset, length, &end), "{} array span overflow: offset={}, length={}",
+         operation, offset, length);
+  ASSERT(end == 0 || array.data != nullptr, "{} read from a null GX array", operation);
+  ASSERT(!array.sizeKnown || end <= array.size, "{} array read overrun: need {} bytes, have {}", operation, end,
+         array.size);
+
+  if (end > array.requiredSize) {
+    array.requiredSize = end;
+    if (!array.sizeKnown) {
+      // An unsized retail binding is uploaded only as far as commands have
+      // proven necessary. A later, wider access must receive a new binding.
+      array.cachedRange = {};
+      g_gxState.stateDirty = true;
+    }
+  }
+
+}
+
 static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
   if (addr < 0x78) {
     // Position matrices (0x0000 - 0x0077)
@@ -252,6 +282,7 @@ static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
       flat[i] = read_f32(data + i * 4, bigEndian);
     }
     g_gxState.stateDirty = true;
+    return true;
   } else if (addr < 0x0F0) {
     // Texture matrices (0x078-0x0EF)
     u32 texBase = addr - 0x078;
@@ -414,20 +445,23 @@ void process(const u8* data, u32 size, bool bigEndian) {
     case CP_CMD_LOAD_INDX_D: {
       ZoneScopedN("LOAD_INDX");
       // Indexed XF load: 4 bytes of data
-      CHECK(pos + 4 <= size, "indexed XF read overrun");
-      u32 arrayType = GX_POS_MTX_ARRAY + (opcode - (CP_CMD_LOAD_INDX_A / 0x08));
-      u8 srcArrayIdx = data[pos++];
-      auto const& array = g_gxState.arrays[arrayType];
-      u8* srcData = ((u8*)array.data) + srcArrayIdx * array.stride;
-      u16 addrLen = read_u16(data + pos, bigEndian);
+      ASSERT(pos <= size && size - pos >= 4, "indexed XF read overrun");
+      u32 arrayType = GX_POS_MTX_ARRAY + ((opcode - CP_CMD_LOAD_INDX_A) / 0x08);
+      const u16 srcArrayIdx = read_u16(data + pos, bigEndian);
+      pos += sizeof(u16);
+      const u16 addrLen = read_u16(data + pos, bigEndian);
+      pos += sizeof(u16);
       u16 len = (addrLen >> 12) + 1;
       u16 dstAddr = addrLen & 0x0FFF;
-      if (!copy_xf_data(dstAddr, srcData, len, bigEndian)) {
+      auto& array = g_gxState.arrays[arrayType];
+      const u64 srcOffset = static_cast<u64>(srcArrayIdx) * array.stride;
+      require_array_span(array, srcOffset, static_cast<u64>(len) * sizeof(u32), "indexed XF");
+      const u8* srcData = static_cast<const u8*>(array.data) + srcOffset;
+      if (!copy_xf_data(dstAddr, srcData, len, !array.le)) {
 #ifndef NDEBUG
         Log.debug("Unimplemented indexed XF load (opcode 0x{:02X}, dstAddr=%04x)", opcode, dstAddr);
 #endif
       }
-      pos += 4;
       break;
     }
 
@@ -441,6 +475,11 @@ void process(const u8* data, u32 size, bool bigEndian) {
 
     case CP_CMD_INVAL_VTX: {
       // Invalidate vertex cache
+      for (auto& array : g_gxState.arrays) {
+        array.cachedRange = {};
+      }
+      // Keep draw calls on opposite sides of the FIFO invalidation separate.
+      g_gxState.stateDirty = true;
       break;
     }
 
@@ -1249,6 +1288,10 @@ static void handle_cp(u8 addr, u32 value, bool bigEndian) {
         const auto newStride = static_cast<u8>(value);
         if (array.stride != newStride) {
           array.stride = newStride;
+          array.requiredSize = 0;
+          if (!array.sizeKnown) {
+            array.cachedRange = {};
+          }
           g_gxState.stateDirty = true;
         }
       }
@@ -1535,6 +1578,49 @@ static u32 calculate_last_vtx_size(GXVtxFmt fmt) {
   return vtxSize;
 }
 
+static void require_draw_array_spans(GXVtxFmt fmt, const u8* data, u16 vtxCount, u32 vtxSize, bool bigEndian) {
+  const auto& vtxFmt = g_gxState.vtxFmts[fmt];
+  std::array<u32, MaxVtxAttr> maxIndices{};
+  std::array<bool, MaxVtxAttr> referenced{};
+
+  for (u32 vertex = 0; vertex < vtxCount; ++vertex) {
+    const u8* cursor = data + vertex * vtxSize;
+    for (int i = GX_VA_PNMTXIDX; i <= GX_VA_TEX7; ++i) {
+      const auto attr = static_cast<GXAttr>(i);
+      const auto type = g_gxState.vtxDesc[i];
+      switch (type) {
+      case GX_NONE:
+        break;
+      case GX_DIRECT:
+        cursor += comp_type_size(attr, vtxFmt.attrs[i].type) * comp_cnt_count(attr, vtxFmt.attrs[i].cnt);
+        break;
+      case GX_INDEX8:
+        referenced[i] = true;
+        maxIndices[i] = std::max(maxIndices[i], static_cast<u32>(*cursor));
+        ++cursor;
+        break;
+      case GX_INDEX16:
+        referenced[i] = true;
+        maxIndices[i] = std::max(maxIndices[i], static_cast<u32>(read_u16(cursor, bigEndian)));
+        cursor += sizeof(u16);
+        break;
+      }
+    }
+    ASSERT(cursor == data + (vertex + 1) * vtxSize, "indexed draw vertex layout mismatch");
+  }
+
+  for (int i = GX_VA_POS; i <= GX_VA_TEX7; ++i) {
+    if (!referenced[i]) {
+      continue;
+    }
+    const auto attr = static_cast<GXAttr>(i);
+    const auto& attrFmt = vtxFmt.attrs[i];
+    const u32 elementSize = comp_type_size(attr, attrFmt.type) * comp_cnt_count(attr, attrFmt.cnt);
+    auto& array = g_gxState.arrays[i];
+    require_array_span(array, static_cast<u64>(maxIndices[i]) * array.stride, elementSize, "indexed draw");
+  }
+}
+
 static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Range vertRange);
 
 // Draw command handler - parses vertices inline and caches results
@@ -1561,6 +1647,8 @@ static void handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
   if (pos + totalVtxBytes > size) UNLIKELY {
     handle_draw_overrun(totalVtxBytes, data, pos, size);
   }
+
+  require_draw_array_spans(fmt, data + pos, vtxCount, vtxSize, bigEndian);
 
   // Push raw vertex data to buffer
   gfx::Range vertRange = gfx::push_verts(data + pos, totalVtxBytes);
@@ -1618,7 +1706,8 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, g
     if (array.cachedRange.size > 0) {
       ranges.vaRanges[i - GX_VA_POS] = array.cachedRange;
     } else {
-      const auto range = gfx::push_storage(static_cast<const uint8_t*>(array.data), array.size);
+      const u32 uploadSize = array.sizeKnown ? array.size : array.requiredSize;
+      const auto range = gfx::push_storage(static_cast<const uint8_t*>(array.data), uploadSize);
       ranges.vaRanges[i - GX_VA_POS] = range;
       array.cachedRange = range;
     }
@@ -1704,22 +1793,27 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     pos += 4;
     set_render_scissor({left, top, width, height});
   } else if (subCmd >= GX_LOAD_AURORA_ARRAYBASE && subCmd <= (GX_LOAD_AURORA_ARRAYBASE | 0x0f)) {
-    CHECK(pos + 13 <= size, "GX_LOAD_AURORA_ARRAYBASE read overrun");
+    ASSERT(pos <= size && size - pos >= 13, "GX_LOAD_AURORA_ARRAYBASE read overrun");
     u32 attrIdx = subCmd - GX_LOAD_AURORA_ARRAYBASE + GX_VA_POS;
 
     u64 arrayAddr = read_u64(data + pos, bigEndian);
     pos += 8;
     u32 arraySize = read_u32(data + pos, bigEndian);
     pos += 4;
-    bool le = data[pos] == 1;
+    const u8 flags = data[pos];
     pos += 1;
+    ASSERT((flags & ~0x3) == 0, "GX_LOAD_AURORA_ARRAYBASE has invalid flags 0x{:02x}", flags);
+    const bool le = (flags & 0x1) != 0;
+    const bool sizeKnown = (flags & 0x2) == 0;
 
     auto& array = g_gxState.arrays[attrIdx];
     const auto newData = reinterpret_cast<void*>(arrayAddr);
-    if (array.data != newData || array.size != arraySize || array.le != le) {
+    if (array.data != newData || array.size != arraySize || array.le != le || array.sizeKnown != sizeKnown) {
       array.data = newData;
       array.size = arraySize;
+      array.requiredSize = 0;
       array.le = le;
+      array.sizeKnown = sizeKnown;
       // Only drop the cached upload when the backing array actually changes.
       array.cachedRange = {};
       g_gxState.stateDirty = true;

@@ -30,11 +30,15 @@ extern "C" void Android_UnlockActivityMutex(void);
 
 #include <algorithm>
 #include <atomic>
+#include <deque>
+#include <string>
 #include <vector>
+
+#include "time_internal.hpp"
 
 namespace aurora::window {
 namespace {
-Module Log("aurora::window");
+constexpr Module Log{"aurora::window"};
 
 SDL_Window* g_window;
 SDL_Renderer* g_renderer;
@@ -44,6 +48,7 @@ std::uint32_t g_configuredFrameBufferWidth = 640;
 std::uint32_t g_configuredFrameBufferHeight = 480;
 AuroraWindowSize g_windowSize;
 std::vector<AuroraEvent> g_events;
+std::deque<std::string> g_eventStrings;
 std::atomic_bool g_backgrounded = false;
 #if defined(SDL_PLATFORM_ANDROID)
 std::atomic_bool g_surfaceReady = false;
@@ -52,6 +57,27 @@ std::atomic_bool g_surfaceReady = true;
 #endif
 bool g_lastPaused = false;
 bool g_gotFocus = false;
+
+void retain_event_strings(SDL_Event& event) {
+  switch (event.type) {
+  case SDL_EVENT_DROP_BEGIN:
+  case SDL_EVENT_DROP_FILE:
+  case SDL_EVENT_DROP_TEXT:
+  case SDL_EVENT_DROP_COMPLETE:
+  case SDL_EVENT_DROP_POSITION:
+    break;
+  default:
+    return;
+  }
+  if (event.drop.source != nullptr) {
+    g_eventStrings.emplace_back(event.drop.source);
+    event.drop.source = g_eventStrings.back().c_str();
+  }
+  if (event.drop.data != nullptr) {
+    g_eventStrings.emplace_back(event.drop.data);
+    event.drop.data = g_eventStrings.back().c_str();
+  }
+}
 
 bool operator==(const AuroraWindowSize& lhs, const AuroraWindowSize& rhs) {
   return lhs.width == rhs.width && lhs.height == rhs.height && lhs.fb_width == rhs.fb_width &&
@@ -125,10 +151,12 @@ bool SDLCALL lifecycle_event_watch(void*, SDL_Event* event) {
     switch (event->type) {
 #if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_APPLE)
     case SDL_EVENT_WINDOW_MINIMIZED:
+      time::internal::set_pause_reason(time::internal::PauseReason::Background, true);
       g_backgrounded.store(true, std::memory_order_relaxed);
       break;
     case SDL_EVENT_WINDOW_RESTORED:
       g_backgrounded.store(false, std::memory_order_relaxed);
+      time::internal::set_pause_reason(time::internal::PauseReason::Background, false);
       break;
 #endif
     default:
@@ -144,6 +172,7 @@ void sync_paused() {
     return;
   }
   g_lastPaused = paused;
+  time::internal::set_pause_reason(time::internal::PauseReason::Window, paused);
   g_events.push_back(AuroraEvent{
       .type = paused ? AURORA_PAUSED : AURORA_UNPAUSED,
   });
@@ -243,6 +272,7 @@ void process_event(SDL_Event& event) {
   if (primaryWindow) {
     sync_paused();
   }
+  retain_event_strings(event);
   g_events.push_back(AuroraEvent{
       .type = AURORA_SDL_EVENT,
       .sdl = event,
@@ -253,6 +283,7 @@ void process_event(SDL_Event& event) {
 const AuroraEvent* poll_events() {
   ZoneScoped;
   g_events.clear();
+  g_eventStrings.clear();
 
   SDL_Event event;
   // Clear out the previous scroll values to prevent ghost input
@@ -377,6 +408,8 @@ bool initialize() {
   TRY(SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight"), "Error setting {}: {}", SDL_HINT_ORIENTATIONS,
       SDL_GetError());
   TRY(SDL_InitSubSystem(SDL_INIT_EVENTS | SDL_INIT_VIDEO), "Error initializing SDL: {}", SDL_GetError());
+  time::internal::set_pause_reason(time::internal::PauseReason::Surface,
+                                   !g_surfaceReady.load(std::memory_order_acquire));
 
 #if !defined(_WIN32) && !defined(__APPLE__)
   TRY(SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0"), "Error setting {}: {}",
@@ -479,7 +512,10 @@ bool is_presentable() noexcept {
          g_surfaceReady.load(std::memory_order_acquire);
 }
 
-void set_surface_ready(bool ready) noexcept { g_surfaceReady.store(ready, std::memory_order_release); }
+void set_surface_ready(bool ready) noexcept {
+  g_surfaceReady.store(ready, std::memory_order_release);
+  time::internal::set_pause_reason(time::internal::PauseReason::Surface, !ready);
+}
 
 SurfaceLock::SurfaceLock() noexcept {
 #if defined(SDL_PLATFORM_ANDROID)

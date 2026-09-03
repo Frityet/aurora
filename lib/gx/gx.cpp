@@ -5,7 +5,10 @@
 #include "../dolphin/vi/vi_internal.hpp"
 #include "../webgpu/gpu.hpp"
 #include "../internal.hpp"
-#include "../gfx/common.hpp"
+#include "../window.hpp"
+#include "../gfx/resources.hpp"
+#include "../gfx/recording.hpp"
+#include "../gfx/resource_cache.hpp"
 #include "../gfx/texture.hpp"
 #include "destruction_state.hpp"
 #include "gx_fmt.hpp"
@@ -13,6 +16,7 @@
 #include <absl/container/flat_hash_map.h>
 #include <tracy/Tracy.hpp>
 
+#include <atomic>
 #include <bit>
 #include <cfloat>
 #include <cmath>
@@ -26,19 +30,21 @@ using webgpu::g_device;
 using webgpu::g_graphicsConfig;
 
 GXState g_gxState{};
-
-static wgpu::Sampler sEmptySampler;
-static wgpu::Texture sEmptyTexture;
-static wgpu::TextureView sEmptyTextureView;
-static std::mutex sBindGroupLayoutMutex;
-static absl::flat_hash_map<u32, wgpu::BindGroupLayout> sUniformBindGroupLayouts;
-static absl::flat_hash_map<u32, std::pair<wgpu::BindGroupLayout, wgpu::BindGroupLayout>> sTextureBindGroupLayouts;
-static wgpu::BindGroupLayout sTextureBindGroupLayout;
-static wgpu::BindGroupLayout sSamplerBindGroupLayout;
-static wgpu::PipelineLayout sPipelineLayout;
 wgpu::BindGroup g_emptyTextureBindGroup;
 
 namespace {
+wgpu::Sampler sEmptySampler;
+wgpu::Texture sEmptyTexture;
+wgpu::TextureView sEmptyTextureView;
+std::mutex sBindGroupLayoutMutex;
+absl::flat_hash_map<u32, wgpu::BindGroupLayout> sUniformBindGroupLayouts;
+absl::flat_hash_map<u32, std::pair<wgpu::BindGroupLayout, wgpu::BindGroupLayout>> sTextureBindGroupLayouts;
+wgpu::BindGroupLayout sTextureBindGroupLayout;
+wgpu::BindGroupLayout sSamplerBindGroupLayout;
+wgpu::PipelineLayout sPipelineLayout;
+
+std::atomic<int> sPendingViewportPolicy{-1};
+
 template <typename T>
 T round_away_from_zero(float value) noexcept {
   return static_cast<T>(value < 0.0f ? std::floor(value) : std::ceil(value));
@@ -50,92 +56,8 @@ std::pair<f32, f32> polygon_offset_for_cull_mode(GXCullMode cullMode) noexcept {
   }
   return {g_gxState.frontOffset, g_gxState.frontScale};
 }
-} // namespace
 
-Vec2<uint32_t> logical_fb_size() noexcept {
-  return gfx::is_offscreen() ? gfx::get_render_target_size() : vi::configured_fb_size();
-}
-
-gfx::Viewport map_logical_viewport(const gfx::Viewport& logicalViewport) noexcept {
-  if (g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE) {
-    return logicalViewport;
-  }
-
-  const auto [logicalFbWidth, logicalFbHeight] = logical_fb_size();
-  const auto [targetWidth, targetHeight] = gfx::get_render_target_size();
-  if (logicalFbWidth == 0 || logicalFbHeight == 0 || targetWidth == 0 || targetHeight == 0) {
-    return logicalViewport;
-  }
-
-  const float scaleX = static_cast<float>(targetWidth) / static_cast<float>(logicalFbWidth);
-  const float scaleY = static_cast<float>(targetHeight) / static_cast<float>(logicalFbHeight);
-  return {
-      .left = logicalViewport.left * scaleX,
-      .top = logicalViewport.top * scaleY,
-      .width = logicalViewport.width * scaleX,
-      .height = logicalViewport.height * scaleY,
-      .znear = logicalViewport.znear,
-      .zfar = logicalViewport.zfar,
-  };
-}
-
-gfx::ClipRect map_logical_scissor(const gfx::ClipRect& logicalScissor) noexcept {
-  if (g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE) {
-    return logicalScissor;
-  }
-
-  const auto [logicalFbWidth, logicalFbHeight] = logical_fb_size();
-  const auto [targetWidth, targetHeight] = gfx::get_render_target_size();
-  if (logicalFbWidth == 0 || logicalFbHeight == 0 || targetWidth == 0 || targetHeight == 0) {
-    return logicalScissor;
-  }
-
-  const float scaleX = static_cast<float>(targetWidth) / static_cast<float>(logicalFbWidth);
-  const float scaleY = static_cast<float>(targetHeight) / static_cast<float>(logicalFbHeight);
-
-  const float left = static_cast<float>(logicalScissor.x) * scaleX;
-  const float top = static_cast<float>(logicalScissor.y) * scaleY;
-  const float right = static_cast<float>(logicalScissor.x + logicalScissor.width) * scaleX;
-  const float bottom = static_cast<float>(logicalScissor.y + logicalScissor.height) * scaleY;
-
-  const auto mappedLeft = std::clamp(static_cast<int32_t>(std::floor(left)), 0, static_cast<int32_t>(targetWidth));
-  const auto mappedTop = std::clamp(static_cast<int32_t>(std::floor(top)), 0, static_cast<int32_t>(targetHeight));
-  const auto mappedRight =
-      std::clamp(static_cast<int32_t>(std::ceil(right)), mappedLeft, static_cast<int32_t>(targetWidth));
-  const auto mappedBottom =
-      std::clamp(static_cast<int32_t>(std::ceil(bottom)), mappedTop, static_cast<int32_t>(targetHeight));
-
-  return {
-      .x = mappedLeft,
-      .y = mappedTop,
-      .width = mappedRight - mappedLeft,
-      .height = mappedBottom - mappedTop,
-  };
-}
-
-void set_logical_viewport(const gfx::Viewport& viewport) noexcept {
-  g_gxState.logicalViewport = viewport;
-  set_render_viewport(map_logical_viewport(viewport));
-}
-
-void set_render_viewport(const gfx::Viewport& viewport) noexcept {
-  g_gxState.renderViewport = viewport;
-  gfx::set_viewport(viewport);
-}
-
-void set_logical_scissor(const gfx::ClipRect& scissor) noexcept {
-  g_gxState.logicalScissor = scissor;
-  set_render_scissor(map_logical_scissor(g_gxState.logicalScissor));
-}
-
-void set_render_scissor(const gfx::ClipRect& scissor) noexcept {
-  g_gxState.renderScissor = scissor;
-  gfx::set_scissor(scissor);
-}
-
-const gfx::TextureBind& get_texture(GXTexMapID id) noexcept { return g_gxState.textures[static_cast<size_t>(id)]; }
-
-static inline wgpu::BlendFactor to_blend_factor(GXBlendFactor fac, bool isDst) {
+wgpu::BlendFactor to_blend_factor(GXBlendFactor fac, bool isDst) {
   switch (fac) {
     DEFAULT_FATAL("invalid blend factor {}", underlying(fac));
   case GX_BL_ZERO:
@@ -165,7 +87,7 @@ static inline wgpu::BlendFactor to_blend_factor(GXBlendFactor fac, bool isDst) {
   }
 }
 
-static inline wgpu::CompareFunction to_compare_function(GXCompare func) {
+wgpu::CompareFunction to_compare_function(GXCompare func) {
   switch (func) {
     DEFAULT_FATAL("invalid depth fn {}", underlying(func));
   case GX_NEVER:
@@ -187,8 +109,8 @@ static inline wgpu::CompareFunction to_compare_function(GXCompare func) {
   }
 }
 
-static inline wgpu::BlendState to_blend_state(GXBlendMode mode, GXBlendFactor srcFac, GXBlendFactor dstFac,
-                                              GXLogicOp op, u32 dstAlpha) {
+wgpu::BlendState to_blend_state(GXBlendMode mode, GXBlendFactor srcFac, GXBlendFactor dstFac, GXLogicOp op,
+                                u32 dstAlpha) {
   wgpu::BlendComponent colorBlendComponent;
   switch (mode) {
     DEFAULT_FATAL("unsupported blend mode {}", underlying(mode));
@@ -256,7 +178,7 @@ static inline wgpu::BlendState to_blend_state(GXBlendMode mode, GXBlendFactor sr
   };
 }
 
-static inline wgpu::ColorWriteMask to_write_mask(bool colorUpdate, bool alphaUpdate) {
+wgpu::ColorWriteMask to_write_mask(bool colorUpdate, bool alphaUpdate) {
   wgpu::ColorWriteMask writeMask = wgpu::ColorWriteMask::None;
   if (colorUpdate) {
     writeMask |= wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green | wgpu::ColorWriteMask::Blue;
@@ -267,7 +189,7 @@ static inline wgpu::ColorWriteMask to_write_mask(bool colorUpdate, bool alphaUpd
   return writeMask;
 }
 
-static inline wgpu::PrimitiveState to_primitive_state(GXCullMode gx_cullMode) {
+wgpu::PrimitiveState to_primitive_state(GXCullMode gx_cullMode) {
   auto cullMode = wgpu::CullMode::None;
   switch (gx_cullMode) {
     DEFAULT_FATAL("unsupported cull mode {}", underlying(gx_cullMode));
@@ -288,6 +210,111 @@ static inline wgpu::PrimitiveState to_primitive_state(GXCullMode gx_cullMode) {
       .unclippedDepth = true,
   };
 }
+} // namespace
+
+void set_viewport_policy(AuroraViewportPolicy policy) noexcept {
+  sPendingViewportPolicy.store(policy, std::memory_order_release);
+}
+
+void update() noexcept {
+  if (const int pending = sPendingViewportPolicy.exchange(-1, std::memory_order_acq_rel); pending != -1) {
+    const auto policy = static_cast<AuroraViewportPolicy>(pending);
+    g_gxState.viewportPolicy = policy;
+    window::set_frame_buffer_aspect_fit(policy == AURORA_VIEWPORT_FIT);
+  }
+}
+
+Vec2<uint32_t> logical_fb_size() noexcept {
+  return gfx::is_offscreen() ? gfx::get_render_target_size() : vi::configured_fb_size();
+}
+
+gfx::Viewport map_logical_viewport(const gfx::Viewport& logicalViewport) noexcept {
+  if (g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE) {
+    return logicalViewport;
+  }
+
+  const auto [logicalFbWidth, logicalFbHeight] = logical_fb_size();
+  const auto [targetWidth, targetHeight] = gfx::get_render_target_size();
+  if (logicalFbWidth == 0 || logicalFbHeight == 0 || targetWidth == 0 || targetHeight == 0) {
+    return logicalViewport;
+  }
+
+  const float scaleX = static_cast<float>(targetWidth) / static_cast<float>(logicalFbWidth);
+  const float scaleY = static_cast<float>(targetHeight) / static_cast<float>(logicalFbHeight);
+  return {
+      .left = logicalViewport.left * scaleX,
+      .top = logicalViewport.top * scaleY,
+      .width = logicalViewport.width * scaleX,
+      .height = logicalViewport.height * scaleY,
+      .znear = logicalViewport.znear,
+      .zfar = logicalViewport.zfar,
+  };
+}
+
+gfx::ClipRect map_logical_scissor(const gfx::ClipRect& logicalScissor) noexcept {
+  if (g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE) {
+    return logicalScissor;
+  }
+
+  const auto [logicalFbWidth, logicalFbHeight] = logical_fb_size();
+  const auto [targetWidth, targetHeight] = gfx::get_render_target_size();
+  if (logicalFbWidth == 0 || logicalFbHeight == 0 || targetWidth == 0 || targetHeight == 0) {
+    return logicalScissor;
+  }
+
+  const float scaleX = static_cast<float>(targetWidth) / static_cast<float>(logicalFbWidth);
+  const float scaleY = static_cast<float>(targetHeight) / static_cast<float>(logicalFbHeight);
+
+  const float left = static_cast<float>(logicalScissor.x) * scaleX;
+  const float top = static_cast<float>(logicalScissor.y) * scaleY;
+  const float right = static_cast<float>(logicalScissor.x + logicalScissor.width) * scaleX;
+  const float bottom = static_cast<float>(logicalScissor.y + logicalScissor.height) * scaleY;
+
+  const auto mappedLeft = std::clamp(static_cast<int32_t>(std::floor(left)), 0, static_cast<int32_t>(targetWidth));
+  const auto mappedTop = std::clamp(static_cast<int32_t>(std::floor(top)), 0, static_cast<int32_t>(targetHeight));
+  const auto mappedRight =
+      std::clamp(static_cast<int32_t>(std::ceil(right)), mappedLeft, static_cast<int32_t>(targetWidth));
+  const auto mappedBottom =
+      std::clamp(static_cast<int32_t>(std::ceil(bottom)), mappedTop, static_cast<int32_t>(targetHeight));
+
+  return {
+      .x = mappedLeft,
+      .y = mappedTop,
+      .width = mappedRight - mappedLeft,
+      .height = mappedBottom - mappedTop,
+  };
+}
+
+void set_logical_viewport(const gfx::Viewport& viewport) noexcept {
+  if (viewport.left != g_gxState.logicalViewport.left || viewport.width != g_gxState.logicalViewport.width ||
+      viewport.height != g_gxState.logicalViewport.height || viewport.znear != g_gxState.logicalViewport.znear ||
+      viewport.zfar != g_gxState.logicalViewport.zfar) {
+    g_gxState.dirty |= DirtyUniform;
+  }
+  g_gxState.logicalViewport = viewport;
+  set_render_viewport(map_logical_viewport(viewport));
+}
+
+void set_render_viewport(const gfx::Viewport& viewport) noexcept {
+  if (viewport.left != g_gxState.renderViewport.left || viewport.width != g_gxState.renderViewport.width ||
+      viewport.height != g_gxState.renderViewport.height) {
+    g_gxState.dirty |= DirtyUniform;
+  }
+  g_gxState.renderViewport = viewport;
+  gfx::set_viewport(viewport);
+}
+
+void set_logical_scissor(const gfx::ClipRect& scissor) noexcept {
+  g_gxState.logicalScissor = scissor;
+  set_render_scissor(map_logical_scissor(g_gxState.logicalScissor));
+}
+
+void set_render_scissor(const gfx::ClipRect& scissor) noexcept {
+  g_gxState.renderScissor = scissor;
+  gfx::set_scissor(scissor);
+}
+
+const gfx::TextureBind& get_texture(GXTexMapID id) noexcept { return g_gxState.textures[static_cast<size_t>(id)]; }
 
 wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, ArrayRef<wgpu::VertexBufferLayout> vtxBuffers,
                                     wgpu::ShaderModule shader, const char* label) noexcept {
@@ -341,7 +368,9 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
   ZoneScoped;
 
   const auto& vtxFmt = g_gxState.vtxFmts[fmt];
+  config.shaderConfig = {};
   config.shaderConfig.fogType = g_gxState.fog.type;
+  config.shaderConfig.fogRangeEnabled = g_gxState.fog.rangeEnabled;
   u8 vtxOffset = 0;
   for (int i = GX_VA_PNMTXIDX; i <= GX_VA_TEX7; ++i) {
     const auto attr = static_cast<GXAttr>(i);
@@ -539,14 +568,15 @@ void initialize() noexcept {
   }
   {
     const std::array layouts{
-        gfx::g_staticBindGroupLayout,
-        gfx::g_uniformBindGroupLayout,
+        gfx::detail::resources().staticBindGroupLayout,
+        gfx::detail::resources().uniformBindGroupLayout,
         sTextureBindGroupLayout,
     };
     const wgpu::PipelineLayoutDescriptor desc{
         .label = "GX Pipeline Layout",
         .bindGroupLayoutCount = layouts.size(),
         .bindGroupLayouts = layouts.data(),
+        .immediateSize = sizeof(DrawImmediateData),
     };
     sPipelineLayout = g_device.CreatePipelineLayout(&desc);
   }
@@ -572,87 +602,4 @@ void shutdown() noexcept {
   clear_copy_texture_cache();
   texture::shutdown();
 }
-} // namespace aurora::gx
-
-static wgpu::AddressMode wgpu_address_mode(GXTexWrapMode mode) {
-  switch (mode) {
-    DEFAULT_FATAL("invalid wrap mode {}", underlying(mode));
-  case GX_CLAMP:
-    return wgpu::AddressMode::ClampToEdge;
-  case GX_REPEAT:
-    return wgpu::AddressMode::Repeat;
-  case GX_MIRROR:
-    return wgpu::AddressMode::MirrorRepeat;
-  }
-}
-
-static std::pair<wgpu::FilterMode, wgpu::MipmapFilterMode> wgpu_filter_mode(GXTexFilter filter) {
-  switch (filter) {
-    DEFAULT_FATAL("invalid filter mode {}", static_cast<int>(filter));
-  case GX_NEAR:
-    return {wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Undefined};
-  case GX_LINEAR:
-    return {wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Undefined};
-  case GX_NEAR_MIP_NEAR:
-    return {wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Nearest};
-  case GX_LIN_MIP_NEAR:
-    return {wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Nearest};
-  case GX_NEAR_MIP_LIN:
-    return {wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Linear};
-  case GX_LIN_MIP_LIN:
-    return {wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Linear};
-  }
-}
-
-static u16 wgpu_aniso(GXAnisotropy aniso) {
-  switch (aniso) {
-    DEFAULT_FATAL("invalid aniso {}", static_cast<int>(aniso));
-  case GX_ANISO_1:
-  case GX_MAX_ANISOTROPY:
-    return 1;
-  case GX_ANISO_2:
-    return std::max<u16>(aurora::webgpu::g_graphicsConfig.textureAnisotropy / 2, 1);
-  case GX_ANISO_4:
-    return std::max<u16>(aurora::webgpu::g_graphicsConfig.textureAnisotropy, 1);
-  }
-}
-
-wgpu::SamplerDescriptor aurora::gfx::TextureBind::get_descriptor() const noexcept {
-  auto [minFilter, mipFilter] = wgpu_filter_mode(texObj.min_filter());
-  auto [magFilter, _] = wgpu_filter_mode(texObj.mag_filter());
-  const bool mipsEnabled = mipFilter != wgpu::MipmapFilterMode::Undefined;
-  float minLod = texObj.min_lod();
-  float maxLod = texObj.max_lod();
-  u16 maxAnisotropy = wgpu_aniso(texObj.max_aniso());
-  if (ref && ref->isReplacement) {
-    minLod = 0.f;
-    maxLod = static_cast<float>(std::max(ref->mipCount, 1u) - 1u);
-    if (!mipsEnabled) {
-      mipFilter = wgpu::MipmapFilterMode::Nearest;
-    }
-  } else if (mipFilter == wgpu::MipmapFilterMode::Undefined || texObj.has_mips() == GX_FALSE ||
-             (ref && ref->mipCount <= 1u)) {
-    mipFilter = wgpu::MipmapFilterMode::Undefined;
-    minLod = 0.f;
-    maxLod = 0.f;
-  }
-  if ((ref && ref->hasArbitraryMips) || !mipsEnabled) {
-    maxAnisotropy = 1;
-  } else if (maxAnisotropy > 1) {
-    magFilter = wgpu::FilterMode::Linear;
-    minFilter = wgpu::FilterMode::Linear;
-    mipFilter = wgpu::MipmapFilterMode::Linear;
-  }
-  return {
-      .label = "Generated Filtering Sampler",
-      .addressModeU = wgpu_address_mode(texObj.wrap_s()),
-      .addressModeV = wgpu_address_mode(texObj.wrap_t()),
-      .addressModeW = wgpu::AddressMode::Repeat,
-      .magFilter = magFilter,
-      .minFilter = minFilter,
-      .mipmapFilter = mipFilter,
-      .lodMinClamp = minLod,
-      .lodMaxClamp = maxLod,
-      .maxAnisotropy = maxAnisotropy,
-  };
 } // namespace aurora::gx

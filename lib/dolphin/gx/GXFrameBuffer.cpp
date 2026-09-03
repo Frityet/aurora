@@ -3,7 +3,8 @@
 
 #include "../../gfx/tex_copy_conv.hpp"
 #include "../../gfx/texture.hpp"
-#include "../../gfx/common.hpp"
+#include "../../gfx/recording.hpp"
+#include "../../gfx/frame.hpp"
 #include "../../gx/fifo.hpp"
 #include "../../window.hpp"
 #include "../../gfx/clear.hpp"
@@ -260,10 +261,10 @@ void copy_tex(const void* dest, GXBool clear) noexcept {
       handle = gfx::new_conv_texture(dstWidth, dstHeight, texCopyFmt, "Copy Conv Texture");
     } else {
       // Configure the texture swizzle to use alpha 1.0 if targeting RGB565 or EFB doesn't have alpha
-      const auto fmt = texCopyFmt == GX_TF_RGB565 || g_gxState.pixelFmt == GX_PF_RGB8_Z24 ||
-                               g_gxState.pixelFmt == GX_PF_RGB565_Z16
-                           ? GX_TF_RGB565
-                           : GX_TF_RGBA8;
+      const auto fmt =
+          texCopyFmt == GX_TF_RGB565 || g_gxState.pixelFmt == GX_PF_RGB8_Z24 || g_gxState.pixelFmt == GX_PF_RGB565_Z16
+              ? GX_TF_RGB565
+              : GX_TF_RGBA8;
       handle = gfx::new_render_texture(dstWidth, dstHeight, fmt, "Resolved Texture");
     }
     it = g_gxState.copyTextureCache.emplace(key, GXState::CopyTextureRef{.handle = handle, .revision = 0}).first;
@@ -277,11 +278,8 @@ void copy_tex(const void* dest, GXBool clear) noexcept {
     }
     // Overwrite alpha before resolving
     gfx::push_draw_command(gfx::clear::DrawData{
-        .pipeline = gfx::pipeline_ref(gfx::clear::PipelineConfig{
-            .clearColor = false,
-            .clearAlpha = true,
-            .clearDepth = false,
-        }),
+        .pipeline =
+            gfx::pipeline_ref(gfx::clear::make_pipeline_config(gfx::get_render_target_layout(), false, true, false)),
         .color = wgpu::Color{0.f, 0.f, 0.f, g_gxState.dstAlpha / 255.f},
     });
   }
@@ -398,7 +396,10 @@ void GXSetTexCopyDst(u16 wd, u16 ht, GXTexFmt fmt, GXBool mipmap) {
 
 void GXSetDispCopyFrame2Field(u32 mode) { g_gxState.dispCopy.frame2Field = mode; }
 
-void GXSetCopyClamp(GXFBClamp clamp) { g_gxState.dispCopy.clamp = clamp; }
+void GXSetCopyClamp(GXFBClamp clamp) {
+  aurora::gx::fifo::drain();
+  g_gxState.dispCopy.clamp = clamp;
+}
 
 u32 GXSetDispCopyYScale(f32 vscale) {
   g_gxState.dispCopy.yScale = vscale;
@@ -432,8 +433,8 @@ void GXSetCopyClear(GXColor color, u32 depth) {
 void GXSetCopyFilter(GXBool aa, const u8 sample_pattern[12][2], GXBool vf, const u8 vfilter[7]) {
   const bool aaEnabled = aa != GX_FALSE;
   const bool vfilterEnabled = vf != GX_FALSE;
-  auto effectiveSamplePattern = g_gxState.dispCopy.samplePattern;
-  auto effectiveVFilter = g_gxState.dispCopy.vfilter;
+  std::array<std::array<u8, 2>, 12> effectiveSamplePattern{};
+  std::array<u8, 7> effectiveVFilter{};
 
   if (aaEnabled && sample_pattern != nullptr) {
     for (size_t sample = 0; sample < effectiveSamplePattern.size(); ++sample) {
@@ -511,6 +512,7 @@ void GXCopyTex(void* dest, GXBool clear) {
   SET_REG_FIELD(0, __gx->cpTex, 1, 14, 0);
   SET_REG_FIELD(0, __gx->cpTex, 8, 24, 0x52);
   GX_WRITE_RAS_REG(__gx->cpTex);
+  aurora::gx::fifo::publish();
 }
 
 u16 GXGetNumXfbLines(u16 efbHeight, f32 yScale) {

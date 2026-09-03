@@ -222,6 +222,11 @@ BOOL AuroraGetDisplayCopySize(u32* width, u32* height);
 BOOL AuroraReadDisplayCopyRGBA8(void* dst, u32 dstSize, u32* width, u32* height, u32* rowStrideOut);
 
 /**
+ * Flushes pending GX state and waits for FIFO processing without a draw-done callback.
+ */
+void AuroraGXSync(void);
+
+/**
  * Sets the actual render viewport in native framebuffer coordinates.
  * Overrides the automatically scaled values set by the logical GXSetViewport.
  */

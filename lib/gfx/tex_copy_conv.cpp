@@ -1,5 +1,7 @@
 #include "tex_copy_conv.hpp"
 
+#include "resources.hpp"
+
 #include "../internal.hpp"
 #include "../gx/gx.hpp"
 #include "../webgpu/gpu.hpp"
@@ -610,7 +612,7 @@ static void execute(const wgpu::CommandEncoder& cmd, const ConvRequest& req, con
         },
         wgpu::BindGroupEntry{
             .binding = 1,
-            .buffer = g_uniformBuffer,
+            .buffer = detail::resources().uniformBuffer,
             .offset = req.uniformRange.offset,
             .size = req.uniformRange.size,
         },
@@ -634,7 +636,7 @@ static void execute(const wgpu::CommandEncoder& cmd, const ConvRequest& req, con
         },
         wgpu::BindGroupEntry{
             .binding = 2,
-            .buffer = g_uniformBuffer,
+            .buffer = detail::resources().uniformBuffer,
             .offset = req.uniformRange.offset,
             .size = req.uniformRange.size,
         },

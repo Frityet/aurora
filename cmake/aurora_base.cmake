@@ -8,6 +8,12 @@ add_library(aurora_base STATIC
         lib/device.hpp
         lib/input.cpp
         lib/logging.cpp
+        lib/io.cpp
+        lib/io.hpp
+        lib/thread.cpp
+        lib/thread.hpp
+        lib/time.cpp
+        lib/time_internal.hpp
         lib/rfl/ResourceArchive.cpp
         lib/system_info.cpp
         lib/system_info.hpp

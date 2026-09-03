@@ -6,7 +6,7 @@
 #include "gx.hpp"
 #include "../../window.hpp"
 
-#include "../../gfx/common.hpp"
+#include "../../gfx/recording.hpp"
 #include "../../gfx/depth_peek.hpp"
 #include "../../gx/fifo.hpp"
 
@@ -35,8 +35,7 @@ void GXInsertDebugMarker(const char* label) {
 }
 
 void AuroraSetViewportPolicy(AuroraViewportPolicy policy) {
-  g_gxState.viewportPolicy = policy;
-  aurora::window::set_frame_buffer_aspect_fit(policy == AURORA_VIEWPORT_FIT);
+  aurora::gx::set_viewport_policy(policy);
 }
 
 void AuroraGetRenderSize(u32* width, u32* height) {
@@ -89,14 +88,24 @@ BOOL AuroraHasTextureCopy(const void* dest) {
   return aurora::gx::has_copy_texture(dest) ? TRUE : FALSE;
 }
 
-BOOL AuroraHasDisplayCopy(void) { return aurora::gx::has_display_copy() ? TRUE : FALSE; }
+BOOL AuroraHasDisplayCopy(void) {
+  aurora::gx::fifo::drain();
+  return aurora::gx::has_display_copy() ? TRUE : FALSE;
+}
 
 BOOL AuroraGetDisplayCopySize(u32* width, u32* height) {
+  aurora::gx::fifo::drain();
   return aurora::gx::display_copy_size(width, height) ? TRUE : FALSE;
 }
 
 BOOL AuroraReadDisplayCopyRGBA8(void* dst, u32 dstSize, u32* width, u32* height, u32* rowStrideOut) {
+  aurora::gx::fifo::drain();
   return aurora::gx::read_display_copy_rgba8(dst, dstSize, width, height, rowStrideOut) ? TRUE : FALSE;
+}
+
+void AuroraGXSync() {
+  GXFlush();
+  aurora::gx::fifo::drain();
 }
 
 void GXSetViewportRender(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz) {
@@ -138,8 +147,10 @@ void GXCreateFrameBuffer(u32 width, u32 height) {
   GX_WRITE_AURORA(GX_AURORA_BEGIN_OFFSCREEN);
   GX_WRITE_U32(width);
   GX_WRITE_U32(height);
+  aurora::gx::fifo::publish();
 }
 
 void GXRestoreFrameBuffer() {
   GX_WRITE_AURORA(GX_AURORA_END_OFFSCREEN);
+  aurora::gx::fifo::publish();
 }

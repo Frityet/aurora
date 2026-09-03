@@ -36,7 +36,7 @@ option("aurora_cache_use_zstd")
 option_end()
 
 option("aurora_dawn_version")
-    set_default("v20260618.032059")
+    set_default("v20260807.225922")
     set_showmenu(true)
     set_description("Dawn version tag")
 option_end()
@@ -124,7 +124,7 @@ if has_config("aurora_enable_gx") then
     if provider("aurora_dawn_provider") == "system" then
         add_requires("dawn-build", {system = true})
     else
-        add_requires("dawn-build " .. (get_config("aurora_dawn_version") or "v20260618.032059"),
+        add_requires("dawn-build " .. (get_config("aurora_dawn_version") or "v20260807.225922"),
                      {configs = {shared = shared_linkage("aurora_dawn_linkage")}})
     end
     add_requires("libpng v1.6.58")
@@ -133,7 +133,7 @@ if has_config("aurora_enable_gx") then
     local imgui_user_config_source = path.join(os.scriptdir(), "lib", "imgui_config.cpp")
     add_requires("imgui v1.91.9b-docking",
                  {configs = {sdl3 = true, sdl3_renderer = true, wgpu = true, wgpu_backend = "dawn",
-                             dawn_version = get_config("aurora_dawn_version") or "v20260618.032059",
+                             dawn_version = get_config("aurora_dawn_version") or "v20260807.225922",
                              freetype = true, user_config = imgui_user_config,
                              user_config_source = imgui_user_config_source}})
     if has_config("aurora_cache_use_zstd") then
@@ -190,7 +190,8 @@ target("aurora-base")
     add_aurora_common_settings(true)
     add_files("lib/runtime_state.cpp", "lib/compat.cpp", "lib/audio.cpp", "lib/j_audio_sound_archive.cpp",
               "lib/j_audio_stream.cpp", "lib/device.cpp", "lib/input.cpp", "lib/logging.cpp",
-              "lib/system_info.cpp", "lib/rfl/ResourceArchive.cpp")
+              "lib/system_info.cpp", "lib/io.cpp", "lib/thread.cpp", "lib/time.cpp",
+              "lib/rfl/ResourceArchive.cpp")
     add_headerfiles("include/(aurora/audio.hpp)", "include/(aurora/j_audio_sound_archive.hpp)",
                     "include/(aurora/j_audio_stream.hpp)", "include/(aurora/rfl/ResourceArchive.hpp)")
     add_packages("fmt", "libsdl3", "xxhash", {public = true})
@@ -233,7 +234,7 @@ target("aurora-core")
     set_kind("static")
     add_aurora_common_settings(true)
     add_files("lib/aurora.cpp")
-    add_headerfiles("include/(aurora/**.h)", "include/(revolution.h)", "include/(revolution/**.h)",
+    add_headerfiles("include/(aurora/**.h)", "include/(aurora/**.hpp)", "include/(revolution.h)", "include/(revolution/**.h)",
                     "include/(RVLFaceLib.h)", "lib/*.hpp")
     add_deps("aurora-base", "aurora-platform")
     add_packages("fmt", "libsdl3", "xxhash", {public = true})
@@ -310,13 +311,16 @@ if has_config("aurora_enable_gx") then
         set_kind("static")
         add_aurora_common_settings(true)
         add_dawn_backend_defines()
-        add_files("lib/gfx/clear.cpp", "lib/gfx/common.cpp", "lib/gfx/depth_peek.cpp",
+        add_files("lib/gfx/clear.cpp", "lib/gfx/depth_peek.cpp",
+                  "lib/gfx/encoding.cpp", "lib/gfx/frame.cpp", "lib/gfx/recording.cpp",
+                  "lib/gfx/resource_cache.cpp",
                   "lib/gfx/pipeline_cache.cpp", "lib/gfx/render_worker.cpp", "lib/gfx/dds_io.cpp",
                   "lib/gfx/tex_copy_conv.cpp", "lib/gfx/tex_palette_conv.cpp", "lib/gfx/texture.cpp",
                   "lib/gfx/texture_format.cpp",
                   "lib/gfx/texture_convert.cpp", "lib/gfx/texture_replacement.cpp",
                   "lib/gfx/png_io.cpp",
                   "lib/gx/attr_fmt.cpp", "lib/gx/command_processor.cpp", "lib/gx/destruction_state.cpp",
+                  "lib/gx/regs.cpp",
                   "lib/gx/dl.cpp", "lib/gx/fifo.cpp", "lib/gx/gx.cpp", "lib/gx/texture.cpp",
                   "lib/gx/pipeline.cpp", "lib/gx/shader.cpp", "lib/gx/shader_info.cpp",
                   "lib/rfl/CharacterModel.cpp", "lib/rfl/CharacterResource.cpp",

@@ -2,6 +2,7 @@
 
 #include <dolphin/gx.h>
 #include <dolphin/gx/GXAurora.h>
+#include <dolphin/vi.h>
 
 #include <algorithm>
 #include <array>
@@ -115,14 +116,7 @@ void draw_quad(float left, float top, float right, float bottom, float z, GXColo
   GXEnd();
 }
 
-void draw_indexed_quad(float left, float top, float right, float bottom, float z, GXColor color) {
-  const std::array<std::array<float, 3>, 4> positions{{
-      {left, top, z},
-      {right, top, z},
-      {right, bottom, z},
-      {left, bottom, z},
-  }};
-
+void draw_indexed_quad(const std::array<std::array<float, 3>, 4>& positions, GXColor color) {
   GXClearVtxDesc();
   GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
   GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
@@ -142,7 +136,11 @@ void draw_indexed_quad(float left, float top, float right, float bottom, float z
 [[nodiscard]] std::vector<std::uint8_t> read_display_copy() {
   auto width = 0U;
   auto height = 0U;
-  require(AuroraGetDisplayCopySize(&width, &height) == GX_TRUE && width == CopyWidth && height == CopyHeight,
+  const auto hasDisplayCopy = AuroraGetDisplayCopySize(&width, &height);
+  if (hasDisplayCopy != GX_TRUE || width != CopyWidth || height != CopyHeight) {
+    std::cerr << "display copy available=" << hasDisplayCopy << " size=" << width << 'x' << height << '\n';
+  }
+  require(hasDisplayCopy == GX_TRUE && width == CopyWidth && height == CopyHeight,
           "GXCopyDisp must materialize the configured display texture");
 
   auto stride = 0U;
@@ -188,7 +186,11 @@ void draw_indexed_quad(float left, float top, float right, float bottom, float z
 void prove_exact_mario_z_scale_offset() {
   auto config = AuroraConfig{};
   config.appName = "Aurora GX Z scale/offset render proof";
+#if defined(__APPLE__)
+  config.desiredBackend = BACKEND_METAL;
+#else
   config.desiredBackend = BACKEND_VULKAN;
+#endif
   config.allowCpuAdapter = true;
   config.windowWidth = CopyWidth;
   config.windowHeight = CopyHeight;
@@ -199,10 +201,21 @@ void prove_exact_mario_z_scale_offset() {
 
   const auto info = aurora_initialize(0, nullptr, &config);
   const auto lifetime = AuroraLifetime{};
-  require(info.backend == BACKEND_VULKAN, "the render proof requires Aurora's real Vulkan backend");
+  require(info.backend == config.desiredBackend, "the render proof requires the requested real GPU backend");
 
   AuroraSetViewportPolicy(AURORA_VIEWPORT_NATIVE);
   GXInit(nullptr, 0);
+  VISetFrameBufferScale(1.0F);
+  GXRenderModeObj renderMode{};
+  renderMode.viTVmode = VI_TVMODE_NTSC_PROG;
+  renderMode.fbWidth = CopyWidth;
+  renderMode.efbHeight = CopyHeight;
+  renderMode.xfbHeight = CopyHeight;
+  renderMode.viWidth = CopyWidth;
+  renderMode.viHeight = CopyHeight;
+  renderMode.xFBmode = VI_XFBMODE_SF;
+  VIConfigure(&renderMode);
+  aurora_update();
   require(aurora_begin_frame(), "Aurora must acquire a real render frame");
 
   GXSetCopyClear(GXColor{24, 24, 24, 255}, GX_MAX_Z24);
@@ -231,7 +244,15 @@ void prove_exact_mario_z_scale_offset() {
   // Use the retail three-argument indexed-array surface for the passing half.
   // Native host floats must be decoded as little endian, and Aurora must
   // derive exactly the four referenced position records before uploading.
-  draw_indexed_quad(0.0F, 0.0F, 1.0F, 1.0F, -0.4999F, Green);
+  // GX indexed arrays are borrowed until the FIFO consumes the draw. Keep this
+  // storage alive through frame completion, including asynchronous processing.
+  const std::array<std::array<float, 3>, 4> indexedPositions{{
+      {0.0F, 0.0F, -0.4999F},
+      {1.0F, 0.0F, -0.4999F},
+      {1.0F, 1.0F, -0.4999F},
+      {0.0F, 1.0F, -0.4999F},
+  }};
+  draw_indexed_quad(indexedPositions, Green);
 
   // The offset places the far endpoint just outside WebGPU's normal [0, 1]
   // clip volume. DepthClipControl must preserve it so viewport depth clamping

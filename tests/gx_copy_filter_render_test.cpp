@@ -169,7 +169,11 @@ void copy_test_frame(void* destination) {
 void prove_copy_filter() {
   AuroraConfig config{};
   config.appName = "Aurora GX copy-filter render proof";
+#if defined(__APPLE__)
+  config.desiredBackend = BACKEND_METAL;
+#else
   config.desiredBackend = BACKEND_VULKAN;
+#endif
   config.allowCpuAdapter = true;
   config.windowWidth = Width;
   config.windowHeight = Height;
@@ -181,7 +185,7 @@ void prove_copy_filter() {
 
   const auto init = aurora_initialize(0, nullptr, &config);
   const AuroraLifetime lifetime;
-  require(init.backend == BACKEND_VULKAN, "the render proof requires Aurora's Vulkan backend");
+  require(init.backend == config.desiredBackend, "the render proof requires the requested real GPU backend");
 
   AuroraSetViewportPolicy(AURORA_VIEWPORT_NATIVE);
   GXInit(nullptr, 0);

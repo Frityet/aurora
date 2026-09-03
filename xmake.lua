@@ -262,8 +262,8 @@ target("aurora-os")
               "lib/dolphin/os/OSCache.cpp",
               "lib/dolphin/os/OSArena.cpp", "lib/dolphin/os/OSAlloc.cpp",
               "lib/dolphin/os/OSAddress.cpp", "lib/dolphin/os/OSReport.cpp",
-              "lib/dolphin/AR.cpp", "lib/nand.cpp")
-    add_headerfiles("include/(aurora/nand.hpp)")
+              "lib/dolphin/AR.cpp", "lib/nand.cpp", "lib/sysconf.cpp")
+    add_headerfiles("include/(aurora/nand.hpp)", "include/(aurora/sysconf.hpp)")
     add_deps("aurora-base")
 
 target("aurora-si")

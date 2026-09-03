@@ -182,6 +182,12 @@ OSTick OSGetTick(void);
 OSTime OSGetTime(void);
 void OSTicksToCalendarTime(OSTime ticks, OSCalendarTime* td);
 OSTime OSCalendarTimeToTicks(OSCalendarTime* td);
+/**
+ * Return the caller's prior interrupt state and set the requested state.
+ * Aurora serializes participating SDK callers while interrupts or scheduling
+ * are disabled; this does not mask host signals or suspend native workers.
+ * Restore uses the saved BOOL state, not a disable-depth counter.
+ */
 BOOL OSEnableInterrupts(void);
 BOOL OSDisableInterrupts(void);
 BOOL OSRestoreInterrupts(BOOL level);

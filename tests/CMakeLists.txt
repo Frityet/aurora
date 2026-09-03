@@ -71,6 +71,16 @@ target_compile_definitions(os_time_tests PRIVATE AURORA TARGET_PC)
 target_link_libraries(os_time_tests PRIVATE fmt::fmt gtest gtest_main)
 gtest_discover_tests(os_time_tests)
 
+find_package(Threads REQUIRED)
+add_executable(os_execution_tests
+  os_execution_test.cpp
+  ../lib/dolphin/os/OSExecution.cpp
+)
+target_include_directories(os_execution_tests PRIVATE ../include)
+target_compile_definitions(os_execution_tests PRIVATE AURORA TARGET_PC)
+target_link_libraries(os_execution_tests PRIVATE gtest gtest_main Threads::Threads)
+gtest_discover_tests(os_execution_tests)
+
 if (AURORA_ENABLE_GX)
   add_executable(gx_destruction_state_tests
     gx_destruction_state_test.cpp

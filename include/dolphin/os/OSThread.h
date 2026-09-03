@@ -82,12 +82,16 @@ void OSWakeupThread(OSThreadQueue* queue);
 s32 OSSuspendThread(OSThread* thread);
 s32 OSResumeThread(OSThread* thread);
 OSThread* OSGetCurrentThread(void);
+/* Return the prior signed scheduling-disable count, then decrement/increment.
+ * Aurora retains cooperative emulated-CPU ownership while the count is > 0. */
 s32 OSEnableScheduler(void);
 s32 OSDisableScheduler(void);
 void OSCancelThread(OSThread* thread);
 void OSClearStack(u8 val);
 BOOL OSIsThreadSuspended(OSThread* thread);
 BOOL OSIsThreadTerminated(OSThread* thread);
+/* Yield to the host only when scheduling is enabled, preserving interrupt
+ * state across an explicit cooperative handoff to other SDK callers. */
 void OSYieldThread(void);
 BOOL OSCreateThread(OSThread* thread, void* (*func)(void*), void* param, void* stack, u32 stackSize,
                     OSPriority priority, u16 attr);

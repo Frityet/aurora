@@ -258,6 +258,7 @@ target("aurora-os")
     add_aurora_common_settings(true)
     add_files("lib/dolphin/os/OSInit.cpp", "lib/dolphin/os/OSMemory.cpp",
               "lib/dolphin/os/OSBootInfo.cpp", "lib/dolphin/os/OSTime.cpp",
+              "lib/dolphin/os/OSExecution.cpp",
               "lib/dolphin/os/OSCache.cpp",
               "lib/dolphin/os/OSArena.cpp", "lib/dolphin/os/OSAlloc.cpp",
               "lib/dolphin/os/OSAddress.cpp", "lib/dolphin/os/OSReport.cpp",

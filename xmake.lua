@@ -195,6 +195,10 @@ target("aurora-base")
                     "include/(aurora/j_audio_stream.hpp)", "include/(aurora/rfl/ResourceArchive.hpp)")
     add_packages("fmt", "libsdl3", "xxhash", {public = true})
     add_packages("abseil", "sqlite3", "tracy")
+    if is_plat("macosx", "iphoneos") then
+        add_files("lib/system_info_mac.mm")
+        add_frameworks("Foundation")
+    end
 
 target("aurora-platform")
     set_kind("static")

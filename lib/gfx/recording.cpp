@@ -549,6 +549,10 @@ void begin_recording(FramePacket& packet, size_t frameSlot) {
   g_recorder.currentRenderPass = 0;
   g_recorder.cachedViewport = gx::map_logical_viewport(gx::g_gxState.logicalViewport);
   g_recorder.cachedScissor = gx::map_logical_scissor(gx::g_gxState.logicalScissor);
+  // Replay the mapped state into both GX's uniform sources and this recording.
+  // The caches already match, so these setters emit no duplicate commands.
+  gx::set_render_viewport(g_recorder.cachedViewport);
+  gx::set_render_scissor(g_recorder.cachedScissor);
   push_command(CommandType::SetViewport, Command::Data{.setViewport = g_recorder.cachedViewport});
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_recorder.cachedScissor});
 }

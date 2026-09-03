@@ -207,7 +207,7 @@ TEST(GfxRecordingStateTest, QueuedViewportAndScissorSurviveInactiveDrains) {
                                  int32_t scissorWidth, int32_t scissorHeight) {
     ASSERT_FALSE(packet.renderPasses.empty());
     const auto& commands = packet.renderPasses.front().commands;
-    ASSERT_GE(commands.size(), 2u);
+    ASSERT_EQ(commands.size(), 2u);
     ASSERT_EQ(commands[0].type, detail::CommandType::SetViewport);
     EXPECT_FLOAT_EQ(commands[0].data.setViewport.left, left);
     EXPECT_FLOAT_EQ(commands[0].data.setViewport.top, top);
@@ -241,8 +241,20 @@ TEST(GfxRecordingStateTest, QueuedViewportAndScissorSurviveInactiveDrains) {
   webgpu::g_depthBuffer.size = {1280, 960, 1};
   gx::g_gxState.viewportPolicy = AURORA_VIEWPORT_FIT;
   detail::FramePacket second;
+  gx::g_gxState.dirty &= ~gx::DirtyUniform;
   detail::begin_recording(second, 1);
   check_recorded_state(second, 40.f, 60.f, 400.f, 200.f, 80, 120, 360, 180);
+  EXPECT_FLOAT_EQ(gx::g_gxState.renderViewport.left, 40.f);
+  EXPECT_FLOAT_EQ(gx::g_gxState.renderViewport.top, 60.f);
+  EXPECT_FLOAT_EQ(gx::g_gxState.renderViewport.width, 400.f);
+  EXPECT_FLOAT_EQ(gx::g_gxState.renderViewport.height, 200.f);
+  EXPECT_FLOAT_EQ(gx::g_gxState.renderViewport.znear, 0.125f);
+  EXPECT_FLOAT_EQ(gx::g_gxState.renderViewport.zfar, 0.75f);
+  EXPECT_EQ(gx::g_gxState.renderScissor.x, 80);
+  EXPECT_EQ(gx::g_gxState.renderScissor.y, 120);
+  EXPECT_EQ(gx::g_gxState.renderScissor.width, 360);
+  EXPECT_EQ(gx::g_gxState.renderScissor.height, 180);
+  EXPECT_NE(gx::g_gxState.dirty & gx::DirtyUniform, 0u);
   finish();
   detail::end_recording();
   gx::fifo::shutdown();

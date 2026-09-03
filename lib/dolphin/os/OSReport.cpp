@@ -1,15 +1,9 @@
 #include <dolphin/os.h>
 #include <dolphin/gx/GXStruct.h>
 
-#include "fmt/base.h"
-#include "fmt/printf.h"
-
-#include "../../logging.hpp"
-
 #include <cstdarg>
-
-#if 0
-static aurora::Module reporter("aurora::os::report");
+#include <cstdio>
+#include <cstdlib>
 
 void OSReport(const char* msg, ...) {
   va_list args;
@@ -18,26 +12,30 @@ void OSReport(const char* msg, ...) {
   va_end(args);
 }
 
-static std::string FormatToString(const char* msg, va_list list) {
-  int ret = vsnprintf(nullptr, 0, msg, list);
-  std::string buf(ret, '\0');
-  vsnprintf(buf.data(), buf.size(), msg, list);
-  buf.pop_back();
-  return buf;
-}
-
 void OSVReport(const char* msg, va_list list) {
-  reporter.info("{}", FormatToString(msg, list));
+  // The SDK serial report channel maps to host stderr. Keep reporting usable
+  // during heap exhaustion: no Game allocation or formatted-string owner is
+  // required, and the caller retains its va_list state.
+  va_list copy;
+  va_copy(copy, list);
+  std::vfprintf(stderr, msg, copy);
+  va_end(copy);
 }
 
 void OSPanic(const char* file, int line, const char* msg, ...) {
+  std::fprintf(stderr, "PANIC %s:%d: ", file, line);
   va_list args;
   va_start(args, msg);
-  reporter.fatal("PANIC {}:{}: {}", file, line, FormatToString(msg, args));
+  OSVReport(msg, args);
   va_end(args);
+  std::fputc('\n', stderr);
+  std::fflush(stderr);
+  std::abort();
 }
 
-void OSFatal(GXColor fg, GXColor bg, const char* msg) {
-  reporter.fatal("{}", msg);
+void OSFatal(GXColor, GXColor, const char* msg) {
+  // Native termination does not require a working GX frame or exception UI.
+  std::fprintf(stderr, "%s\n", msg);
+  std::fflush(stderr);
+  std::abort();
 }
-#endif

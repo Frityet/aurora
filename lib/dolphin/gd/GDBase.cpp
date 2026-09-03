@@ -6,7 +6,7 @@ GDLObj* __GDCurrentDL = NULL;
 static GDOverflowCb overflowcb = NULL;
 
 void GDInitGDLObj(GDLObj* dl, void* start, u32 length) {
-    ASSERTMSGLINE(40, !((u32)start & 0x1F), "start must be aligned to 32 bytes");
+    ASSERTMSGLINE(40, !((uintptr_t)start & 0x1F), "start must be aligned to 32 bytes");
     ASSERTMSGLINE(41, !((u32)length & 0x1F), "length must be aligned to 32 bytes");
     dl->start = (u8*)start;
     dl->ptr = (u8*)start;

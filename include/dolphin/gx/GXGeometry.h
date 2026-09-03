@@ -35,6 +35,9 @@ void GXEnableTexOffsets(GXTexCoordID coord, GXBool line_enable, GXBool point_ena
 void GXSetArray(GXAttr attr, const void* data, u8 stride);
 #ifdef TARGET_PC
 void GXSetArraySized(GXAttr attr, const void* data, u32 size, u8 stride, bool le);
+// Native counterpart of a CP array-base write: preserves the current stride.
+// The unsized, host-endian source remains borrowed until the FIFO consumes it.
+void GXSetArrayBase(GXAttr attr, const void* data);
 #endif
 #ifdef TARGET_PC
 #define GXSETARRAY(attr, data, size, stride, le) GXSetArraySized((attr), (data), (size), (stride), (le))

@@ -246,7 +246,7 @@ void GDSetVtxAttrFmtv(GXVtxFmt vtxfmt, const GXVtxAttrFmtList* list) {
     GDWriteCPCmd(vtxfmt + CP_REG_VAT_GRP2_ID, CP_REG_VAT_GRP2(tx4Frac, tx5Cnt, tx5Type, tx5Frac, tx6Cnt, tx6Type, tx6Frac, tx7Cnt, tx7Type, tx7Frac));
 }
 
-void GDSetArraySized(GXAttr attr, void* base_ptr, u32 size, u8 stride, bool le) {
+static void GDSetArrayImpl(GXAttr attr, const void* base_ptr, u32 size, u8 stride, bool le, bool sizeKnown) {
   s32 cpAttr;
   if (attr == GX_VA_NBT) {
     cpAttr = 1;
@@ -254,22 +254,32 @@ void GDSetArraySized(GXAttr attr, void* base_ptr, u32 size, u8 stride, bool le) 
     cpAttr = attr - GX_VA_POS;
   }
 
-  assert((cpAttr & ~0xF) == 0);
+  AURORA_ASSERT((cpAttr & ~0xF) == 0, "invalid GD array attribute {}", static_cast<int>(attr));
 
   GDWriteAuroraCmd(cpAttr + GX_AURORA_LOAD_ARRAYBASE);
-  GDWrite_u64((u64)base_ptr);
+  GDWrite_u64(reinterpret_cast<uintptr_t>(base_ptr));
   GDWrite_u32(size);
-  GDWrite_u8(le ? 1 : 0);
+  GDWrite_u8((le ? 1 : 0) | (sizeKnown ? 0 : 2));
 
   GDWriteCPCmd(cpAttr + CP_REG_ARRAYSTRIDE_ID, stride);
 }
 
-void GDSetArray(GXAttr, void*, u8) { Log.fatal("GDSetArray is not supported on Aurora"); }
+void GDSetArraySized(GXAttr attr, const void* base_ptr, u32 size, u8 stride, bool le) {
+  GDSetArrayImpl(attr, base_ptr, size, stride, le, true);
+}
 
-void GDSetArrayRaw(GXAttr, u32, u8) { Log.fatal("GDSetArrayRaw is not supported on Aurora"); }
+void GDSetArray(GXAttr attr, const void* base_ptr, u8 stride) {
+  GDSetArrayImpl(attr, base_ptr, 0, stride, true, false);
+}
 
-void GDPatchArrayPtr(void* base_ptr) {
-    GDWrite_u32(OSCachedToPhysical(base_ptr));
+void GDSetArrayRaw(GXAttr attr, u32 base_ptr_raw, u8 stride) {
+  // This API takes an SDK physical address, not a truncated host pointer.
+  // Resolve it through the same memory service as the original cached form.
+  GDSetArray(attr, OSPhysicalToCached(base_ptr_raw), stride);
+}
+
+void GDPatchArrayPtr(const void* base_ptr) {
+  GDWrite_u64(reinterpret_cast<uintptr_t>(base_ptr));
 }
 
 void GDSetTexCoordGen(GXTexCoordID dst_coord, GXTexGenType func, GXTexGenSrc src_param, u8 normalize, u32 postmtx) {

@@ -507,10 +507,13 @@ extern "C" {
 
 void GDSetVtxDescv(const GXVtxDescList* attrPtr);
 void GDSetVtxAttrFmtv(GXVtxFmt vtxfmt, const GXVtxAttrFmtList* list);
-void GDSetArraySized(GXAttr attr, void* base_ptr, u32 size, u8 stride, bool le);
-void GDSetArray(GXAttr attr, void* base_ptr, u8 stride);
+void GDSetArraySized(GXAttr attr, const void* base_ptr, u32 size, u8 stride, bool le);
+void GDSetArray(GXAttr attr, const void* base_ptr, u8 stride);
+// base_ptr_raw is an SDK physical address resolved by OSPhysicalToCached.
 void GDSetArrayRaw(GXAttr attr, u32 base_ptr_raw, u8 stride);
-void GDPatchArrayPtr(void* base_ptr);
+// Seek to the 8-byte pointer payload of an Aurora array-base command first
+// (command start + 3). Size, flags, and the following stride remain unchanged.
+void GDPatchArrayPtr(const void* base_ptr);
 void GDSetTexCoordGen(GXTexCoordID dst_coord, GXTexGenType func, GXTexGenSrc src_param, u8 normalize, u32 postmtx);
 void GDSetCullMode(GXCullMode mode);
 void GDSetGenMode(u8 nTexGens, u8 nChans, u8 nTevs);

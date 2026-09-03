@@ -206,6 +206,7 @@ if (AURORA_ENABLE_GX)
   # Compile GX sources directly to avoid pulling in the full renderer/WebGPU runtime
   add_executable(gx_fifo_tests
     gx_fifo_test.cpp
+    gd_array_test.cpp
     gx_z_scale_offset_test.cpp
     gx_test_stubs.cpp
     # GX API implementations (encoders)
@@ -228,6 +229,11 @@ if (AURORA_ENABLE_GX)
     ../lib/dolphin/gx/GXTexture.cpp
     ../lib/dolphin/gx/GXTransform.cpp
     ../lib/dolphin/gx/GXVert.cpp
+    # Original GD display-list writers and the real physical-address mapping
+    ../lib/dolphin/gd/GDBase.cpp
+    ../lib/dolphin/gd/GDGeometry.cpp
+    ../lib/dolphin/os/OSAddress.cpp
+    ../lib/dolphin/os/OSCache.cpp
     # FIFO/command processor (encoder + decoder)
     ../lib/gx/fifo.cpp
     ../lib/gx/destruction_state.cpp

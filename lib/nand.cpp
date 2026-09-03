@@ -111,6 +111,26 @@ bool NandFileSystem::erase(std::string_view path) {
   return erased;
 }
 
+std::size_t NandFileSystem::erase_subtree(std::string_view path) {
+  const auto normalized = normalize_path(path);
+  const auto prefix = normalized == "/" ? normalized : normalized + "/";
+  auto removed = std::size_t{};
+  for (auto it = m_files.begin(); it != m_files.end();) {
+    if (it->first != normalized && !it->first.starts_with(prefix)) {
+      ++it;
+      continue;
+    }
+    auto trace = NandOperationTrace{};
+    trace.kind = NandOperationKind::Delete;
+    trace.path = it->first;
+    trace.result = NAND_RESULT_OK;
+    push_trace(std::move(trace));
+    it = m_files.erase(it);
+    ++removed;
+  }
+  return removed;
+}
+
 s32 NandFileSystem::rename(std::string_view source_path, std::string_view destination_path) {
   const auto source = normalize_path(source_path);
   const auto destination = normalize_path(destination_path);

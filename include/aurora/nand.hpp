@@ -59,6 +59,8 @@ public:
   [[nodiscard]] std::optional<std::vector<std::uint8_t>> read_file(std::string_view path) const;
   [[nodiscard]] bool exists(std::string_view path) const;
   bool erase(std::string_view path);
+  // Remove an exact normalized path and its descendants, leaving sibling roots intact.
+  std::size_t erase_subtree(std::string_view path);
   [[nodiscard]] s32 rename(std::string_view source_path, std::string_view destination_path);
   [[nodiscard]] NandCheckResult check(u32 requested_blocks, u32 requested_inodes);
   [[nodiscard]] std::optional<NandFileMetadata> metadata(std::string_view path) const;

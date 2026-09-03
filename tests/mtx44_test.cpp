@@ -8,6 +8,9 @@
 #include <cstring>
 #include <stdexcept>
 
+static_assert(sizeof(u32) == 4 && sizeof(s32) == 4,
+              "Matrix consumers must inherit the same native SDK widths as the library");
+
 namespace {
 void require(bool condition, const char* message) {
   if (!condition) throw std::runtime_error(message);

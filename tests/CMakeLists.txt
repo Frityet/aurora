@@ -416,8 +416,6 @@ gtest_discover_tests(os_alloc_tests)
 
 add_executable(mtx44_tests
   mtx44_test.cpp
-  ../lib/dolphin/mtx/mtx44.c
 )
-target_include_directories(mtx44_tests PRIVATE ../include)
-target_compile_definitions(mtx44_tests PRIVATE AURORA TARGET_PC)
+target_link_libraries(mtx44_tests PRIVATE aurora::mtx)
 add_test(NAME mtx44 COMMAND mtx44_tests)

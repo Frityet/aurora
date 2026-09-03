@@ -3,6 +3,10 @@
 #include <string.h>
 #include <dolphin/mtx/mtx44ext.h>
 
+_Static_assert(sizeof(u32) == 4 && sizeof(s32) == 4,
+               "Aurora matrix library requires the native SDK integer widths (TARGET_PC)");
+_Static_assert(sizeof(f32) == 4, "Paired-single matrix operations require 32-bit floats");
+
 void C_MTXPerspective(Mtx44 m, f32 fovY, f32 aspect, f32 n, f32 f) {
   f32 angle;
   f32 cot;

@@ -10,3 +10,4 @@ add_library(aurora::mtx ALIAS aurora_mtx)
 set_target_properties(aurora_mtx PROPERTIES FOLDER "aurora")
 
 target_include_directories(aurora_mtx PUBLIC include)
+target_compile_definitions(aurora_mtx PUBLIC AURORA TARGET_PC)

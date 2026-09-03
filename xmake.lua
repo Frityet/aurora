@@ -296,7 +296,7 @@ target("aurora-main")
 
 target("aurora-mtx")
     set_kind("static")
-    add_includedirs("include", {public = true})
+    add_aurora_common_settings(true)
     add_files("lib/dolphin/mtx/mtx.c", "lib/dolphin/mtx/mtxstack.c",
               "lib/dolphin/mtx/mtxvec.c", "lib/dolphin/mtx/mtx44.c",
               "lib/dolphin/mtx/vec.c", "lib/dolphin/mtx/quat.c")

@@ -203,4 +203,27 @@ bool SysConf::erase(std::string_view name) {
   return true;
 }
 
+void SysConf::replace_at(std::size_t index, Entry entry) {
+  (void)packed_size(entry);
+  auto candidate = m_entries;
+  candidate.at(index) = std::move(entry);
+  (void)document_size(candidate);
+  m_entries.swap(candidate);
+}
+
+void SysConf::append(Entry entry) {
+  (void)packed_size(entry);
+  auto candidate = m_entries;
+  candidate.push_back(std::move(entry));
+  (void)document_size(candidate);
+  m_entries.swap(candidate);
+}
+
+void SysConf::erase_at(std::size_t index) {
+  if (index >= m_entries.size()) {
+    throw std::out_of_range("SYSCONF entry index is outside the document");
+  }
+  m_entries.erase(m_entries.begin() + index);
+}
+
 } // namespace aurora

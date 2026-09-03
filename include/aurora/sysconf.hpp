@@ -44,6 +44,12 @@ public:
   void replace_integer(std::string_view name, Type type, std::uint64_t value);
   bool erase(std::string_view name);
 
+  // Indexed operations preserve duplicate-name records and externally owned
+  // SDK indexes. They retain the same checked ownership/capacity contract.
+  void replace_at(std::size_t index, Entry entry);
+  void append(Entry entry);
+  void erase_at(std::size_t index);
+
 private:
   std::vector<Entry> m_entries;
 };

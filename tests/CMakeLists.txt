@@ -217,6 +217,7 @@ if (AURORA_ENABLE_GX)
   add_executable(gx_fifo_tests
     gx_fifo_test.cpp
     gd_array_test.cpp
+    gd_texture_test.cpp
     gx_z_scale_offset_test.cpp
     gx_test_stubs.cpp
     # GX API implementations (encoders)
@@ -242,13 +243,16 @@ if (AURORA_ENABLE_GX)
     # Original GD display-list writers and the real physical-address mapping
     ../lib/dolphin/gd/GDBase.cpp
     ../lib/dolphin/gd/GDGeometry.cpp
+    ../lib/dolphin/gd/GDTexture.cpp
     ../lib/dolphin/os/OSAddress.cpp
+    ../lib/dolphin/os/OSAlloc.cpp
     ../lib/dolphin/os/OSCache.cpp
     # FIFO/command processor (encoder + decoder)
     ../lib/gx/fifo.cpp
     ../lib/gx/destruction_state.cpp
     ../lib/gx/command_processor.cpp
     ../lib/gx/regs.cpp
+    ../lib/gfx/texture_convert.cpp
     ../lib/thread.cpp
     # Display list reader/optimizer
     ../lib/gx/attr_fmt.cpp
@@ -378,11 +382,14 @@ add_executable(os_alloc_tests
   os_alloc_test.cpp
   os_test_globals.cpp
   ../lib/dolphin/os/OSAlloc.cpp
+  ../lib/dolphin/os/OSMemory.cpp
+  ../lib/dolphin/os/OSAddress.cpp
   ../lib/logging.cpp
 )
 target_include_directories(os_alloc_tests PRIVATE
   ../include
+  ../lib
 )
 target_compile_definitions(os_alloc_tests PRIVATE AURORA TARGET_PC)
-target_link_libraries(os_alloc_tests PRIVATE gtest gtest_main fmt::fmt)
+target_link_libraries(os_alloc_tests PRIVATE gtest gtest_main fmt::fmt ${AURORA_SDL3_TARGET})
 gtest_discover_tests(os_alloc_tests)

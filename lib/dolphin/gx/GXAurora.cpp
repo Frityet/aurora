@@ -154,3 +154,7 @@ void GXRestoreFrameBuffer() {
   GX_WRITE_AURORA(GX_AURORA_END_OFFSCREEN);
   aurora::gx::fifo::publish();
 }
+
+void AuroraDrainGXCommands() {
+  aurora::gx::fifo::drain();
+}

@@ -77,12 +77,15 @@ struct GXTexObj_ {
   GXTlut tlut = GX_TLUT0;
   u32 texObjId = 0;
   u32 texDataVersion = 0;
+  // UINT32_MAX selects the native GX logical TLUT slot. BP commands select
+  // a hardware TMEM offset and format instead.
+  u32 tlutRegion = UINT32_MAX;
   u8 flags = 0;
 
   static constexpr u32 get_bits(u32 reg, u32 size, u32 shift) noexcept { return (reg >> shift) & ((1u << size) - 1); }
 
-  u32 width() const noexcept { return mWidth != 0 ? mWidth : get_bits(image0, 10, 0) + 1 & 0x3FF; }
-  u32 height() const noexcept { return mHeight != 0 ? mHeight : get_bits(image0, 10, 10) + 1 & 0x3FF; }
+  u32 width() const noexcept { return mWidth != 0 ? mWidth : get_bits(image0, 10, 0) + 1; }
+  u32 height() const noexcept { return mHeight != 0 ? mHeight : get_bits(image0, 10, 10) + 1; }
   u32 raw_format() const noexcept { return get_bits(image0, 4, 20); }
   u32 format() const noexcept { return mFormat != aurora::gfx::InvalidTextureFormat ? mFormat : raw_format(); }
   GXTexWrapMode wrap_s() const noexcept { return static_cast<GXTexWrapMode>(get_bits(mode0, 2, 0)); }
@@ -94,8 +97,24 @@ struct GXTexObj_ {
     return kHwToGxFilter[get_bits(mode0, 3, 5)];
   }
   GXTexFilter mag_filter() const noexcept { return get_bits(mode0, 1, 4) != 0 ? GX_LINEAR : GX_NEAR; }
-  GXBool has_mips() const noexcept { return (flags & 1u) != 0 ? GX_TRUE : GX_FALSE; }
-  u32 mip_count() const noexcept { return has_mips() ? std::max<u32>(static_cast<u32>(max_lod()) + 1, 1u) : 1; }
+  bool is_bp_texture() const noexcept { return (flags & 0x40u) != 0; }
+  bool is_bp_sampler() const noexcept { return (flags & 0x20u) != 0; }
+  GXBool has_mips() const noexcept {
+    return (is_bp_sampler() ? get_bits(mode0, 2, 5) != 0 : (flags & 1u) != 0) ? GX_TRUE : GX_FALSE;
+  }
+  u32 mip_count() const noexcept {
+    if (!has_mips()) {
+      return 1;
+    }
+    if (!is_bp_sampler()) {
+      return std::max<u32>(static_cast<u32>(max_lod()) + 1, 1u);
+    }
+    u32 lastLevel = 0;
+    for (u32 dimension = std::max(width(), height()); dimension > 1; dimension >>= 1) {
+      ++lastLevel;
+    }
+    return std::min((get_bits(mode1, 8, 8) + 15) / 16, lastLevel) + 1;
+  }
   GXBool do_edge_lod() const noexcept { return get_bits(mode0, 1, 8) == 0 ? GX_TRUE : GX_FALSE; }
   float lod_bias() const noexcept { return static_cast<float>(static_cast<int8_t>(get_bits(mode0, 8, 9))) / 32.0f; }
   GXAnisotropy max_aniso() const noexcept { return static_cast<GXAnisotropy>(get_bits(mode0, 2, 19)); }

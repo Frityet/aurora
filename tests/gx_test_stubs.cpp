@@ -22,6 +22,11 @@
 #include <cstdlib>
 #include <fmt/format.h>
 
+// Fixtures publish retained backing for the real OSAddress provider.
+void* MEM1Start = nullptr;
+void* MEM1End = nullptr;
+uintptr_t OSBaseAddress = 0;
+
 // --- aurora::g_config ---
 namespace aurora {
 AuroraConfig g_config{};
@@ -58,6 +63,8 @@ void increment_merged_draw_count() noexcept {}
 } // namespace aurora::gfx::detail
 
 namespace aurora::webgpu {
+bool g_bcTexturesSupported = false;
+bool g_textureComponentSwizzleSupported = false;
 GraphicsConfig g_graphicsConfig{};
 wgpu::Device g_device;
 wgpu::Queue g_queue;

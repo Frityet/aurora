@@ -2,6 +2,7 @@
 
 #include "gx_fmt.hpp"
 #include "texture.hpp"
+#include "texture_memory.hpp"
 
 #include <bit>
 #include <cmath>
@@ -280,12 +281,17 @@ void bp_efb_copy(u8, u32 value) noexcept {
 
 // TLUT load trigger (0x65)
 void bp_tlut_load(u8, u32 value) noexcept {
-  const auto idx = reg_get(value, 10, 0);
-  if (idx < MaxTluts) {
-    auto& slot = g_gxState.loadedTluts[idx];
-    slot.loadTlut0 = g_gxState.bpRegCache[0x64];
-    slot.numEntries = static_cast<u16>(reg_get(value, 10, 10) + 1);
+  const size_t size = reg_get(value, 11, 10) * 32;
+  if (size == 0) {
+    return;
   }
+  const u32 address = reg_get(g_gxState.bpRegCache[0x64], 24, 0) << 5;
+  const auto* source = physical_texture_range(address, size);
+  AURORA_ASSERT(source != nullptr, "BP TLUT load exceeds mapped MEM1: address 0x{:08X}, size {}", address, size);
+  const size_t offset = reg_get(value, 10, 0) << 9;
+  g_gxState.textureMemory.resize(TextureMemorySize);
+  std::memcpy(g_gxState.textureMemory.data() + offset, source, size);
+  texture::invalidate_bindings();
 }
 
 // TEV color combiner stages (0xC0, 0xC2, ... 0xDE)
@@ -478,12 +484,18 @@ void bp_tex(u8 reg, u32 value) noexcept {
   const u32 kind = (idx & 0x1F) / 4;
   const u32 texMapId = (idx & 3) + (idx >= 0x20 ? 4 : 0);
   auto& slot = g_gxState.loadedTextures[texMapId];
+  // A raw register write must not reuse a native object's cached descriptor.
+  // Native GX loads restore their full metadata after their BP words.
+  slot.texObjId = 0;
+  slot.texDataVersion = 0;
   switch (kind) {
   case 0: // Mode0
     slot.mode0 = value;
+    slot.flags |= 0x20u;
     break;
   case 1: // Mode1
     slot.mode1 = value;
+    slot.flags |= 0x20u;
     break;
   case 2: // Image0
     slot.image0 = value;
@@ -493,6 +505,15 @@ void bp_tex(u8 reg, u32 value) noexcept {
     break;
   case 5: // Image3
     slot.image3 = value;
+    slot.mWidth = 0;
+    slot.mHeight = 0;
+    slot.mFormat = gfx::InvalidTextureFormat;
+    slot.data = physical_texture_range(reg_get(value, 24, 0) << 5, 0);
+    slot.flags = 0x60u;
+    slot.tlutRegion = g_gxState.bpRegCache[0x98 + (texMapId < 4 ? texMapId : texMapId + 28)];
+    break;
+  case 6: // TLUT selection: 512-byte TMEM offset and palette format
+    slot.tlutRegion = value;
     break;
   default:
     break;
@@ -545,13 +566,13 @@ constexpr auto kBpRegs = [] {
   regs[0x65] = {bp_tlut_load, DirtyTextures, /* alwaysHandle */ true};
   for (u32 base : {0x80u, 0xA0u}) {
     for (u32 i = 0; i < 4; ++i) {
-      regs[base + 0x00 + i] = {bp_tex, DirtyTextures}; // Mode0
-      regs[base + 0x04 + i] = {bp_tex, DirtyTextures}; // Mode1
-      regs[base + 0x08 + i] = {bp_tex, DirtyTextures}; // Image0
+      regs[base + 0x00 + i] = {bp_tex, DirtyTextures, true}; // Mode0
+      regs[base + 0x04 + i] = {bp_tex, DirtyTextures, true}; // Mode1
+      regs[base + 0x08 + i] = {bp_tex, DirtyTextures, true}; // Image0
       regs[base + 0x0C + i] = {};                      // Image1 (GXTexRegion)
       regs[base + 0x10 + i] = {};                      // Image2 (GXTexRegion)
-      regs[base + 0x14 + i] = {bp_tex, DirtyTextures}; // Image3
-      regs[base + 0x18 + i] = {};                      // TLUT region TMEM offset
+      regs[base + 0x14 + i] = {bp_tex, DirtyTextures, true}; // Image3
+      regs[base + 0x18 + i] = {bp_tex, DirtyTextures, true}; // TLUT region TMEM offset
     }
   }
   for (u8 r = 0xC0; r <= 0xDE; r += 2) {

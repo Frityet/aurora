@@ -331,7 +331,10 @@ void GXLoadTlut(const GXTlutObj* obj_, u32 idx) {
 
   u32 loadTlut1 = 0;
   SET_REG_FIELD(0, loadTlut1, 10, 0, idx);
-  SET_REG_FIELD(0, loadTlut1, 10, 10, obj->numEntries - 1);
+  // Native pointers are carried by the following metadata command. A zero-line
+  // BP load preserves the command layout without pretending the logical slot
+  // and host pointer are a hardware TMEM transfer.
+  SET_REG_FIELD(0, loadTlut1, 11, 10, 0);
   SET_REG_FIELD(0, loadTlut1, 8, 24, 0x65);
   GX_WRITE_RAS_REG(loadTlut1);
   __GXFlushTextureState();

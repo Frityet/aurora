@@ -1,4 +1,5 @@
 #include "gx/texture.hpp"
+#include "gx/texture_memory.hpp"
 
 #include <aurora/texture.hpp>
 #include <gtest/gtest.h>
@@ -270,6 +271,59 @@ TEST_F(GxTextureCacheTest, CopyRevisionRequeuesDynamicPaletteConversion) {
   resolve_sampled_textures(info);
 
   EXPECT_EQ(testing::palette_conversions(), 2);
+}
+
+TEST_F(GxTextureCacheTest, RawTmemContentChangesProduceDistinctStaticTextureResults) {
+  std::array<u8, 32> indices{};
+  auto image = make_texture(indices.data(), 0, GX_TF_C4, 8, 8);
+  image.tlutRegion = 896u | (static_cast<u32>(GX_TL_RGB565) << 10);
+  g_gxState.loadedTextures[0] = image;
+  g_gxState.textureMemory.resize(TextureMemorySize);
+  ShaderInfo info{};
+  info.sampledTextures.set(0);
+  resolve_sampled_textures(info);
+  const auto first = g_gxState.textures[0].ref;
+  ASSERT_TRUE(first);
+  g_gxState.textureMemory[896u << 9] = 0xF8;
+  texture::invalidate_bindings();
+  resolve_sampled_textures(info);
+  EXPECT_NE(g_gxState.textures[0].ref, first);
+  EXPECT_EQ(testing::texture_allocations(), 2u);
+}
+
+TEST_F(GxTextureCacheTest, RawTmemDynamicPalettesRetainDistinctRecordedConversions) {
+  std::array<u8, 32> indices{};
+  auto image = make_texture(indices.data(), 0, GX_TF_C4, 8, 8);
+  image.tlutRegion = 896u | (static_cast<u32>(GX_TL_RGB565) << 10);
+  g_gxState.loadedTextures[0] = image;
+  g_gxState.textureMemory.resize(TextureMemorySize);
+  g_gxState.copyTextures[indices.data()] = {
+      .handle = testing::make_texture_handle(8, 8, GX_TF_C4), .revision = 1};
+  ShaderInfo info{};
+  info.sampledTextures.set(0);
+  resolve_sampled_textures(info);
+  const auto first = g_gxState.textures[0].ref;
+  ASSERT_TRUE(first);
+  EXPECT_EQ(testing::palette_conversions(), 1u);
+  g_gxState.textureMemory[896u << 9] = 0xF8;
+  texture::invalidate_bindings();
+  resolve_sampled_textures(info);
+  EXPECT_NE(g_gxState.textures[0].ref, first);
+  EXPECT_EQ(testing::palette_conversions(), 2u);
+}
+
+TEST_F(GxTextureCacheTest, RawTextureSamplingRejectsExtentBeyondMappedMemory) {
+  std::array<u8, 32> memory{};
+  MEM1Start = memory.data();
+  MEM1End = memory.data() + memory.size();
+  auto& image = g_gxState.loadedTextures[0];
+  image.image0 = 7u | (7u << 10) | (static_cast<u32>(GX_TF_RGBA8) << 20);
+  image.image3 = 0;
+  image.flags = 0x60;
+  ShaderInfo info{};
+  info.sampledTextures.set(0);
+  EXPECT_DEATH(resolve_sampled_textures(info), "BP texture exceeds mapped MEM1");
+  MEM1Start = MEM1End = nullptr;
 }
 
 TEST_F(GxTextureCacheTest, CopyRecreationAtSameDestinationRebindsHandle) {

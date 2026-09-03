@@ -744,7 +744,7 @@ void handle_aurora(Reader& reader) noexcept {
     const u32 newHeight = reader.read<u32>();
     const auto newFormat = static_cast<GXTexFmt>(reader.read<u32>());
     const auto newTlut = static_cast<GXTlut>(reader.read<u32>());
-    u8 newFlags = slot.flags & ~0x80u; // Reset no-cache flag
+    u8 newFlags = slot.flags & ~(0x80u | 0x40u | 0x20u); // Reset no-cache and raw BP flags
     if (reader.read<u8>() != 0) {
       newFlags |= 1u;
     } else {
@@ -754,7 +754,7 @@ void handle_aurora(Reader& reader) noexcept {
     const u32 newTexDataVersion = reader.read<u32>();
     if (slot.data != newData || slot.mWidth != newWidth || slot.mHeight != newHeight ||
         slot.mFormat != static_cast<u32>(newFormat) || slot.tlut != newTlut || slot.flags != newFlags ||
-        slot.texObjId != newTexObjId || slot.texDataVersion != newTexDataVersion) {
+        slot.texObjId != newTexObjId || slot.texDataVersion != newTexDataVersion || slot.tlutRegion != UINT32_MAX) {
       slot.data = newData;
       slot.mWidth = newWidth;
       slot.mHeight = newHeight;
@@ -763,6 +763,7 @@ void handle_aurora(Reader& reader) noexcept {
       slot.flags = newFlags;
       slot.texObjId = newTexObjId;
       slot.texDataVersion = newTexDataVersion;
+      slot.tlutRegion = UINT32_MAX;
       g_gxState.dirty |= DirtyTextures;
     }
   } else if (subCmd == GX_AURORA_LOAD_TLUT) {

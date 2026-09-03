@@ -7,6 +7,10 @@
 extern "C" {
 #endif
 
+// Game-thread lifetime barrier: finish queued FIFO processing before releasing
+// source memory. Emits no GX command or draw-done callback.
+void AuroraDrainGXCommands(void);
+
 //
 // Subcommands for GX_AURORA.
 //

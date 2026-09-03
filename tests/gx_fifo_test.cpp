@@ -1927,14 +1927,14 @@ TEST_F(GXFifoTest, TexImage0BpWrite_ClearsExtendedTextureMetadata) {
   EXPECT_EQ(slot.format(), GX_TF_RGBA8);
 }
 
-TEST_F(GXFifoTest, TexObjRawDimensions_WrapAtTenBitBoundary) {
+TEST_F(GXFifoTest, TexObjRawDimensions_EncodeDimensionMinusOne) {
   auto& slot = gxState().loadedTextures[GX_TEXMAP0];
   slot.image0 = (0x3FFu << 0) | (0x3FFu << 10);
   slot.mWidth = 0;
   slot.mHeight = 0;
 
-  EXPECT_EQ(slot.width(), 0u);
-  EXPECT_EQ(slot.height(), 0u);
+  EXPECT_EQ(slot.width(), 1024u);
+  EXPECT_EQ(slot.height(), 1024u);
 }
 
 TEST_F(GXFifoTest, TexObjExplicitDimensions_DoNotWrapAtTenBitBoundary) {
@@ -1988,7 +1988,7 @@ TEST_F(GXFifoTest, LoadTexObjCiAndTlut_PopulatesTextureAndTlutSlots) {
   EXPECT_EQ(tlutSlot.tlutDataVersion, 1u);
 }
 
-TEST_F(GXFifoTest, TlutExecute_ReappliesSameTargetAfterSourceChanges) {
+TEST_F(GXFifoTest, ZeroLineTlutExecuteDoesNotTransferMemory) {
   const std::vector<u8> firstLoad{
       0x61, 0x64, 0x00, 0x00, 0x11,
       0x61, 0x65, 0x00, 0x00, 0x03,
@@ -1999,10 +1999,10 @@ TEST_F(GXFifoTest, TlutExecute_ReappliesSameTargetAfterSourceChanges) {
   };
 
   decode_fifo(firstLoad);
-  EXPECT_EQ(g_gxState.loadedTluts[3].loadTlut0, 0x64000011u);
+  EXPECT_TRUE(g_gxState.textureMemory.empty());
 
   decode_fifo(secondLoad);
-  EXPECT_EQ(g_gxState.loadedTluts[3].loadTlut0, 0x64000022u);
+  EXPECT_TRUE(g_gxState.textureMemory.empty());
 }
 
 TEST_F(GXFifoTest, DestroyTexObj_WhileRendererAliveEmitsStableValueAndClearsIdentity) {

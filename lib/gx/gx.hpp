@@ -13,6 +13,7 @@
 #include <memory>
 #include <array>
 #include <cfloat>
+#include <vector>
 
 #define M_PIF 3.14159265358979323846f
 
@@ -364,6 +365,9 @@ struct GXState {
   std::array<TevStage, MaxTevStages> tevStages;
   std::array<GXTexObj_, MaxTextures> loadedTextures;
   std::array<GXTlutObj_, MaxTluts> loadedTluts;
+  // Hardware TMEM is independent of the native GX logical palette slots.
+  // Allocate it on the first BP load; command execution owns all writes.
+  std::vector<u8> textureMemory;
   std::array<Mat3x4<float>, MaxTexMtx> texMtxs;
   std::array<Mat3x4<float>, MaxPTTexMtx> ptTexMtxs;
   std::array<TcgConfig, MaxTexCoord> tcgs;

@@ -24,6 +24,10 @@ u32 OSReferentSize(void* ptr);
 void OSDumpHeap(OSHeapHandle heap);
 void OSVisitAllocated(void (*visitor)(void*, u32));
 
+// Native startup coordination only. OSInitAlloc replaces the global heap table;
+// a second independent owner must not overwrite an existing allocator.
+BOOL AuroraOSIsAllocatorInitialized(void);
+
 #define OSAlloc(size) OSAllocFromHeap(__OSCurrHeap, (size))
 #define OSFree(ptr) OSFreeToHeap(__OSCurrHeap, (ptr))
 

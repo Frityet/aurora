@@ -1,4 +1,5 @@
 #include "texture.hpp"
+#include "texture_memory.hpp"
 
 #include "../gfx/recording.hpp"
 #include "../gfx/tex_palette_conv.hpp"
@@ -405,6 +406,21 @@ gfx::TextureHandle resolve_dynamic_palette_texture(const GXTexObj_& obj, const G
   ZoneScoped;
 
   const auto tlutHandle = get_tlut_texture(tlut);
+  if (tlut.tlutObjId == 0) {
+    // Raw TMEM loads can overlap and have no native object/version identity.
+    // Each conversion keeps its own result so later loads cannot change an
+    // already recorded draw's palette.
+    auto handle = gfx::new_conv_texture(source.handle->size.width, source.handle->size.height, GX_TF_RGBA8,
+                                        "GX Dynamic Palette Texture");
+    gfx::queue_palette_conv({
+        .variant = obj.format() == GX_TF_C4 ? gfx::tex_palette_conv::Variant::FromFloat4
+                                           : gfx::tex_palette_conv::Variant::FromFloat8,
+        .src = source.handle,
+        .dst = handle,
+        .tlut = tlutHandle,
+    });
+    return handle;
+  }
   auto& tlutCache = s_tlutObjectCaches[tlut.tlutObjId];
   tlutCache.lastUsedFrame = s_frameCount;
   auto& entry = tlutCache.dynamicPaletteTextures[make_dynamic_palette_key(obj, source)];
@@ -448,15 +464,18 @@ void touch_bound_texture(const GXTexObj_& obj) {
     }
   }
 
-  if (!is_palette_format(obj.format()) || obj.tlut >= g_gxState.loadedTluts.size()) {
+  if (!is_palette_format(obj.format())) {
     return;
   }
   const auto copyIt = g_gxState.copyTextures.find(obj.data);
   if (copyIt == g_gxState.copyTextures.end()) {
     return;
   }
-  const auto& tlut = g_gxState.loadedTluts[obj.tlut];
-  if (auto tlutIt = s_tlutObjectCaches.find(tlut.tlutObjId); tlutIt != s_tlutObjectCaches.end()) {
+  const auto tlut = loaded_tlut(obj);
+  if (!tlut) {
+    return;
+  }
+  if (auto tlutIt = s_tlutObjectCaches.find(tlut->tlutObjId); tlutIt != s_tlutObjectCaches.end()) {
     tlutIt->second.lastUsedFrame = s_frameCount;
     if (auto dynamicIt = tlutIt->second.dynamicPaletteTextures.find(make_dynamic_palette_key(obj, copyIt->second));
         dynamicIt != tlutIt->second.dynamicPaletteTextures.end()) {
@@ -849,6 +868,13 @@ void resolve_sampled_textures(const ShaderInfo& info) noexcept {
     }
 
     GXTexObj_ obj = g_gxState.loadedTextures[i];
+    if (obj.is_bp_texture()) {
+      const u32 address = (obj.image3 & 0xFFFFFFu) << 5;
+      const size_t size = texture::texture_source_size(obj.format(), obj.width(), obj.height(), obj.mip_count());
+      AURORA_ASSERT(size != 0, "unsupported raw BP texture format {}", obj.format());
+      obj.data = physical_texture_range(address, size);
+      AURORA_ASSERT(obj.data != nullptr, "BP texture exceeds mapped MEM1: address 0x{:08X}, size {}", address, size);
+    }
     auto& textureBind = g_gxState.textures[i];
     if (textureBind.generation == s_bindGeneration && obj.texObjId != 0 &&
         obj.texObjId == textureBind.texObj.texObjId && obj.texDataVersion == textureBind.texObj.texDataVersion) {
@@ -860,15 +886,11 @@ void resolve_sampled_textures(const ShaderInfo& info) noexcept {
     const auto copyIt = g_gxState.copyTextures.find(obj.data);
     const GXState::CopyTextureRef* copyRef = copyIt != g_gxState.copyTextures.end() ? &copyIt->second : nullptr;
     if (is_palette_format(obj.format())) {
-      const auto tlutIdx = static_cast<size_t>(obj.tlut);
-      if (tlutIdx < g_gxState.loadedTluts.size()) {
-        const auto& tlut = g_gxState.loadedTluts[tlutIdx];
-        if (tlut.data != nullptr) {
-          if (copyRef != nullptr) {
-            handle = resolve_dynamic_palette_texture(obj, *copyRef, tlut);
-          } else if (obj.has_data()) {
-            handle = texture::resolve_static_palette_texture(obj, tlut);
-          }
+      if (const auto tlut = loaded_tlut(obj)) {
+        if (copyRef != nullptr) {
+          handle = resolve_dynamic_palette_texture(obj, *copyRef, *tlut);
+        } else if (obj.has_data()) {
+          handle = texture::resolve_static_palette_texture(obj, *tlut);
         }
       }
     } else if (copyRef != nullptr) {

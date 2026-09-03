@@ -3,6 +3,7 @@
 #include "../io.hpp"
 #include "../gx/gx.hpp"
 #include "../gx/texture.hpp"
+#include "../gx/texture_memory.hpp"
 #include "../internal.hpp"
 #include "../thread.hpp"
 #include "../webgpu/gpu.hpp"
@@ -373,25 +374,16 @@ std::optional<uint64_t> compute_referenced_tlut_hash(const GXTexObj_& obj, Array
 }
 
 std::optional<uint64_t> compute_referenced_tlut_hash(const GXTexObj_& obj) noexcept {
-  if (!gx::is_palette_format(obj.format()) || obj.tlut >= gx::g_gxState.loadedTluts.size()) {
+  if (!gx::is_palette_format(obj.format())) {
     return std::nullopt;
   }
 
-  const auto& tlut = gx::g_gxState.loadedTluts[obj.tlut];
-  if (tlut.data == nullptr) {
+  const auto tlut = gx::loaded_tlut(obj);
+  if (!tlut) {
     return std::nullopt;
   }
 
-  return compute_referenced_tlut_hash(obj, tlut_bytes(tlut));
-}
-
-const GXTlutObj_* get_loaded_tlut(const GXTexObj_& obj) noexcept {
-  if (!gx::is_palette_format(obj.format()) || obj.tlut >= gx::g_gxState.loadedTluts.size()) {
-    return nullptr;
-  }
-
-  const auto& tlut = gx::g_gxState.loadedTluts[obj.tlut];
-  return tlut.data != nullptr ? &tlut : nullptr;
+  return compute_referenced_tlut_hash(obj, tlut_bytes(*tlut));
 }
 
 TextureSourceKey build_source_key_base(const GXTexObj_& obj) noexcept {
@@ -1195,8 +1187,8 @@ bool dump_editable_texture_dds(const TextureSourceKey& key, const GXTexObj_& obj
 
   gfx::ConvertedTexture pixels;
   if (gx::is_palette_format(obj.format())) {
-    const GXTlutObj_* tlut = get_loaded_tlut(obj);
-    if (tlut == nullptr) {
+    const auto tlut = gx::loaded_tlut(obj);
+    if (!tlut) {
       return false;
     }
     pixels = gfx::convert_texture_palette(obj.format(), texWidth, texHeight, 1, texData, tlut->format, tlut->numEntries,

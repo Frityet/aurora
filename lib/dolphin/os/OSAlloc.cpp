@@ -235,6 +235,10 @@ static void carveRangeFromHeap(HeapDesc& hd, uintptr_t carveStart, uintptr_t car
 
 extern "C" {
 
+BOOL AuroraOSIsAllocatorInitialized(void) {
+  return sHeapArray != nullptr;
+}
+
 void* OSInitAlloc(void* arenaStart, void* arenaEnd, int maxHeaps) {
   if (arenaStart == nullptr || arenaEnd == nullptr || maxHeaps <= 0) {
     return nullptr;

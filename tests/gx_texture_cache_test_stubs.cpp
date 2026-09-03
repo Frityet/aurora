@@ -11,6 +11,9 @@
 #include <memory>
 #include <optional>
 
+void* MEM1Start = nullptr;
+void* MEM1End = nullptr;
+
 namespace {
 uint64_t s_textureAllocations = 0;
 uint64_t s_paletteConversions = 0;

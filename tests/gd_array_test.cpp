@@ -1,6 +1,7 @@
 #include "gx_test_common.hpp"
 
 #include "internal.hpp"
+#include "dolphin/os/internal.hpp"
 #include <dolphin/gd.h>
 #include <dolphin/os.h>
 
@@ -8,12 +9,6 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
-
-// The real OSAddress provider operates on this fixture-owned MEM1 range.
-// No address-conversion or FIFO/attribute decoder implementation is replaced.
-void* MEM1Start = nullptr;
-void* MEM1End = nullptr;
-uintptr_t OSBaseAddress = 0;
 
 namespace aurora::gfx {
 extern std::vector<u8> g_lastStorageUpload;

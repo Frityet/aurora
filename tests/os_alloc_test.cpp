@@ -1,9 +1,11 @@
 #include <dolphin/os.h>
+#include "dolphin/os/internal.hpp"
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <cstdint>
+#include <algorithm>
 
 namespace {
 
@@ -20,6 +22,30 @@ void resetAllocator(int maxHeaps = 8) {
 }
 
 } // namespace
+
+TEST(OSMemory, RealMem1AllocationIsZeroedAndPreservesHeapPhysicalAlignment) {
+  aurora::g_config.mem1Size = 65543; // The requested extent need not be a multiple of alignment.
+  AuroraOSInitMemory();
+  ASSERT_NE(MEM1Start, nullptr);
+  EXPECT_EQ(reinterpret_cast<uintptr_t>(MEM1Start) & 31u, 0u);
+  auto* begin = static_cast<u8*>(MEM1Start);
+  EXPECT_EQ(MEM1End, begin + aurora::g_config.mem1Size);
+  EXPECT_TRUE(std::all_of(begin, begin + aurora::g_config.mem1Size, [](u8 value) { return value == 0; }));
+  void* arena = OSInitAlloc(begin + 256, MEM1End, 1);
+  ASSERT_NE(arena, nullptr);
+  const auto heap = OSCreateHeap(arena, MEM1End);
+  ASSERT_GE(heap, 0);
+  for (u32 size : {1u, 31u, 32u, 97u, 4096u}) {
+    auto* allocation = OSAllocFromHeap(heap, size);
+    ASSERT_NE(allocation, nullptr);
+    const u32 physical = OSCachedToPhysical(allocation);
+    EXPECT_EQ(physical & 31u, 0u);
+    EXPECT_EQ(OSPhysicalToCached((physical >> 5) << 5), allocation);
+    OSFreeToHeap(heap, allocation);
+  }
+  EXPECT_GE(OSCheckHeap(heap), 0);
+  OSDestroyHeap(heap);
+}
 
 TEST(OSAlloc, InitCreateAllocFreeCheck) {
   resetAllocator();

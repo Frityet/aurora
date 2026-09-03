@@ -7,6 +7,9 @@
 #include "fmt/base.h"
 
 #include <cassert>
+#include <cstring>
+#include <memory>
+#include <SDL3/SDL_stdinc.h>
 
 #include "internal.hpp"
 #include <dolphin/os.h>
@@ -24,10 +27,32 @@ void* MEM1End;
 static void GuardGCMemory();
 static void* AllocMEM1(u32 size);
 
+namespace {
+struct Mem1Deleter {
+  void operator()(void* memory) const noexcept {
+#if _WIN64 && !NDEBUG
+    if (memory != nullptr) {
+      VirtualFree(memory, 0, MEM_RELEASE);
+    }
+#else
+    SDL_aligned_free(memory);
+#endif
+  }
+};
+
+// OSInit and its arena have process lifetime. Keep the allocation for that
+// lifetime, including across renderer shutdown/reinitialization.
+std::unique_ptr<void, Mem1Deleter>& mem1_owner() {
+  static std::unique_ptr<void, Mem1Deleter> owner;
+  return owner;
+}
+} // namespace
+
 void AuroraOSInitMemory() {
   GuardGCMemory();
 
   if (aurora::g_config.mem1Size > 0) {
+    AURORA_ASSERT(MEM1Start == nullptr, "MEM1 is already initialized");
     MEM1Start = AllocMEM1(aurora::g_config.mem1Size);
     MEM1End = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(MEM1Start) + aurora::g_config.mem1Size);
     OSBaseAddress = reinterpret_cast<uintptr_t>(MEM1Start);
@@ -112,6 +137,7 @@ static void* AllocMEM1(u32 size) {
       "Failed to allocate bulk chunk for MEM1");
     Log.fatal("{}", fmt::to_string(msg));
   }
+  mem1_owner().reset(bulkChunk);
 
   uintptr_t memSpace = (reinterpret_cast<uintptr_t>(bulkChunk) | 0xFFFFFFFF) + 1;
   void* mem1Address = reinterpret_cast<void*>(memSpace + 0x80000000);
@@ -138,7 +164,13 @@ static void* AllocMEM1(u32 size) {
 }
 #else
 static void* AllocMEM1(u32 size) {
-  return calloc(1, size);
+  // The original texture address words store physical offsets in units of 32
+  // bytes. An aligned heap payload must also have an aligned physical offset.
+  void* memory = SDL_aligned_alloc(32, size);
+  AURORA_ASSERT(memory != nullptr, "Failed to allocate {} bytes for MEM1", size);
+  std::memset(memory, 0, size);
+  mem1_owner().reset(memory);
+  return memory;
 }
 #endif
 

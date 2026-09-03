@@ -74,7 +74,9 @@ gtest_discover_tests(os_time_tests)
 find_package(Threads REQUIRED)
 add_executable(os_execution_tests
   os_execution_test.cpp
+  os_mutex_test.cpp
   ../lib/dolphin/os/OSExecution.cpp
+  ../lib/dolphin/os/OSMutex.cpp
 )
 target_include_directories(os_execution_tests PRIVATE ../include)
 target_compile_definitions(os_execution_tests PRIVATE AURORA TARGET_PC)

@@ -26,6 +26,29 @@ union c64 {
     double f;
 };
 
+// GQR0 float stores flush subnormal results to zero, retaining their sign.
+// This is the store conversion, independent of arithmetic FPSCR state.
+static inline float ppc_psq_store_f32(float value) {
+    union c32 bits;
+    bits.f = value;
+    if ((bits.u & 0x7f800000U) == 0) {
+        bits.u &= 0x80000000U;
+    }
+    return bits.f;
+}
+
+// ps_neg flips the sign after its source operation has rounded. A source-level
+// -fmaf may become a negated fused instruction with different signed-zero output.
+static inline float ppc_ps_neg_f32(float value) {
+    union c32 bits;
+    // Keep the rounded value observable before changing its sign. LLVM's
+    // AArch64 fneg(fma) combine otherwise also recognizes a plain integer XOR.
+    volatile float rounded = value;
+    bits.f = rounded;
+    bits.u ^= 0x80000000U;
+    return bits.f;
+}
+
 #define EXPONENT_SHIFT_F64 ((uint64_t)52)
 #define MANTISSA_MASK_F64  ((uint64_t)0x000fffffffffffffULL)
 #define EXPONENT_MASK_F64  ((uint64_t)0x7ff0000000000000ULL)

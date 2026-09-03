@@ -3,6 +3,15 @@
 #include <dolphin/mtx.h>
 #include <dolphin/ppc_math.h>
 
+// Individual ps_mul products round before the explicit fused ps_madd/msub.
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#elif defined(__GNUC__)
+#pragma GCC optimize("fp-contract=off")
+#elif defined(_MSC_VER)
+#pragma fp_contract(off)
+#endif
+
 void C_VECAdd(const Vec* a, const Vec* b, Vec* ab) {
   assert(a && "VECAdd():  NULL VecPtr 'a' ");
   assert(b && "VECAdd():  NULL VecPtr 'b' ");
@@ -102,6 +111,26 @@ f32 C_VECDotProduct(const Vec* a, const Vec* b) {
   assert(b && "VECDotProduct():  NULL VecPtr 'b' ");
   dot = (a->z * b->z) + ((a->x * b->x) + (a->y * b->y));
   return dot;
+}
+
+f32 PSVECDotProduct(const Vec* a, const Vec* b) {
+  const f32 yy = a->y * b->y;
+  const f32 zz = a->z * b->z;
+  const f32 xy = fmaf(a->x, b->x, yy);
+  return xy + zz;
+}
+
+void PSVECCrossProduct(const Vec* a, const Vec* b, Vec* axb) {
+  // All input lanes are loaded before the first store in the original routine.
+  const f32 bx_az = b->x * a->z;
+  const f32 by_az = b->y * a->z;
+  const f32 by_ax = b->y * a->x;
+  const f32 x = fmaf(a->y, b->z, -by_az);
+  const f32 y = ppc_ps_neg_f32(fmaf(a->x, b->z, -bx_az));
+  const f32 z = ppc_ps_neg_f32(fmaf(a->y, b->x, -by_ax));
+  axb->x = ppc_psq_store_f32(x);
+  axb->y = ppc_psq_store_f32(y);
+  axb->z = ppc_psq_store_f32(z);
 }
 
 void C_VECCrossProduct(const Vec* a, const Vec* b, Vec* axb) {

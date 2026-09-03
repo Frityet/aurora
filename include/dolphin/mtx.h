@@ -246,6 +246,8 @@ void C_VECHalfAngle(const Vec* a, const Vec* b, Vec* half);
 void PSVECNormalize(const Vec* src, Vec* unit);
 f32 PSVECSquareMag(const Vec* v);
 f32 PSVECMag(const Vec* v);
+f32 PSVECDotProduct(const Vec* a, const Vec* b);
+void PSVECCrossProduct(const Vec* a, const Vec* b, Vec* axb);
 f32 PSVECSquareDistance(const Vec* a, const Vec* b);
 f32 PSVECDistance(const Vec* a, const Vec* b);
 
@@ -264,8 +266,6 @@ f32 PSVECDistance(const Vec* a, const Vec* b);
 #define PSVECAdd VECAdd
 #define PSVECSubtract VECSubtract
 #define PSVECScale VECScale
-#define PSVECDotProduct VECDotProduct
-#define PSVECCrossProduct VECCrossProduct
 #endif
 
 #if defined(MTX_USE_PS)
@@ -275,8 +275,8 @@ f32 PSVECDistance(const Vec* a, const Vec* b);
 #define VECNormalize PSVECNormalize
 #define VECSquareMag PSVECSquareMag
 #define VECMag PSVECMag
-#define VECDotProduct C_VECDotProduct
-#define VECCrossProduct C_VECCrossProduct
+#define VECDotProduct PSVECDotProduct
+#define VECCrossProduct PSVECCrossProduct
 #define VECSquareDistance PSVECSquareDistance
 #define VECDistance PSVECDistance
 #else // MTX_USE_C

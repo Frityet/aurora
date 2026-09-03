@@ -133,4 +133,57 @@ static inline float ppc_rsqrte(float x) {
     return nwork0 * nwork1;
 }
 
+// Gekko fres estimates for single-precision inputs, including the measured
+// hardware table and range boundaries (also recorded in Dolphin FloatUtils).
+static const struct BaseAndDec32 RECIPROCAL_TABLE[32] = {
+    {0x7ff800, 0x3e1}, {0x783800, 0x3a7}, {0x70ea00, 0x371}, {0x6a0800, 0x340},
+    {0x638800, 0x313}, {0x5d6200, 0x2ea}, {0x579000, 0x2c4}, {0x520800, 0x2a0},
+    {0x4cc800, 0x27f}, {0x47ca00, 0x261}, {0x430800, 0x245}, {0x3e8000, 0x22a},
+    {0x3a2c00, 0x212}, {0x360800, 0x1fb}, {0x321400, 0x1e5}, {0x2e4a00, 0x1d1},
+    {0x2aa800, 0x1be}, {0x272c00, 0x1ac}, {0x23d600, 0x19b}, {0x209e00, 0x18b},
+    {0x1d8800, 0x17c}, {0x1a9000, 0x16e}, {0x17ae00, 0x15b}, {0x14f800, 0x15b},
+    {0x124400, 0x143}, {0x0fbe00, 0x143}, {0x0d3800, 0x12d}, {0x0ade00, 0x12d},
+    {0x088400, 0x11a}, {0x065000, 0x11a}, {0x041c00, 0x108}, {0x020c00, 0x106},
+};
+
+static inline float ppc_fres(float value) {
+    // Work on the float input bits so signed zero and quieted NaN payloads
+    // survive independently of the host floating-point division behavior.
+    union c32 input;
+    union c32 result;
+    input.f = value;
+    const uint32_t bits = input.u;
+    const uint32_t sign = bits & 0x80000000U;
+    uint32_t fraction = bits & 0x007FFFFFU;
+    int exponent = (int)((bits >> 23) & 0xFFU);
+    if (exponent == 255) {
+        result.u = fraction != 0 ? bits | 0x00400000U : sign;
+        return result.f;
+    }
+    if (exponent == 0) {
+        if (fraction == 0) {
+            result.u = sign | 0x7F800000U;
+            return result.f;
+        }
+        if (fraction < 0x00200000U) {
+            result.u = sign | 0x7F7FFFFFU;
+            return result.f;
+        }
+        const uint32_t shift = fraction < 0x00400000U ? 2U : 1U;
+        fraction = (fraction << shift) & 0x007FFFFFU;
+        exponent = 1 - (int)shift;
+    }
+    // fres flushes its small estimates to signed zero starting at 2^126.
+    if (exponent >= 253) {
+        result.u = sign;
+        return result.f;
+    }
+    const struct BaseAndDec32* entry = &RECIPROCAL_TABLE[fraction >> 18];
+    const uint32_t step = (fraction >> 8) & 0x3FFU;
+    const uint32_t estimatedFraction = entry->base - ((entry->dec * step + 1U) >> 1);
+    const uint32_t estimatedExponent = (uint32_t)(253 - exponent) << 23;
+    result.u = sign | estimatedExponent | estimatedFraction;
+    return result.f;
+}
+
 #endif // DOLPHIN_PPC_MATH_H

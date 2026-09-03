@@ -125,6 +125,7 @@ void PSMTXROMultS16VecArray(const ROMtx m, const S16Vec* srcBase, Vec* dstBase, 
 #endif
 
 void C_MTXQuat(Mtx m, const Quaternion* q);
+void PSMTXQuat(Mtx m, const Quaternion* q);
 void C_MTXReflect(Mtx m, const Vec* p, const Vec* n);
 
 void C_MTXTrans(Mtx m, f32 xT, f32 yT, f32 zT);
@@ -139,7 +140,6 @@ void C_MTXRotAxisRad(Mtx m, const Vec* axis, f32 rad);
 void C_MTXReorder(const Mtx src, ROMtx dst);
 
 #ifdef GEKKO
-void PSMTXQuat(Mtx m, const Quaternion* q);
 void PSMTXReflect(Mtx m, const Vec* p, const Vec* n);
 
 void PSMTXTrans(Mtx m, f32 xT, f32 yT, f32 zT);
@@ -153,7 +153,6 @@ void PSMTXRotAxisRad(Mtx m, const Vec* axis, f32 rad);
 
 void PSMTXReorder(const Mtx src, ROMtx dest);
 #else
-#define PSMTXQuat MTXQuat
 #define PSMTXReflect MTXReflect
 #define PSMTXTrans MTXTrans
 #define PSMTXTransApply MTXTransApply
@@ -170,7 +169,7 @@ void PSMTXReorder(const Mtx src, ROMtx dest);
 #endif
 
 #ifdef MTX_USE_PS
-#define MTXQuat C_MTXQuat
+#define MTXQuat PSMTXQuat
 #define MTXReflect C_MTXReflect
 #define MTXTrans C_MTXTrans
 #define MTXTransApply C_MTXTransApply

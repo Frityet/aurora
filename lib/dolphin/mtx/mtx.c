@@ -1,4 +1,5 @@
 #include <dolphin/mtx.h>
+#include <dolphin/ppc_math.h>
 
 #include <assert.h>
 #include <math.h>
@@ -277,6 +278,52 @@ void C_MTXOrtho(Mtx44 m, f32 t, f32 b, f32 l, f32 r, f32 n, f32 f) {
   m[3][1] = 0;
   m[3][2] = 0;
   m[3][3] = 1;
+}
+
+// Scalar lanes of the original paired-single routine. Keep every multiply
+// rounding point and explicit fused operation, including fres refinement.
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((optimize("fp-contract=off")))
+#endif
+void PSMTXQuat(Mtx m, const Quaternion* q) {
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#elif defined(_MSC_VER)
+#pragma fp_contract(off)
+#endif
+  const float x = q->x, y = q->y, z = q->z, w = q->w;
+  const float xx = x * x, yy = y * y;
+  const float zz = z * z;
+  const float zx = fmaf(z, z, xx);
+  const float wy = fmaf(w, w, yy);
+  const float norm = zx + wy;
+  const float estimate = ppc_fres(norm);
+  const float correction = -fmaf(norm, estimate, -2.0f);
+  const float refined = estimate * correction;
+  const float scale = refined * 2.0f;
+  const float yz_square = zz + yy;
+  const float xy_square = xx + yy;
+  const float zw = z * w;
+  const float yw = y * w, xw = x * w;
+  const float xy_plus_zw = fmaf(x, y, zw);
+  const float xy_minus_zw = fmaf(x, y, -zw);
+  const float xz_plus_yw = fmaf(x, z, yw);
+  const float yz_plus_xw = fmaf(y, z, xw);
+  const float xz_minus_yw = -fmaf(yw, 2.0f, -xz_plus_yw);
+  const float yz_minus_xw = -fmaf(xw, 2.0f, -yz_plus_xw);
+
+  m[0][0] = -fmaf(yz_square, scale, -1.0f);
+  m[0][1] = xy_minus_zw * scale;
+  m[0][2] = xz_plus_yw * scale;
+  m[0][3] = 0.0f;
+  m[1][0] = xy_plus_zw * scale;
+  m[1][1] = -fmaf(zx, scale, -1.0f);
+  m[1][2] = yz_minus_xw * scale;
+  m[1][3] = 0.0f;
+  m[2][0] = xz_minus_yw * scale;
+  m[2][1] = yz_plus_xw * scale;
+  m[2][2] = -fmaf(xy_square, scale, -1.0f);
+  m[2][3] = 0.0f;
 }
 
 void C_MTXQuat(Mtx m, const Quaternion* q) {

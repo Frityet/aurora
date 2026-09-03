@@ -888,6 +888,11 @@ typedef enum {
 } GXMiscToken;
 
 typedef enum {
+  GX_XF_FLUSH_NONE = 0,
+  GX_XF_FLUSH_SAFE = 8,
+} GXXFFlushVal;
+
+typedef enum {
   GX_CMD_LOAD_INDX_A = 0x20,
   GX_CMD_LOAD_INDX_B = 0x28,
   GX_CMD_LOAD_INDX_C = 0x30,

@@ -756,7 +756,7 @@ gx::DrawData* get_last_draw_command() {
 }
 
 Vec2<uint32_t> get_render_target_size() noexcept {
-  if (g_recorder.currentRenderPass < current_render_passes().size()) {
+  if (g_recorder.active() && g_recorder.currentRenderPass < current_render_passes().size()) {
     const auto& size =
         current_render_passes()[g_recorder.currentRenderPass].colorAttachments[SceneColorAttachmentIndex].size;
     return {size.width, size.height};
@@ -767,14 +767,18 @@ Vec2<uint32_t> get_render_target_size() noexcept {
 
 void set_viewport(const Viewport& cmd) noexcept {
   if (cmd != g_recorder.cachedViewport) {
-    push_command(CommandType::SetViewport, Command::Data{.setViewport = cmd});
+    if (g_recorder.active()) {
+      push_command(CommandType::SetViewport, Command::Data{.setViewport = cmd});
+    }
     g_recorder.cachedViewport = cmd;
   }
 }
 
 void set_scissor(const ClipRect& cmd) noexcept {
   if (cmd != g_recorder.cachedScissor) {
-    push_command(CommandType::SetScissor, Command::Data{.setScissor = cmd});
+    if (g_recorder.active()) {
+      push_command(CommandType::SetScissor, Command::Data{.setScissor = cmd});
+    }
     g_recorder.cachedScissor = cmd;
   }
 }

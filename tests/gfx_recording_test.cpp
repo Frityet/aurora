@@ -3,6 +3,12 @@
 #include "gfx/frame_packet.hpp"
 #include "gfx/recording.hpp"
 #include "gfx/texture.hpp"
+#include "gx/gx.hpp"
+#include "gx/fifo.hpp"
+#include "gx/destruction_state.hpp"
+#include <dolphin/gx.h>
+#include <dolphin/gx/GXAurora.h>
+#include <dolphin/vi.h>
 #include "webgpu/gpu.hpp"
 
 #include <algorithm>
@@ -164,6 +170,84 @@ TEST_F(GfxRecordingTest, FinalizedPassesAreSealedOrDeliberatelyDiscarded) {
   }
   detail::end_recording();
   recordingActive = false;
+}
+
+// GX state exists before and between frames. Draining queued register writes
+// must retain it without requiring a render pass or discarding the commands.
+TEST(GfxRecordingStateTest, QueuedViewportAndScissorSurviveInactiveDrains) {
+  webgpu::g_graphicsConfig.surfaceConfiguration.format = ColorFormat;
+  webgpu::g_graphicsConfig.depthFormat = DepthFormat;
+  webgpu::g_graphicsConfig.msaaSamples = 1;
+  webgpu::g_frameBuffer.size = {640, 480, 1};
+  webgpu::g_frameBuffer.format = ColorFormat;
+  webgpu::g_depthBuffer.size = {640, 480, 1};
+  webgpu::g_depthBuffer.format = DepthFormat;
+  detail::testing::suppress_render_worker(true);
+  gx::fifo::init();
+  GXInit(nullptr, 0);
+  // This CPU fixture has no SDL window. Native policy consumes register
+  // writes without window mapping; the real runtime fixture covers the
+  // fitted-policy window fallback before its first recording.
+  gx::g_gxState.viewportPolicy = AURORA_VIEWPORT_NATIVE;
+  GXRenderModeObj mode{};
+  mode.fbWidth = 640;
+  mode.efbHeight = 480;
+  VIConfigure(&mode);
+
+  GXSetViewport(12.f, 24.f, 320.f, 200.f, 0.125f, 0.75f);
+  GXSetScissor(16, 32, 300, 180);
+  AuroraDrainGXCommands();
+  EXPECT_FALSE(is_frame_active());
+  EXPECT_FLOAT_EQ(gx::g_gxState.logicalViewport.left, 12.f);
+  EXPECT_FLOAT_EQ(gx::g_gxState.logicalViewport.width, 320.f);
+  EXPECT_EQ(gx::g_gxState.logicalScissor.x, 16);
+
+  auto check_recorded_state = [](const detail::FramePacket& packet, float left, float top, float width,
+                                 float height, int32_t scissorX, int32_t scissorY,
+                                 int32_t scissorWidth, int32_t scissorHeight) {
+    ASSERT_FALSE(packet.renderPasses.empty());
+    const auto& commands = packet.renderPasses.front().commands;
+    ASSERT_GE(commands.size(), 2u);
+    ASSERT_EQ(commands[0].type, detail::CommandType::SetViewport);
+    EXPECT_FLOAT_EQ(commands[0].data.setViewport.left, left);
+    EXPECT_FLOAT_EQ(commands[0].data.setViewport.top, top);
+    EXPECT_FLOAT_EQ(commands[0].data.setViewport.width, width);
+    EXPECT_FLOAT_EQ(commands[0].data.setViewport.height, height);
+    EXPECT_FLOAT_EQ(commands[0].data.setViewport.znear, 0.125f);
+    EXPECT_FLOAT_EQ(commands[0].data.setViewport.zfar, 0.75f);
+    ASSERT_EQ(commands[1].type, detail::CommandType::SetScissor);
+    EXPECT_EQ(commands[1].data.setScissor.x, scissorX);
+    EXPECT_EQ(commands[1].data.setScissor.y, scissorY);
+    EXPECT_EQ(commands[1].data.setScissor.width, scissorWidth);
+    EXPECT_EQ(commands[1].data.setScissor.height, scissorHeight);
+  };
+
+  gx::g_gxState.viewportPolicy = AURORA_VIEWPORT_FIT;
+  detail::FramePacket first;
+  detail::begin_recording(first, 0);
+  check_recorded_state(first, 12.f, 24.f, 320.f, 200.f, 16, 32, 300, 180);
+  finish();
+  detail::end_recording();
+
+  gx::g_gxState.viewportPolicy = AURORA_VIEWPORT_NATIVE;
+  GXSetViewport(20.f, 30.f, 200.f, 100.f, 0.125f, 0.75f);
+  GXSetScissor(40, 60, 180, 90);
+  AuroraDrainGXCommands();
+  EXPECT_FALSE(is_frame_active());
+  EXPECT_FLOAT_EQ(gx::g_gxState.logicalViewport.left, 20.f);
+  EXPECT_EQ(gx::g_gxState.logicalScissor.x, 40);
+  // A new target remaps the retained logical state at the next recording.
+  webgpu::g_frameBuffer.size = {1280, 960, 1};
+  webgpu::g_depthBuffer.size = {1280, 960, 1};
+  gx::g_gxState.viewportPolicy = AURORA_VIEWPORT_FIT;
+  detail::FramePacket second;
+  detail::begin_recording(second, 1);
+  check_recorded_state(second, 40.f, 60.f, 400.f, 200.f, 80, 120, 360, 180);
+  finish();
+  detail::end_recording();
+  gx::fifo::shutdown();
+  gx::shutdown_destruction_state();
+  detail::shutdown_recording();
 }
 
 } // namespace

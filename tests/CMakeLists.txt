@@ -375,6 +375,8 @@ if (AURORA_ENABLE_GX)
     aurora::vi
     gtest
     gtest_main
+    absl::flat_hash_map
+    aurora::os
   )
   aurora_copy_runtime_dlls(gfx_recording_tests)
   gtest_discover_tests(gfx_recording_tests)

@@ -333,6 +333,7 @@ if has_config("aurora_enable_gx") then
                   "lib/dolphin/gx/GXLighting.cpp", "lib/dolphin/gx/GXManage.cpp",
                   "lib/dolphin/gx/GXPerf.cpp", "lib/dolphin/gx/GXPixel.cpp",
                   "lib/dolphin/gx/GXTev.cpp", "lib/dolphin/gx/GXTexture.cpp",
+                  "lib/dolphin/gx/GXTextureRegion.cpp",
                   "lib/dolphin/gx/GXTransform.cpp", "lib/dolphin/gx/GXVert.cpp",
                   "lib/dolphin/gx/GXAurora.cpp")
         add_headerfiles("include/(aurora/rfl/CharacterModel.hpp)")

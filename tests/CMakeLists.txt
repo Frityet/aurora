@@ -93,6 +93,15 @@ target_link_libraries(os_report_tests PRIVATE gtest gtest_main)
 gtest_discover_tests(os_report_tests)
 
 if (AURORA_ENABLE_GX)
+  add_executable(gx_texture_region_tests
+    gx_texture_region_test.cpp
+    ../lib/dolphin/gx/GXTextureRegion.cpp
+  )
+  target_include_directories(gx_texture_region_tests PRIVATE ../include)
+  target_compile_definitions(gx_texture_region_tests PRIVATE AURORA TARGET_PC)
+  target_link_libraries(gx_texture_region_tests PRIVATE gtest gtest_main)
+  gtest_discover_tests(gx_texture_region_tests)
+
   add_executable(gx_destruction_state_tests
     gx_destruction_state_test.cpp
     ../lib/gx/destruction_state.cpp

@@ -39,6 +39,7 @@ void GXSetTexCoordCylWrap(GXTexCoordID coord, GXBool s_enable, GXBool t_enable);
 void GXSetTexCoordBias(GXTexCoordID coord, GXBool s_enable, GXBool t_enable);
 void GXInitTexCacheRegion(GXTexRegion* region, GXBool is_32b_mipmap, u32 tmem_even, GXTexCacheSize size_even,
                           u32 tmem_odd, GXTexCacheSize size_odd);
+void GXInitTexPreLoadRegion(GXTexRegion* region, u32 tmem_even, u32 size_even, u32 tmem_odd, u32 size_odd);
 GXTexRegionCallback GXSetTexRegionCallback(GXTexRegionCallback callback);
 void GXInvalidateTexRegion(const GXTexRegion* region);
 

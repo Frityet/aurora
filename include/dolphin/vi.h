@@ -3,6 +3,15 @@
 
 #include <dolphin/gx/GXStruct.h>
 
+#define VI_MAX_WIDTH_NTSC 720
+#define VI_MAX_HEIGHT_NTSC 480
+#define VI_MAX_WIDTH_PAL 720
+#define VI_MAX_HEIGHT_PAL 574
+#define VI_MAX_WIDTH_MPAL 720
+#define VI_MAX_HEIGHT_MPAL 480
+#define VI_MAX_WIDTH_EURGB60 VI_MAX_WIDTH_NTSC
+#define VI_MAX_HEIGHT_EURGB60 VI_MAX_HEIGHT_NTSC
+
 #ifdef __cplusplus
 extern "C" {
 #endif

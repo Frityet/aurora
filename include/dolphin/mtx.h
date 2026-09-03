@@ -32,6 +32,9 @@ typedef struct {
 #define MTXRadToDeg(a) ((a)*57.29577951f)
 #define MTXRowCol(m, r, c) ((m)[(r)][(c)])
 
+void PSMTX44Identity(Mtx44 m);
+void PSMTX44Copy(const Mtx44 src, Mtx44 dst);
+
 void C_MTXIdentity(Mtx m);
 void C_MTXCopy(const Mtx src, Mtx dst);
 void C_MTXConcat(const Mtx a, const Mtx b, Mtx ab);

@@ -404,3 +404,11 @@ target_include_directories(os_alloc_tests PRIVATE
 target_compile_definitions(os_alloc_tests PRIVATE AURORA TARGET_PC)
 target_link_libraries(os_alloc_tests PRIVATE gtest gtest_main fmt::fmt ${AURORA_SDL3_TARGET})
 gtest_discover_tests(os_alloc_tests)
+
+add_executable(mtx44_tests
+  mtx44_test.cpp
+  ../lib/dolphin/mtx/mtx44.c
+)
+target_include_directories(mtx44_tests PRIVATE ../include)
+target_compile_definitions(mtx44_tests PRIVATE AURORA TARGET_PC)
+add_test(NAME mtx44 COMMAND mtx44_tests)

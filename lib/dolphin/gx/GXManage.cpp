@@ -26,6 +26,7 @@ GXFifoObj* GXInit(void* base, u32 size) {
   __gx = &sGXData;
   __gx->inDispList = 0;
   __gx->dlSaveContext = 1;
+  __gx->abtWaitPECopy = 1;
   __gx->tcsManEnab = 0;
   __gx->vNum = 0;
   __gx->zScale = 16777216.0f;
@@ -263,6 +264,25 @@ GXFifoObj* GXInit(void* base, u32 size) {
   // GXPokeZMode(GX_TRUE, GX_ALWAYS, GX_TRUE);
 
   return &sFifoObj;
+}
+
+void GXSetMisc(GXMiscToken token, u32 val) {
+  switch (token) {
+  case GX_MT_NULL:
+    break;
+  case GX_MT_XF_FLUSH:
+    __gx->vNum = static_cast<u16>(val);
+    // Aurora stores the positive pending-BP flag; the SDK stores bpSentNot.
+    __gx->bpSent = 0;
+    if (__gx->vNum > 0) __gx->dirtyState |= 8;
+    break;
+  case GX_MT_DL_SAVE_CONTEXT:
+    __gx->dlSaveContext = (val != 0);
+    break;
+  case GX_MT_ABORT_WAIT_COPYOUT:
+    __gx->abtWaitPECopy = (val != 0);
+    break;
+  }
 }
 
 void GXDrawDone() {

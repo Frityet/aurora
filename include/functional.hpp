@@ -20,6 +20,16 @@ struct LegacyMemberFunction {
   }
 };
 
+template <typename Function>
+struct LegacyUnaryNegate {
+  Function function;
+
+  template <typename Argument>
+  constexpr bool operator()(Argument&& argument) const {
+    return !std::invoke(function, std::forward<Argument>(argument));
+  }
+};
+
 template <typename Function, typename Value>
 struct LegacyBindSecond {
   Function function;
@@ -59,6 +69,18 @@ namespace std {
 template <typename MemberPointer>
 constexpr auto mem_func(MemberPointer member) {
   return aurora::compat::LegacyMemberFunction<MemberPointer>{member};
+}
+
+template <typename MemberPointer>
+constexpr auto mem_fun_ref(MemberPointer member) {
+  return aurora::compat::LegacyMemberFunction<MemberPointer>{member};
+}
+
+// Specialize on our adapter so standard libraries retaining their removed
+// negator overload can coexist with clients of the original member adapter.
+template <typename MemberPointer>
+constexpr auto not1(const aurora::compat::LegacyMemberFunction<MemberPointer>& function) {
+  return aurora::compat::LegacyUnaryNegate<aurora::compat::LegacyMemberFunction<MemberPointer>>{function};
 }
 
 // Specialize on our adapter so host libraries that still expose their obsolete

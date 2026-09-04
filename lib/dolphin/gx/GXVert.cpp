@@ -20,7 +20,7 @@ void pre_begin() {
   }
 
   // Flush pending primitives if needed
-  if (*reinterpret_cast<u32*>(&__gx->vNum) != 0) {
+  if (__gx->vNum != 0 && __gx->bpSent != 0) {
     __GXSendFlushPrim();
   }
 }

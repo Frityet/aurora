@@ -53,7 +53,7 @@ void GXCallDisplayList(const void* data, u32 nbytes) {
   }
 
   // Flush pending primitives
-  if (*reinterpret_cast<u32*>(&__gx->vNum) != 0) {
+  if (__gx->vNum != 0 && __gx->bpSent != 0) {
     __GXSendFlushPrim();
   }
 

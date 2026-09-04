@@ -342,7 +342,7 @@ if has_config("aurora_enable_gx") then
             add_defines("AURORA_ENABLE_RMLUI")
             add_packages("rmlui")
         end
-        add_deps("aurora-platform", "aurora-vi")
+        add_deps("aurora-platform", "aurora-vi", "aurora-os")
         add_packages("dawn-build", {public = true})
         add_packages("xxhash", "abseil", "sqlite3", "tracy", "libpng", "zlib")
 

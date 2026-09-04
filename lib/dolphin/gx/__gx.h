@@ -162,6 +162,8 @@ struct __GXData_struct {
                     // bit 2: gen mode
                     // bit 3: VCD
                     // bit 4: VAT
+
+  u8 abtWaitPECopy; // SDK abort waits for pending copy-out when enabled
 };
 
 extern __GXData_struct* __gx;

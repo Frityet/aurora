@@ -7,8 +7,8 @@
 
 namespace aurora::ppc {
 // Gekko fctiwz's integer word result. Emulated FPSCR/CR state is outside this API.
-inline std::int32_t truncate_s32(double value) {
-  if (std::isnan(value) || value < -2147483648.0) {
+constexpr std::int32_t truncate_s32(double value) {
+  if (value != value || value < -2147483648.0) {
     return std::numeric_limits<std::int32_t>::min();
   }
   if (value >= 2147483648.0) {
@@ -18,13 +18,13 @@ inline std::int32_t truncate_s32(double value) {
 }
 
 // sth preserves only the low halfword; extsh interprets that halfword as signed.
-inline std::int16_t narrow_s16(std::uint32_t value) {
+constexpr std::int16_t narrow_s16(std::uint32_t value) {
   return std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(value));
 }
-inline std::uint16_t truncate_u16(double value) {
+constexpr std::uint16_t truncate_u16(double value) {
   return static_cast<std::uint16_t>(static_cast<std::uint32_t>(truncate_s32(value)));
 }
-inline std::int16_t truncate_s16(double value) {
+constexpr std::int16_t truncate_s16(double value) {
   return narrow_s16(static_cast<std::uint32_t>(truncate_s32(value)));
 }
 

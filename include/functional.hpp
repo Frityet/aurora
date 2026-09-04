@@ -23,15 +23,34 @@ struct LegacyMemberFunction {
 template <typename Function, typename Value>
 struct LegacyBindSecond {
   Function function;
-  // MSL bind2nd retains its argument by reference, including const-reference
-  // member arguments. Copying the value would change the client's semantics.
-  const Value& value;
+  Value value;
 
   template <typename Argument>
   constexpr decltype(auto) operator()(Argument&& argument) const {
     return function(std::forward<Argument>(argument), value);
   }
 };
+
+template <typename MemberPointer>
+struct LegacySecondArgument;
+
+template <typename Result, typename Object, typename Argument>
+struct LegacySecondArgument<Result (Object::*)(Argument)> {
+  using type = Argument;
+};
+
+template <typename Result, typename Object, typename Argument>
+struct LegacySecondArgument<Result (Object::*)(Argument) const> {
+  using type = Argument;
+};
+
+template <typename Result, typename Object, typename Argument>
+struct LegacySecondArgument<Result (Object::*)(Argument) noexcept>
+    : LegacySecondArgument<Result (Object::*)(Argument)> {};
+
+template <typename Result, typename Object, typename Argument>
+struct LegacySecondArgument<Result (Object::*)(Argument) const noexcept>
+    : LegacySecondArgument<Result (Object::*)(Argument) const> {};
 
 } // namespace aurora::compat
 
@@ -43,10 +62,14 @@ constexpr auto mem_func(MemberPointer member) {
 }
 
 // Specialize on our adapter so host libraries that still expose their obsolete
-// bind2nd overload can coexist with the MSL reference-preserving contract.
+// bind2nd overload can coexist with MSL. Store the member's declared argument
+// type: value parameters are copied/converted and reference parameters retain
+// their actual referent, as in the original binder2nd instantiations.
 template <typename MemberPointer, typename Value>
 constexpr auto bind2nd(const aurora::compat::LegacyMemberFunction<MemberPointer>& function, const Value& value) {
-  return aurora::compat::LegacyBindSecond<aurora::compat::LegacyMemberFunction<MemberPointer>, Value>{function, value};
+  using Argument = typename aurora::compat::LegacySecondArgument<MemberPointer>::type;
+  return aurora::compat::LegacyBindSecond<aurora::compat::LegacyMemberFunction<MemberPointer>, Argument>{
+      function, static_cast<Argument>(value)};
 }
 
 template <typename InputIt, typename UnaryPredicate>

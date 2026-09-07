@@ -23,6 +23,12 @@ option("aurora_enable_card")
     set_description("Enable CARD implementation")
 option_end()
 
+option("aurora_enable_thp")
+    set_default(true)
+    set_showmenu(true)
+    set_description("Enable THP decoder")
+option_end()
+
 option("aurora_enable_rmlui")
     set_default(false)
     set_showmenu(true)
@@ -355,6 +361,14 @@ if has_config("aurora_enable_gx") then
                   "lib/dolphin/gd/GDTexture.cpp", "lib/dolphin/gd/GDTransform.cpp",
                   "lib/dolphin/gd/GDAurora.cpp")
         add_deps("aurora-gx")
+end
+
+if has_config("aurora_enable_thp") then
+    target("aurora-thp")
+        set_kind("static")
+        add_aurora_common_settings(true)
+        add_files("lib/dolphin/thp/THPAudio.cpp", "lib/dolphin/thp/THPDec.cpp")
+        add_deps("aurora-core")
 end
 
 if has_config("aurora_enable_card") then

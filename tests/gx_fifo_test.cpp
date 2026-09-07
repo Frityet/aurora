@@ -1718,7 +1718,7 @@ TEST_F(GXFifoTest, SetArray_RejectsTruncatedArrayBaseCommand) {
                         static_cast<u8>(GX_AURORA_LOAD_ARRAYBASE)};
   bytes.resize(bytes.size() + 12);
   reset_gx_state();
-  EXPECT_DEATH(decode_fifo(bytes), "FIFO read overrun: need 1 bytes at offset 15, have 0");
+  EXPECT_DEATH(decode_fifo(bytes), "Reader overrun: need 1 bytes at offset 15, have 0");
 }
 
 TEST_F(GXFifoTest, SetArray_RejectsInvalidArrayBaseFlags) {
@@ -1733,7 +1733,7 @@ TEST_F(GXFifoTest, SetArray_RejectsInvalidArrayBaseFlags) {
 TEST_F(GXFifoTest, SetArray_RejectsTruncatedIndexedXfCommand) {
   reset_gx_state();
   const std::vector<u8> bytes{GX_LOAD_INDX_A, 0x00, 0x00, 0x00};
-  EXPECT_DEATH(decode_fifo(bytes), "FIFO read overrun: need 2 bytes at offset 3, have 1");
+  EXPECT_DEATH(decode_fifo(bytes), "Reader overrun: need 2 bytes at offset 3, have 1");
 }
 
 TEST_F(GXFifoTest, SetArray_Pos_EncodesAuroraArrayBaseAndStride) {

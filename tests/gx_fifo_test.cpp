@@ -1692,6 +1692,52 @@ TEST_F(GXFifoTest, SetArray_SizedIndexedXfDecodesBigEndianResourceData) {
   }
 }
 
+TEST_F(GXFifoTest, LoadTexMtxIndexedPreservesStrideDestinationAndPartialRows) {
+  std::array<f32, 24> matrices{};
+  for (u32 i = 0; i < matrices.size(); ++i) matrices[i] = static_cast<f32>(100 + i);
+  GXSetArray(GX_TEX_MTX_ARRAY, matrices.data(), 48);
+  GXLoadTexMtxIndx(1, GX_TEXMTX2, GX_MTX3x4);
+  auto bytes = capture_fifo();
+  const std::array<u8, 5> expected{GX_LOAD_INDX_C, 0x00, 0x01, 0xB0, 0x90};
+  ASSERT_GE(bytes.size(), expected.size());
+  EXPECT_TRUE(std::equal(expected.begin(), expected.end(), bytes.end() - expected.size()));
+  reset_gx_state();
+  decode_fifo(bytes);
+  const auto* loaded = reinterpret_cast<const f32*>(&gxState().texMtxs[2]);
+  for (u32 i = 0; i < 12; ++i) EXPECT_FLOAT_EQ(loaded[i], matrices[12 + i]);
+  EXPECT_EQ(gxState().arrays[GX_TEX_MTX_ARRAY].requiredSize, 96u);
+
+  GXLoadTexMtxIndx(0, GX_TEXMTX2, GX_MTX2x4);
+  decode_fifo(capture_fifo());
+  loaded = reinterpret_cast<const f32*>(&gxState().texMtxs[2]);
+  for (u32 i = 0; i < 8; ++i) EXPECT_FLOAT_EQ(loaded[i], matrices[i]);
+  for (u32 i = 8; i < 12; ++i) EXPECT_FLOAT_EQ(loaded[i], matrices[12 + i]);
+}
+
+TEST_F(GXFifoTest, LoadTexMtxIndexedUsesBigEndianSourceAndPostMatrixAddress) {
+  std::array<u8, 48> matrix{};
+  for (u32 i = 0; i < 12; ++i) {
+    const auto bits = std::bit_cast<u32>(static_cast<f32>(200 + i));
+    for (u32 byte = 0; byte < 4; ++byte) matrix[i * 4 + byte] = static_cast<u8>(bits >> (24 - byte * 8));
+  }
+  GXSetArray(GX_TEX_MTX_ARRAY, matrix.data(), matrix.size(), 48, false);
+  GXLoadTexMtxIndx(0, GX_PTTEXMTX2, GX_MTX3x4);
+  auto bytes = capture_fifo();
+  const std::array<u8, 5> expected{GX_LOAD_INDX_C, 0x00, 0x00, 0xB5, 0x18};
+  ASSERT_GE(bytes.size(), expected.size());
+  EXPECT_TRUE(std::equal(expected.begin(), expected.end(), bytes.end() - expected.size()));
+  reset_gx_state();
+  decode_fifo(bytes);
+  const auto* loaded = reinterpret_cast<const f32*>(&gxState().ptTexMtxs[2]);
+  for (u32 i = 0; i < 12; ++i) EXPECT_FLOAT_EQ(loaded[i], static_cast<f32>(200 + i));
+
+  // The release GX API admits the same eight-word partial load for post matrices.
+  GXLoadTexMtxIndx(0, GX_PTTEXMTX2, GX_MTX2x4);
+  decode_fifo(capture_fifo());
+  loaded = reinterpret_cast<const f32*>(&gxState().ptTexMtxs[2]);
+  for (u32 i = 0; i < 12; ++i) EXPECT_FLOAT_EQ(loaded[i], static_cast<f32>(200 + i));
+}
+
 TEST_F(GXFifoTest, SetArray_RejectsNullRetailSourceWhenReferenced) {
   const auto bytes = record_indexed_pos_draw(nullptr, 12, 0);
   reset_gx_state();

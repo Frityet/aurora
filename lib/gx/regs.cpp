@@ -1077,7 +1077,7 @@ bool copy_xf_data(u32 addr, const u8* data, u32 len, std::endian e) noexcept {
     u32 mtxIdx = ptBase / 12;
     u32 startOffset = ptBase % 12;
     CHECK(mtxIdx < MaxPTTexMtx, "XF: PTTexMtx copy oob? Should never happen; mtxIdx={}", mtxIdx);
-    CHECK(startOffset == 0 && len == 12, "XF: PTTexMtx sub-copy unsupported: offs={}, len={}", startOffset, len);
+    CHECK(startOffset == 0 && (len == 8 || len == 12), "XF: PTTexMtx sub-copy unsupported: offs={}, len={}", startOffset, len);
     f32* flat = reinterpret_cast<f32*>(&g_gxState.ptTexMtxs[mtxIdx]);
     bool changed = false;
     for (u32 i = 0; i < len; i++) {

@@ -192,7 +192,12 @@ void GXProject(f32 x, f32 y, f32 z, const f32 mtx[3][4], const f32* pm, const f3
 
 // TODO GXLoadNrmMtxImm3x3
 // TODO GXLoadNrmMtxIndx3x3
-// TODO GXLoadTexMtxIndx
+void GXLoadTexMtxIndx(u16 mtxIndx, u32 id, GXTexMtxType type) {
+  const u32 addr = id >= GX_PTTEXMTX0 ? (id - GX_PTTEXMTX0) * 4 + 0x500 : id * 4;
+  const u32 count = type == GX_MTX2x4 ? 8 : 12;
+  GX_WRITE_U8(GX_LOAD_INDX_C);
+  GX_WRITE_U32((static_cast<u32>(mtxIndx) << 16) | ((count - 1) << 12) | (addr & 0xFFF));
+}
 
 void GXSetZScaleOffset(f32 scale, f32 offset) {
   __gx->zOffset = offset * 16777215.0f;

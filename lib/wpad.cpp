@@ -1,6 +1,8 @@
 #include <aurora/wpad.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace aurora {
 namespace {
@@ -41,8 +43,17 @@ void WpadService::begin_frame() {
     channel.sub_stick_release = WpadStickNone;
     if (channel.hold != 0U) {
       ++channel.hold_frame_count;
-      if (channel.hold_frame_count == 1U || (channel.hold_frame_count > 30U && (channel.hold_frame_count % 8U) == 0U)) {
-        channel.repeat = channel.hold;
+      // begin_frame advances the original 60 Hz input clock. KPAD callers
+      // configure repeat delay and pulse in seconds, independently per port.
+      const auto delay = channel.button_repeat_parameters[0];
+      const auto pulse = channel.button_repeat_parameters[1];
+      if (std::isfinite(delay) && std::isfinite(pulse) && delay >= 0.0F && pulse > 0.0F) {
+        const auto delayFrames = static_cast<std::uint64_t>(std::min<double>(std::numeric_limits<std::uint32_t>::max(), std::round(static_cast<double>(delay) * 60.0)));
+        const auto pulseFrames = std::max<std::uint64_t>(1U, static_cast<std::uint64_t>(std::min<double>(std::numeric_limits<std::uint32_t>::max(), std::round(static_cast<double>(pulse) * 60.0))));
+        const auto elapsedFrames = channel.hold_frame_count - 1U;
+        if (elapsedFrames >= delayFrames && (elapsedFrames - delayFrames) % pulseFrames == 0U) {
+          channel.repeat = channel.hold;
+        }
       }
     } else {
       channel.hold_frame_count = 0U;
@@ -97,7 +108,7 @@ void WpadService::set_button_mask(s32 channel, std::uint32_t hold) {
   }
 }
 
-void WpadService::set_pointer(s32 channel, float x, float y, bool valid) {
+void WpadService::set_pointer(s32 channel, float x, float y, bool valid, float horizon_x, float horizon_y) {
   auto* state = mutable_channel_state(channel);
   if (state == nullptr) {
     return;
@@ -108,6 +119,8 @@ void WpadService::set_pointer(s32 channel, float x, float y, bool valid) {
       .x = x,
       .y = y,
       .valid = valid,
+      .horizon_x = horizon_x,
+      .horizon_y = horizon_y,
   };
   for (auto i = state->pointer_history.size() - 1U; i > 0U; --i) {
     state->pointer_history[i] = state->pointer_history[i - 1U];
@@ -115,6 +128,31 @@ void WpadService::set_pointer(s32 channel, float x, float y, bool valid) {
   state->pointer_history[0U] = state->pointer;
   state->pointer_history_count = std::min<std::uint32_t>(static_cast<std::uint32_t>(state->pointer_history.size()),
                                                          state->pointer_history_count + 1U);
+}
+
+void WpadService::set_pointer_resolution(s32 channel, float width, float height) {
+  if (auto* state = mutable_channel_state(channel); state && width > 0.0F && height > 0.0F) {
+    state->pointer_width = width;
+    state->pointer_height = height;
+  }
+}
+
+void WpadService::set_sampling_parameter(s32 channel, SamplingParameter parameter, float first, float second) {
+  auto* state = mutable_channel_state(channel);
+  if (!state) return;
+  auto* values = &state->position_parameters;
+  switch (parameter) {
+  case SamplingParameter::Position: break;
+  case SamplingParameter::Horizon: values = &state->horizon_parameters; break;
+  case SamplingParameter::Distance: values = &state->distance_parameters; break;
+  case SamplingParameter::Acceleration: values = &state->acceleration_parameters; break;
+  case SamplingParameter::ButtonRepeat: values = &state->button_repeat_parameters; break;
+  }
+  *values = {first, second};
+}
+
+void WpadService::set_sensor_height(s32 channel, float height) {
+  if (auto* state = mutable_channel_state(channel)) state->sensor_height = height;
 }
 
 void WpadService::set_sub_stick(s32 channel, float x, float y) {
@@ -316,12 +354,21 @@ extern "C" s32 KPADRead(s32 channel, KPADStatus sampling_bufs[], u32 length) {
       .z = state->core_acceleration.z,
   };
   sampling_bufs[0].pos = KPADVec2{
-      .x = state->pointer.x,
-      .y = state->pointer.y,
+      .x = state->pointer.x * 2.0F / state->pointer_width - 1.0F,
+      .y = state->pointer.y * 2.0F / state->pointer_height - 1.0F,
   };
+  sampling_bufs[0].horizon = {state->pointer.horizon_x, state->pointer.horizon_y};
+  if (state->pointer_history_count > 1 && state->pointer.valid && state->pointer_history[1].valid) {
+    const auto& previous = state->pointer_history[1];
+    sampling_bufs[0].vec = {(state->pointer.x - previous.x) * 2.0F / state->pointer_width,
+                            (state->pointer.y - previous.y) * 2.0F / state->pointer_height};
+    sampling_bufs[0].speed = std::hypot(sampling_bufs[0].vec.x, sampling_bufs[0].vec.y);
+    sampling_bufs[0].hori_vec = {state->pointer.horizon_x - previous.horizon_x, state->pointer.horizon_y - previous.horizon_y};
+    sampling_bufs[0].hori_speed = std::hypot(sampling_bufs[0].hori_vec.x, sampling_bufs[0].hori_vec.y);
+  }
   sampling_bufs[0].dist = state->distance_to_display;
   sampling_bufs[0].wpad_err = WPAD_ERR_NONE;
-  sampling_bufs[0].dpd_valid_fg = state->pointer.valid ? 1 : 0;
+  sampling_bufs[0].dpd_valid_fg = state->pointer.valid ? 2 : 0;
   return 1;
 }
 
@@ -338,7 +385,9 @@ extern "C" void WPADEnableURCC(BOOL) {}
 
 extern "C" void WPADSetDataFormat(s32, s32) {}
 
-extern "C" void WPADSetVRes(s32, u32, u32) {}
+extern "C" void WPADSetVRes(s32 channel, u32 width, u32 height) {
+  aurora::wpad_service().set_pointer_resolution(channel, static_cast<float>(width), static_cast<float>(height));
+}
 
 extern "C" void WPADSetAutoSamplingBuf(s32, void*, u32) {}
 
@@ -362,3 +411,26 @@ extern "C" void WPADStopSimpleSync() {}
 extern "C" void WPADSetConnectCallback(s32, void*) {}
 
 extern "C" void WPADSetExtensionCallback(s32, void*) {}
+
+extern "C" void KPADSetPosParam(s32 channel, f32 first, f32 second) {
+  aurora::wpad_service().set_sampling_parameter(channel, aurora::WpadService::SamplingParameter::Position, first, second);
+}
+
+extern "C" void KPADSetHoriParam(s32 channel, f32 first, f32 second) {
+  aurora::wpad_service().set_sampling_parameter(channel, aurora::WpadService::SamplingParameter::Horizon, first, second);
+}
+
+extern "C" void KPADSetDistParam(s32 channel, f32 first, f32 second) {
+  aurora::wpad_service().set_sampling_parameter(channel, aurora::WpadService::SamplingParameter::Distance, first, second);
+}
+
+extern "C" void KPADSetAccParam(s32 channel, f32 first, f32 second) {
+  aurora::wpad_service().set_sampling_parameter(channel, aurora::WpadService::SamplingParameter::Acceleration, first, second);
+}
+
+extern "C" void KPADSetBtnRepeat(s32 channel, f32 delay, f32 pulse) {
+  aurora::wpad_service().set_sampling_parameter(channel, aurora::WpadService::SamplingParameter::ButtonRepeat, delay, pulse);
+}
+extern "C" void KPADSetSensorHeight(s32 channel, f32 height) {
+  aurora::wpad_service().set_sensor_height(channel, height);
+}

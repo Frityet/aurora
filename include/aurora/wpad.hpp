@@ -11,6 +11,10 @@ struct WpadPointerState {
   float x = 0.0F;
   float y = 0.0F;
   bool valid = false;
+  // Mouse input has an explicit upright orientation; callers supplying another
+  // pointing device may publish its measured horizon with the same sample.
+  float horizon_x = 1.0F;
+  float horizon_y = 0.0F;
 };
 
 struct WpadVec3State {
@@ -41,6 +45,14 @@ struct WpadChannelState {
   std::uint32_t repeat = 0U;
   std::uint32_t hold_frame_count = 0U;
   WpadPointerState pointer{};
+  float pointer_width = 640.0F;
+  float pointer_height = 480.0F;
+  std::array<float, 2> position_parameters{};
+  std::array<float, 2> horizon_parameters{};
+  std::array<float, 2> distance_parameters{};
+  std::array<float, 2> acceleration_parameters{};
+  std::array<float, 2> button_repeat_parameters{0.5F, 8.0F / 60.0F};
+  float sensor_height = 0.0F;
   std::array<WpadPointerState, 16U> pointer_history{};
   std::uint32_t pointer_history_count = 0U;
   WpadVec3State core_acceleration{};
@@ -63,7 +75,11 @@ public:
   void begin_frame();
   void set_connected(s32 channel, bool connected);
   void set_button_mask(s32 channel, std::uint32_t hold);
-  void set_pointer(s32 channel, float x, float y, bool valid);
+  void set_pointer(s32 channel, float x, float y, bool valid, float horizon_x = 1.0F, float horizon_y = 0.0F);
+  void set_pointer_resolution(s32 channel, float width, float height);
+  enum class SamplingParameter { Position, Horizon, Distance, Acceleration, ButtonRepeat };
+  void set_sampling_parameter(s32 channel, SamplingParameter parameter, float first, float second);
+  void set_sensor_height(s32 channel, float height);
   void set_sub_stick(s32 channel, float x, float y);
   void set_core_acceleration(s32 channel, float x, float y, float z);
   void set_sub_acceleration(s32 channel, float x, float y, float z);

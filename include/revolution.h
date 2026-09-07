@@ -36,6 +36,9 @@ constexpr s32 WPAD_CHAN1 = 1;
 constexpr s32 WPAD_CHAN2 = 2;
 constexpr s32 WPAD_CHAN3 = 3;
 constexpr s32 WPAD_MAX_CONTROLLERS = 4;
+constexpr u32 WPAD_DEV_CORE = 0;
+constexpr u32 WPAD_DEV_FREESTYLE = 1;
+constexpr s32 WPAD_ERR_BUSY = -2;
 
 constexpr u32 WPAD_MOTOR_STOP = 0;
 constexpr u32 WPAD_MOTOR_RUMBLE = 1;
@@ -106,10 +109,16 @@ struct KPADStatus {
     f32 dist_speed = 0.0F;
     KPADVec2 acc_vertical {};
     s32 wpad_err = WPAD_ERR_NO_CONTROLLER;
-    s32 dpd_valid_fg = 0;
+    s8 dpd_valid_fg = 0;
 };
 
 extern "C" {
+void KPADSetBtnRepeat(s32 channel, f32 delay, f32 pulse);
+void KPADSetSensorHeight(s32 channel, f32 height);
+void KPADSetPosParam(s32 channel, f32 radius, f32 sensitivity);
+void KPADSetHoriParam(s32 channel, f32 radius, f32 sensitivity);
+void KPADSetDistParam(s32 channel, f32 radius, f32 sensitivity);
+void KPADSetAccParam(s32 channel, f32 radius, f32 sensitivity);
 s32 KPADRead(s32 channel, KPADStatus sampling_bufs[], u32 length);
 BOOL WPADProbe(s32 channel, u32 *type);
 void WPADDisconnect(s32 channel);

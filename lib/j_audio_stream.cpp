@@ -1,3 +1,4 @@
+#include <aurora/exception.hpp>
 #include <aurora/j_audio_stream.hpp>
 
 #include <algorithm>
@@ -20,7 +21,7 @@ constexpr std::uint32_t fourcc(char a, char b, char c, char d) {
 }
 
 [[noreturn]] void malformed(std::string_view detail) {
-  throw std::runtime_error("Malformed JAudio stream resource: " + std::string(detail));
+  aurora::throw_host_exception<std::runtime_error>("Malformed JAudio stream resource: " + std::string(detail));
 }
 
 class Reader final {

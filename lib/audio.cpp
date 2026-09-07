@@ -1,3 +1,4 @@
+#include <aurora/exception.hpp>
 #include <aurora/audio.hpp>
 
 #include <SDL3/SDL.h>
@@ -52,7 +53,7 @@ AfcDecodeResult decode_afc_hq(std::span<const std::uint8_t> encoded, std::size_t
                               const AfcCoefficientTable& coefficients, AfcState initial_state) {
   const auto required_frames = (sample_count + 15U) / 16U;
   if (required_frames > encoded.size() / 9U) {
-    throw std::invalid_argument("AFC HQ payload is shorter than its declared sample count");
+    aurora::throw_host_exception<std::invalid_argument>("AFC HQ payload is shorter than its declared sample count");
   }
 
   auto result = AfcDecodeResult{};
@@ -149,7 +150,7 @@ struct PcmAudioMixer::Impl {
 
   [[nodiscard]] std::uint64_t fade_frame_count(double duration_seconds) const {
     if (!std::isfinite(duration_seconds) || duration_seconds < 0.0) {
-      throw std::invalid_argument("A PCM voice fade duration must be finite and nonnegative");
+      aurora::throw_host_exception<std::invalid_argument>("A PCM voice fade duration must be finite and nonnegative");
     }
     if (duration_seconds == 0.0) {
       return 0U;
@@ -390,7 +391,7 @@ struct PcmAudioMixer::Impl {
 PcmAudioMixer::PcmAudioMixer(std::uint32_t output_sample_rate, PlaybackDevicePolicy device_policy)
 : m_impl(std::make_unique<Impl>(output_sample_rate, device_policy)) {
   if (output_sample_rate == 0U) {
-    throw std::invalid_argument("Audio mixer output sample rate must be nonzero");
+    aurora::throw_host_exception<std::invalid_argument>("Audio mixer output sample rate must be nonzero");
   }
 }
 
@@ -400,19 +401,19 @@ void PcmAudioMixer::open_default_playback() {
   const auto lock = std::scoped_lock(m_impl->mutex);
   if (m_impl->stream != nullptr) {
     if (m_impl->device_failed.load(std::memory_order_relaxed)) {
-      throw std::runtime_error("SDL playback stream stopped accepting mixed audio");
+      aurora::throw_host_exception<std::runtime_error>("SDL playback stream stopped accepting mixed audio");
     }
     return;
   }
   if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
-    throw std::runtime_error(std::string("SDL audio initialization failed: ") + SDL_GetError());
+    aurora::throw_host_exception<std::runtime_error>(std::string("SDL audio initialization failed: ") + SDL_GetError());
   }
   m_impl->owns_sdl_audio_ref = true;
   if (!SDL_InitSubSystem(SDL_INIT_EVENTS)) {
     const auto error = std::string(SDL_GetError());
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
     m_impl->owns_sdl_audio_ref = false;
-    throw std::runtime_error(std::string("SDL event initialization failed: ") + error);
+    aurora::throw_host_exception<std::runtime_error>(std::string("SDL event initialization failed: ") + error);
   }
   m_impl->owns_sdl_events_ref = true;
   m_impl->device_failed.store(false, std::memory_order_relaxed);
@@ -422,7 +423,7 @@ void PcmAudioMixer::open_default_playback() {
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
     m_impl->owns_sdl_events_ref = false;
     m_impl->owns_sdl_audio_ref = false;
-    throw std::runtime_error("SDL audio device watch failed: " + error);
+    aurora::throw_host_exception<std::runtime_error>("SDL audio device watch failed: " + error);
   }
   m_impl->event_watch_registered = true;
   const auto* driver = SDL_GetCurrentAudioDriver();
@@ -435,7 +436,7 @@ void PcmAudioMixer::open_default_playback() {
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
     m_impl->owns_sdl_events_ref = false;
     m_impl->owns_sdl_audio_ref = false;
-    throw std::runtime_error("SDL audio driver is not an audible playback device: " + rejected_driver);
+    aurora::throw_host_exception<std::runtime_error>("SDL audio driver is not an audible playback device: " + rejected_driver);
   }
 
   const auto spec = SDL_AudioSpec{
@@ -453,7 +454,7 @@ void PcmAudioMixer::open_default_playback() {
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
     m_impl->owns_sdl_events_ref = false;
     m_impl->owns_sdl_audio_ref = false;
-    throw std::runtime_error("SDL default playback stream failed: " + error);
+    aurora::throw_host_exception<std::runtime_error>("SDL default playback stream failed: " + error);
   }
   if (!SDL_ResumeAudioStreamDevice(m_impl->stream)) {
     const auto error = std::string(SDL_GetError());
@@ -464,7 +465,7 @@ void PcmAudioMixer::open_default_playback() {
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
     m_impl->owns_sdl_events_ref = false;
     m_impl->owns_sdl_audio_ref = false;
-    throw std::runtime_error("SDL default playback resume failed: " + error);
+    aurora::throw_host_exception<std::runtime_error>("SDL default playback resume failed: " + error);
   }
 }
 
@@ -504,16 +505,16 @@ VoiceToken PcmAudioMixer::start_voice(const PcmVoiceSpec& spec) {
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   if (spec.layers.empty()) {
-    throw std::invalid_argument("A PCM voice must contain at least one layer");
+    aurora::throw_host_exception<std::invalid_argument>("A PCM voice must contain at least one layer");
   }
   if (!std::isfinite(spec.gain_multiplier) || spec.gain_multiplier < 0.0F) {
-    throw std::invalid_argument("A PCM voice gain multiplier must be nonnegative");
+    aurora::throw_host_exception<std::invalid_argument>("A PCM voice gain multiplier must be nonnegative");
   }
   if (!std::isfinite(spec.pitch_multiplier) || spec.pitch_multiplier <= 0.0F) {
-    throw std::invalid_argument("A PCM voice pitch multiplier must be positive");
+    aurora::throw_host_exception<std::invalid_argument>("A PCM voice pitch multiplier must be positive");
   }
   if (!std::ranges::all_of(spec.layers, [this](const auto& layer) { return m_impl->validate_layer(layer); })) {
-    throw std::invalid_argument("A PCM voice contains an invalid layer");
+    aurora::throw_host_exception<std::invalid_argument>("A PCM voice contains an invalid layer");
   }
 
   auto token = VoiceToken{m_impl->next_token++};
@@ -540,10 +541,10 @@ VoiceToken PcmAudioMixer::start_voice(const PcmVoiceSpec& spec) {
 
 bool PcmAudioMixer::try_update_voice(VoiceToken token, float gain_multiplier, float pitch_multiplier) {
   if (!std::isfinite(gain_multiplier) || gain_multiplier < 0.0F) {
-    throw std::invalid_argument("A PCM voice gain multiplier must be nonnegative");
+    aurora::throw_host_exception<std::invalid_argument>("A PCM voice gain multiplier must be nonnegative");
   }
   if (!std::isfinite(pitch_multiplier) || pitch_multiplier <= 0.0F) {
-    throw std::invalid_argument("A PCM voice pitch multiplier must be positive");
+    aurora::throw_host_exception<std::invalid_argument>("A PCM voice pitch multiplier must be positive");
   }
 
   const auto lock = std::scoped_lock(m_impl->mutex);
@@ -560,13 +561,13 @@ bool PcmAudioMixer::try_update_voice(VoiceToken token, float gain_multiplier, fl
 
 void PcmAudioMixer::set_voice_gain(VoiceToken token, float gain_multiplier) {
   if (!std::isfinite(gain_multiplier) || gain_multiplier < 0.0F) {
-    throw std::invalid_argument("A PCM voice gain multiplier must be nonnegative");
+    aurora::throw_host_exception<std::invalid_argument>("A PCM voice gain multiplier must be nonnegative");
   }
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
   if (voice == m_impl->voices.end()) {
-    throw std::logic_error("Cannot update an inactive PCM voice");
+    aurora::throw_host_exception<std::logic_error>("Cannot update an inactive PCM voice");
   }
   voice->gain_ramp = Impl::GainRamp{.start = gain_multiplier, .target = gain_multiplier};
   voice->stop_after_gain_ramp = false;
@@ -574,26 +575,26 @@ void PcmAudioMixer::set_voice_gain(VoiceToken token, float gain_multiplier) {
 
 void PcmAudioMixer::set_voice_pitch(VoiceToken token, float pitch_multiplier) {
   if (!std::isfinite(pitch_multiplier) || pitch_multiplier <= 0.0F) {
-    throw std::invalid_argument("A PCM voice pitch multiplier must be positive");
+    aurora::throw_host_exception<std::invalid_argument>("A PCM voice pitch multiplier must be positive");
   }
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
   if (voice == m_impl->voices.end()) {
-    throw std::logic_error("Cannot update an inactive PCM voice");
+    aurora::throw_host_exception<std::logic_error>("Cannot update an inactive PCM voice");
   }
   voice->pitch_multiplier = pitch_multiplier;
 }
 
 void PcmAudioMixer::fade_voice_gain(VoiceToken token, float gain_multiplier, double duration_seconds) {
   if (!std::isfinite(gain_multiplier) || gain_multiplier < 0.0F) {
-    throw std::invalid_argument("A PCM voice gain multiplier must be nonnegative");
+    aurora::throw_host_exception<std::invalid_argument>("A PCM voice gain multiplier must be nonnegative");
   }
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
   if (voice == m_impl->voices.end()) {
-    throw std::logic_error("Cannot fade an inactive PCM voice");
+    aurora::throw_host_exception<std::logic_error>("Cannot fade an inactive PCM voice");
   }
   m_impl->configure_gain_ramp(voice->gain_ramp, voice->gain_ramp.value(), gain_multiplier, duration_seconds);
   voice->stop_after_gain_ramp = false;
@@ -618,16 +619,16 @@ void PcmAudioMixer::fade_out_voice(VoiceToken token, double duration_seconds) {
 void PcmAudioMixer::fade_layer_gains(VoiceToken token, std::span<const float> gain_multipliers,
                                      double duration_seconds) {
   if (!std::ranges::all_of(gain_multipliers, [](float gain) { return std::isfinite(gain) && gain >= 0.0F; })) {
-    throw std::invalid_argument("PCM layer gain multipliers must be finite and nonnegative");
+    aurora::throw_host_exception<std::invalid_argument>("PCM layer gain multipliers must be finite and nonnegative");
   }
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
   if (voice == m_impl->voices.end()) {
-    throw std::logic_error("Cannot fade layers on an inactive PCM voice");
+    aurora::throw_host_exception<std::logic_error>("Cannot fade layers on an inactive PCM voice");
   }
   if (gain_multipliers.size() != voice->layers.size()) {
-    throw std::invalid_argument("PCM layer gain count must match the voice layer count");
+    aurora::throw_host_exception<std::invalid_argument>("PCM layer gain count must match the voice layer count");
   }
   for (auto index = std::size_t{0}; index < voice->layers.size(); ++index) {
     auto& ramp = voice->layers[index].gain_ramp;
@@ -640,7 +641,7 @@ void PcmAudioMixer::set_voice_paused(VoiceToken token, bool paused) {
   m_impl->reclaim_finished_voices();
   const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
   if (voice == m_impl->voices.end()) {
-    throw std::logic_error("Cannot pause an inactive PCM voice");
+    aurora::throw_host_exception<std::logic_error>("Cannot pause an inactive PCM voice");
   }
   voice->paused = paused;
 }
@@ -713,7 +714,7 @@ std::optional<std::uint64_t> PcmAudioMixer::voice_rendered_frames(VoiceToken tok
 
 void PcmAudioMixer::render_interleaved(std::span<float> output) {
   if ((output.size() & 1U) != 0U) {
-    throw std::invalid_argument("Interleaved stereo output must contain an even sample count");
+    aurora::throw_host_exception<std::invalid_argument>("Interleaved stereo output must contain an even sample count");
   }
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->render_locked(output, false);

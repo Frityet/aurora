@@ -1,3 +1,4 @@
+#include <aurora/exception.hpp>
 #include <aurora/j_audio_sound_archive.hpp>
 
 #include <algorithm>
@@ -21,7 +22,7 @@ constexpr std::uint32_t fourcc(char a, char b, char c, char d) {
 }
 
 [[noreturn]] void malformed(std::string_view detail) {
-  throw std::runtime_error("Malformed JAudio sound-archive resource: " + std::string(detail));
+  aurora::throw_host_exception<std::runtime_error>("Malformed JAudio sound-archive resource: " + std::string(detail));
 }
 
 class Reader final {
@@ -206,7 +207,7 @@ struct JAudioSoundArchive::Impl {
   explicit Impl(std::span<const std::uint8_t> data, WaveArchiveLoader loader)
   : baa(data.begin(), data.end()), wave_loader(std::move(loader)) {
     if (!wave_loader) {
-      throw std::invalid_argument("JAudio wave archive loader is required");
+      aurora::throw_host_exception<std::invalid_argument>("JAudio wave archive loader is required");
     }
     parse_baa();
   }

@@ -1,4 +1,5 @@
 #pragma once
+#include <aurora/exception.hpp>
 
 #include <revolution/types.h>
 
@@ -100,7 +101,7 @@ public:
 
     void attachBackend(const void *owner, u64 token) {
         if (owner == nullptr || token == 0U) {
-            throw std::invalid_argument(
+            aurora::throw_host_exception<std::invalid_argument>(
                 "A JAudio handle requires a concrete backend owner and token");
         }
         mAttached = true;

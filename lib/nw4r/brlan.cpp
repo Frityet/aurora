@@ -1,3 +1,4 @@
+#include <aurora/exception.hpp>
 #include "aurora/nw4r/brlan.hpp"
 
 #include <algorithm>
@@ -14,7 +15,7 @@ constexpr auto CURVE_HERMITE = std::uint8_t{2U};
 
 [[nodiscard]] std::uint16_t read_be16(std::span<const std::uint8_t> data, std::size_t offset) {
   if (offset + 2U > data.size()) {
-    throw std::runtime_error("BRLAN read_be16 out of range");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN read_be16 out of range");
   }
 
   return static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[offset]) << 8U) | data[offset + 1U]);
@@ -22,7 +23,7 @@ constexpr auto CURVE_HERMITE = std::uint8_t{2U};
 
 [[nodiscard]] std::uint32_t read_be32(std::span<const std::uint8_t> data, std::size_t offset) {
   if (offset + 4U > data.size()) {
-    throw std::runtime_error("BRLAN read_be32 out of range");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN read_be32 out of range");
   }
 
   return (static_cast<std::uint32_t>(data[offset]) << 24U) | (static_cast<std::uint32_t>(data[offset + 1U]) << 16U) |
@@ -54,7 +55,7 @@ constexpr auto CURVE_HERMITE = std::uint8_t{2U};
 [[nodiscard]] std::string read_fixed_string(std::span<const std::uint8_t> data, std::size_t offset,
                                             std::size_t capacity) {
   if (offset + capacity > data.size()) {
-    throw std::runtime_error("BRLAN fixed string out of range");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN fixed string out of range");
   }
 
   auto length = 0U;
@@ -67,7 +68,7 @@ constexpr auto CURVE_HERMITE = std::uint8_t{2U};
 
 [[nodiscard]] std::string read_c_string(std::span<const std::uint8_t> data, std::size_t offset) {
   if (offset >= data.size()) {
-    throw std::runtime_error("BRLAN string out of range");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN string out of range");
   }
 
   auto end = offset;
@@ -75,7 +76,7 @@ constexpr auto CURVE_HERMITE = std::uint8_t{2U};
     ++end;
   }
   if (end == data.size()) {
-    throw std::runtime_error("BRLAN string is not null terminated");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN string is not null terminated");
   }
 
   return std::string(reinterpret_cast<const char*>(data.data() + offset), end - offset);
@@ -239,7 +240,7 @@ void apply_material_target(BrlanMaterialFrame& frame_values, std::string_view ki
 
 [[nodiscard]] BrlanAnimation::Target parse_target(std::span<const std::uint8_t> data, std::size_t base) {
   if (base + 12U > data.size()) {
-    throw std::runtime_error("BRLAN target is truncated");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN target is truncated");
   }
 
   auto target = BrlanAnimation::Target{
@@ -254,7 +255,7 @@ void apply_material_target(BrlanMaterialFrame& frame_values, std::string_view ki
   const auto key_base = base + key_offset;
   if (target.curve_type == CURVE_STEP) {
     if (key_base + static_cast<std::size_t>(key_count) * 8U > data.size()) {
-      throw std::runtime_error("BRLAN step keys are truncated");
+      aurora::throw_host_exception<std::runtime_error>("BRLAN step keys are truncated");
     }
     target.step_keys.reserve(key_count);
     for (auto i = 0U; i < key_count; ++i) {
@@ -266,7 +267,7 @@ void apply_material_target(BrlanMaterialFrame& frame_values, std::string_view ki
     }
   } else if (target.curve_type == CURVE_HERMITE) {
     if (key_base + static_cast<std::size_t>(key_count) * 12U > data.size()) {
-      throw std::runtime_error("BRLAN hermite keys are truncated");
+      aurora::throw_host_exception<std::runtime_error>("BRLAN hermite keys are truncated");
     }
     target.hermite_keys.reserve(key_count);
     for (auto i = 0U; i < key_count; ++i) {
@@ -284,12 +285,12 @@ void apply_material_target(BrlanMaterialFrame& frame_values, std::string_view ki
 
 [[nodiscard]] BrlanAnimation::Info parse_info(std::span<const std::uint8_t> data, std::size_t base) {
   if (base + 8U > data.size()) {
-    throw std::runtime_error("BRLAN animation info is truncated");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN animation info is truncated");
   }
 
   const auto target_count = data[base + 4U];
   if (base + 8U + static_cast<std::size_t>(target_count) * 4U > data.size()) {
-    throw std::runtime_error("BRLAN target offset table is truncated");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN target offset table is truncated");
   }
 
   auto info = BrlanAnimation::Info{
@@ -306,12 +307,12 @@ void apply_material_target(BrlanMaterialFrame& frame_values, std::string_view ki
 
 [[nodiscard]] BrlanAnimation::Content parse_content(std::span<const std::uint8_t> data, std::size_t base) {
   if (base + 24U > data.size()) {
-    throw std::runtime_error("BRLAN animation content is truncated");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN animation content is truncated");
   }
 
   const auto info_count = data[base + 20U];
   if (base + 24U + static_cast<std::size_t>(info_count) * 4U > data.size()) {
-    throw std::runtime_error("BRLAN animation info offset table is truncated");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN animation info offset table is truncated");
   }
 
   auto content = BrlanAnimation::Content{
@@ -332,7 +333,7 @@ void parse_animation_block(BrlanAnimation& animation, std::span<const std::uint8
   const auto content_count = read_be16(block, 14U);
   const auto content_offsets_offset = read_be32(block, 16U);
   if (content_offsets_offset + static_cast<std::size_t>(content_count) * 4U > block.size()) {
-    throw std::runtime_error("BRLAN animation content table is truncated");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN animation content table is truncated");
   }
 
   animation.contents.clear();
@@ -345,7 +346,7 @@ void parse_animation_block(BrlanAnimation& animation, std::span<const std::uint8
 
 void parse_tag_block(BrlanAnimation& animation, std::span<const std::uint8_t> block) {
   if (block.size() < 0x1cU) {
-    throw std::runtime_error("BRLAN animation tag block is truncated");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN animation tag block is truncated");
   }
 
   animation.tag_order = read_be16(block, 0x08U);
@@ -359,7 +360,7 @@ void parse_tag_block(BrlanAnimation& animation, std::span<const std::uint8_t> bl
 
   constexpr auto GROUP_REF_SIZE = 20U;
   if (groups_offset + static_cast<std::size_t>(group_count) * GROUP_REF_SIZE > block.size()) {
-    throw std::runtime_error("BRLAN animation group refs are truncated");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN animation group refs are truncated");
   }
 
   animation.group_refs.clear();
@@ -375,14 +376,14 @@ void parse_tag_block(BrlanAnimation& animation, std::span<const std::uint8_t> bl
 
 void parse_share_block(BrlanAnimation& animation, std::span<const std::uint8_t> block) {
   if (block.size() < 0x10U) {
-    throw std::runtime_error("BRLAN animation share block is truncated");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN animation share block is truncated");
   }
 
   const auto share_info_offset = read_be32(block, 0x08U);
   const auto share_count = read_be16(block, 0x0cU);
   constexpr auto SHARE_INFO_SIZE = 36U;
   if (share_info_offset + static_cast<std::size_t>(share_count) * SHARE_INFO_SIZE > block.size()) {
-    throw std::runtime_error("BRLAN animation share infos are truncated");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN animation share infos are truncated");
   }
 
   animation.share_infos.clear();
@@ -451,10 +452,10 @@ BrlanMaterialFrame BrlanAnimation::material_frame(std::string_view material_name
 
 BrlanAnimation parse_brlan_animation(std::span<const std::uint8_t> data) {
   if (!has_magic(data, 0U, "RLAN")) {
-    throw std::runtime_error("BRLAN file is missing RLAN magic");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN file is missing RLAN magic");
   }
   if (read_be16(data, 4U) != 0xFEFFU) {
-    throw std::runtime_error("BRLAN file is not big-endian");
+    aurora::throw_host_exception<std::runtime_error>("BRLAN file is not big-endian");
   }
 
   const auto header_size = read_be16(data, 12U);
@@ -464,12 +465,12 @@ BrlanAnimation parse_brlan_animation(std::span<const std::uint8_t> data) {
 
   for (auto i = 0U; i < block_count; ++i) {
     if (cursor + 8U > data.size()) {
-      throw std::runtime_error("BRLAN data block header is truncated");
+      aurora::throw_host_exception<std::runtime_error>("BRLAN data block header is truncated");
     }
 
     const auto block_size = read_be32(data, cursor + 4U);
     if (block_size < 8U || cursor + block_size > data.size()) {
-      throw std::runtime_error("BRLAN data block size is invalid");
+      aurora::throw_host_exception<std::runtime_error>("BRLAN data block size is invalid");
     }
 
     const auto block = data.subspan(cursor, block_size);

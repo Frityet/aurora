@@ -1,3 +1,5 @@
+#include <aurora/allocation.hpp>
+
 #include "encoding.hpp"
 
 #include "frame.hpp"
@@ -69,7 +71,10 @@ void render_custom_draw(const CustomDrawCommand& draw, const wgpu::RenderPassEnc
   }
 
   const auto context = make_draw_context(passInfo);
-  drawType->draw(context, pass, draw.payload.data(), draw.payloadSize, drawType->userdata);
+  {
+    const aurora::allocation::ClientAllocationScope clientAllocations;
+    drawType->draw(context, pass, draw.payload.data(), draw.payloadSize, drawType->userdata);
+  }
 }
 
 void execute_encoder_task(wgpu::CommandEncoder& cmd, FramePacket& frame, const EncoderTask& task) {
@@ -88,7 +93,10 @@ void execute_encoder_task(wgpu::CommandEncoder& cmd, FramePacket& frame, const E
       .uniformBuffer = res.uniformBuffer,
       .storageBuffer = res.storageBuffer,
   };
-  taskType->callback(context, cmd, task.payload.data(), task.payloadSize, taskType->userdata);
+  {
+    const aurora::allocation::ClientAllocationScope clientAllocations;
+    taskType->callback(context, cmd, task.payload.data(), task.payloadSize, taskType->userdata);
+  }
   if (taskType->afterSubmit != nullptr) {
     const auto payload = task.payload;
     const auto payloadSize = task.payloadSize;
@@ -99,7 +107,10 @@ void execute_encoder_task(wgpu::CommandEncoder& cmd, FramePacket& frame, const E
           .device = g_device,
           .queue = g_queue,
       };
-      callback(completionContext, payload.data(), payloadSize, userdata);
+      {
+        const aurora::allocation::ClientAllocationScope clientAllocations;
+        callback(completionContext, payload.data(), payloadSize, userdata);
+      }
     });
   }
 }

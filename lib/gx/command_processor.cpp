@@ -1,3 +1,5 @@
+#include <aurora/allocation.hpp>
+
 #include "command_processor.hpp"
 
 #include "../gfx/depth_peek.hpp"
@@ -243,6 +245,7 @@ static void handle_draw(u8 cmd, ByteReader& reader) noexcept;
 static void handle_aurora(ByteReader& reader) noexcept;
 
 ProcessResult process(const u8* data, u32 size) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
   ByteReader reader{{data, size}};
 
@@ -849,12 +852,12 @@ void handle_aurora(ByteReader& reader) noexcept {
     }
   } else if (subCmd == GX_AURORA_DEBUG_GROUP_PUSH) {
     auto label = reader.read_string();
-    gfx::push_debug_group(std::move(label));
+    gfx::push_debug_group(label);
   } else if (subCmd == GX_AURORA_DEBUG_GROUP_POP) {
     pop_debug_group();
   } else if (subCmd == GX_AURORA_DEBUG_MARKER_INSERT) {
     auto label = reader.read_string();
-    gfx::insert_debug_marker(std::move(label));
+    gfx::insert_debug_marker(label);
   }
 
   else {

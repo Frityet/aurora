@@ -1,3 +1,5 @@
+#include <aurora/allocation.hpp>
+
 #include "frame.hpp"
 
 #include "depth_peek.hpp"
@@ -300,6 +302,7 @@ RenderTargetLayout scene_render_target_layout() noexcept {
 bool uses_reversed_z() noexcept { return gx::UseReversedZ; }
 
 DrawTypeId register_draw_type(const DrawTypeDescriptor& desc) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (desc.draw == nullptr) {
     Log.warn("register_draw_type: draw callback is null");
     return InvalidDrawType;
@@ -322,6 +325,7 @@ DrawTypeId register_draw_type(const DrawTypeDescriptor& desc) {
 }
 
 void unregister_draw_type(DrawTypeId type) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   std::lock_guard lock{g_runtimeTypeMutex};
   if (find_runtime_draw_type_locked(type) == nullptr) {
     return;
@@ -336,6 +340,7 @@ void unregister_draw_type(DrawTypeId type) noexcept {
 }
 
 EncoderTaskId register_encoder_task_type(const EncoderTaskDescriptor& desc) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (desc.callback == nullptr) {
     Log.warn("register_encoder_task_type: callback is null");
     return InvalidEncoderTask;
@@ -359,6 +364,7 @@ EncoderTaskId register_encoder_task_type(const EncoderTaskDescriptor& desc) {
 }
 
 void unregister_encoder_task_type(EncoderTaskId type) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   std::lock_guard lock{g_runtimeTypeMutex};
   if (find_runtime_encoder_task_type_locked(type) == nullptr) {
     return;
@@ -374,6 +380,7 @@ void unregister_encoder_task_type(EncoderTaskId type) noexcept {
 }
 
 void initialize() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   g_frameIndex = 0;
   g_processEventsQueued.store(false, std::memory_order_release);
   g_lastPresentNs.store(0, std::memory_order_release);
@@ -519,6 +526,7 @@ void initialize() {
 }
 
 void shutdown() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   render_worker::synchronize();
   render_worker::shutdown();
   g_processEventsQueued.store(false, std::memory_order_release);
@@ -613,6 +621,7 @@ std::optional<size_t> acquire_mapped_staging_buffer() {
 }
 
 bool begin_frame() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
   // pace_frame_start();
   const size_t frameSlot = acquire_frame_slot();
@@ -655,7 +664,8 @@ bool begin_frame() {
   return true;
 }
 
-void end_frame(EndFrameCallback callback) {
+void end_frame(const EndFrameCallback& callback) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
   if (g_cpuFrameStart.time_since_epoch().count() != 0) {
     const auto cpuFrameTime = PresentClock::now() - g_cpuFrameStart;
@@ -671,7 +681,7 @@ void end_frame(EndFrameCallback callback) {
   ++g_frameIndex;
 
   const size_t stagingSlot = frame.stagingBuffer;
-  render_worker::enqueue_end_frame(frameId, [frameSlot, stagingSlot, callback = std::move(callback)]() mutable {
+  render_worker::enqueue_end_frame(frameId, [frameSlot, stagingSlot, callback = EndFrameCallback(callback)]() mutable {
     auto& packet = g_framePackets[frameSlot];
     g_stagingBuffers[stagingSlot].Unmap();
     g_mappingStates[stagingSlot].store(BufferMapState::Unmapped, std::memory_order_release);
@@ -687,7 +697,10 @@ void end_frame(EndFrameCallback callback) {
     g_resources.stats.lastStorageSize = stats.lastStorageSize;
     g_resources.stats.lastTextureUploadSize = stats.lastTextureUploadSize;
     if (callback) {
-      callback(encoder, std::move(afterSubmitCallbacks));
+      {
+        const aurora::allocation::ClientAllocationScope clientAllocations;
+        callback(encoder, std::move(afterSubmitCallbacks));
+      }
     }
     g_frameSlots.release(frameSlot);
     expire_cached_bind_groups();

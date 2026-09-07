@@ -1,3 +1,5 @@
+#include <aurora/allocation.hpp>
+
 #include "aurora/dl.hpp"
 
 #include <dolphin/gx/GXAurora.h>
@@ -297,6 +299,7 @@ std::optional<Command> Reader::next() {
 }
 
 std::optional<std::vector<u8>> optimize(const u8* dl, u32 size, const GXVtxDescList* desc, const VtxFmtLists* fmts) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   Reader reader{dl, size, desc, fmts};
   std::vector<u8> out;
   out.reserve(size);

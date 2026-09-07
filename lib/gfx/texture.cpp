@@ -1,3 +1,5 @@
+#include <aurora/allocation.hpp>
+
 #include "resources.hpp"
 #include "recording.hpp"
 
@@ -99,6 +101,7 @@ u16 wgpu_aniso(GXAnisotropy aniso) {
 
 TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mips, u32 format, ArrayRef<uint8_t> data,
                                     bool tlut, const char* label) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
 
   auto handle = new_dynamic_texture_2d(width, height, mips, format, label);
@@ -157,6 +160,7 @@ TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mi
 
 TextureHandle new_dynamic_texture_2d(uint32_t width, uint32_t height, uint32_t mips, u32 gxFormat,
                                      const char* label) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScopedS(3);
   const auto wgpuFormat = to_wgpu(gxFormat);
   const wgpu::Extent3D size{
@@ -191,6 +195,7 @@ TextureHandle new_dynamic_texture_2d(uint32_t width, uint32_t height, uint32_t m
 }
 
 TextureHandle new_render_texture(uint32_t width, uint32_t height, u32 gxFormat, const char* label) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
 
   const auto wgpuFormat = webgpu::g_graphicsConfig.surfaceConfiguration.format;
@@ -225,6 +230,7 @@ TextureHandle new_render_texture(uint32_t width, uint32_t height, u32 gxFormat, 
 }
 
 TextureHandle new_conv_texture(uint32_t width, uint32_t height, u32 gxFormat, const char* label) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
 
   const auto wgpuFormat = to_wgpu(gxFormat);
@@ -258,6 +264,7 @@ TextureHandle new_conv_texture(uint32_t width, uint32_t height, u32 gxFormat, co
 }
 
 void write_texture(TextureRef& ref, ArrayRef<uint8_t> data) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
 
   ConvertedTexture converted;

@@ -1,3 +1,5 @@
+#include <aurora/allocation.hpp>
+
 #include "resource_cache.hpp"
 
 #include "frame.hpp"
@@ -52,11 +54,13 @@ std::mutex g_samplerCacheMutex;
 namespace detail {
 
 void clear_bind_group_cache() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   std::lock_guard lock{g_bindGroupCacheMutex};
   g_cachedBindGroups.clear();
 }
 
 void expire_cached_bind_groups() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   std::lock_guard lock{g_bindGroupCacheMutex};
   const auto frameIndex = current_frame();
   if (g_cachedBindGroups.empty() || frameIndex == UINT32_MAX || frameIndex % BindGroupCacheSweepPeriod != 0) {
@@ -74,6 +78,7 @@ void expire_cached_bind_groups() {
 }
 
 void shutdown_resource_cache() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   clear_bind_group_cache();
   std::lock_guard lock{g_samplerCacheMutex};
   g_cachedSamplers.clear();
@@ -82,6 +87,7 @@ void shutdown_resource_cache() {
 } // namespace detail
 
 BindGroupRef bind_group_ref(const WGPUBindGroupDescriptor& descriptor) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   const auto id = xxh3_hash(descriptor);
   std::lock_guard lock{g_bindGroupCacheMutex};
   const auto it = g_cachedBindGroups.find(id);
@@ -105,6 +111,7 @@ wgpu::BindGroup find_bind_group(BindGroupRef id) {
 }
 
 wgpu::Sampler sampler_ref(const wgpu::SamplerDescriptor& descriptor) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   const auto id = xxh3_hash(descriptor);
   std::lock_guard lock{g_samplerCacheMutex};
   auto it = g_cachedSamplers.find(id);

@@ -1,3 +1,5 @@
+#include <aurora/allocation.hpp>
+
 #include "fifo.hpp"
 
 #include "../thread.hpp"
@@ -39,7 +41,10 @@ std::atomic<DrawDoneCallback> sDrawDoneCallback{nullptr};
 
 void dispatch_draw_done() noexcept {
   if (const auto callback = sDrawDoneCallback.load(std::memory_order_acquire); callback != nullptr) {
-    callback();
+    {
+      const aurora::allocation::ClientAllocationScope clientAllocations;
+      callback();
+    }
   }
 }
 
@@ -114,6 +119,7 @@ void stop_worker() {
 ProcessingMode processing_mode() noexcept { return kProcessingMode; }
 
 void init() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   stop_worker();
 
   constexpr uint32_t initialCapacity = 64 * 1024;
@@ -137,16 +143,21 @@ void init() {
   start_worker();
 }
 
-void shutdown() { stop_worker(); }
+void shutdown() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  stop_worker();
+}
 
 void begin_frame() noexcept { sFrameActive = true; }
 
 void end_frame() noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   sFrameActive = false;
   clear_draw_cache(); // command_processor
 }
 
 void write_data_grow(const void* data, uint32_t length) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   const uint64_t needed64 = static_cast<uint64_t>(detail::sBufferSize) + length;
   AURORA_ASSERT(needed64 <= std::numeric_limits<uint32_t>::max(), "fifo::write_data: buffer size overflow");
   const auto needed = static_cast<uint32_t>(needed64);
@@ -170,6 +181,7 @@ void write_data_grow(const void* data, uint32_t length) {
 }
 
 void publish() noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (!sFrameActive || kProcessingMode == ProcessingMode::Drain || detail::sInDisplayList) {
     return;
   }
@@ -232,6 +244,7 @@ uint32_t end_display_list() {
 bool in_display_list() { return detail::sInDisplayList; }
 
 void drain() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (detail::sBufferSize == 0) {
     return;
   }

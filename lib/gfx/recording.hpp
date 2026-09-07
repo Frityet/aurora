@@ -3,7 +3,7 @@
 #include "types.hpp"
 
 #include <cstddef>
-#include <string>
+#include <string_view>
 
 namespace aurora::gfx::detail {
 
@@ -108,6 +108,6 @@ uint32_t align_uniform(uint32_t value);
 Vec2<uint32_t> get_render_target_size() noexcept;
 void set_viewport(const Viewport& viewport) noexcept;
 void set_scissor(const ClipRect& scissor) noexcept;
-void push_debug_group(std::string label);
-void insert_debug_marker(std::string label);
+void push_debug_group(std::string_view label);
+void insert_debug_marker(std::string_view label);
 } // namespace aurora::gfx

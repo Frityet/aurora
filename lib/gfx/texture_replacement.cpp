@@ -1,3 +1,5 @@
+#include <aurora/allocation.hpp>
+
 #include "texture_replacement.hpp"
 
 #include "../io.hpp"
@@ -562,7 +564,10 @@ bool guarded_virtual_read(const std::shared_ptr<VirtualReadState>& state, const 
 #if defined(__cpp_exceptions) || defined(_CPPUNWIND)
   try {
 #endif
-    read = source.read(source.userData, path, outBytes);
+    {
+      const aurora::allocation::ClientAllocationScope clientAllocations;
+      read = source.read(source.userData, path, outBytes);
+    }
 #if defined(__cpp_exceptions) || defined(_CPPUNWIND)
   } catch (...) { Log.warn("texture_replacement: virtual read callback threw for {}", path); }
 #endif

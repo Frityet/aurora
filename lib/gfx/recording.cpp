@@ -1,3 +1,5 @@
+#include <aurora/allocation.hpp>
+
 #include "recording.hpp"
 
 #include "encoding.hpp"
@@ -244,6 +246,7 @@ void seal_pass(FramePacket& frame, uint32_t passIndex) {
 }
 
 Range push(ByteBuffer& target, const uint8_t* data, size_t length, size_t alignment) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (alignment != 0) {
     const size_t begin = target.size();
     const size_t alignedBegin = AURORA_ALIGN(begin, alignment);
@@ -259,6 +262,7 @@ Range push(ByteBuffer& target, const uint8_t* data, size_t length, size_t alignm
 }
 
 Range map(ByteBuffer& target, size_t length, size_t alignment) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (alignment != 0) {
     const size_t begin = target.size();
     const size_t alignedBegin = AURORA_ALIGN(begin, alignment);
@@ -284,6 +288,7 @@ bool check_recording(const char* name) {
 }
 
 void push_command(CommandType type, const Command::Data& data) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (g_recorder.currentRenderPass == UINT32_MAX)
     UNLIKELY {
       Log.warn("Dropping command {}", magic_enum::enum_name(type));
@@ -341,6 +346,7 @@ void push_draw_command(DrawCommand data) {
 }
 
 OffscreenCacheEntry get_offscreen_textures(uint32_t width, uint32_t height) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   OffscreenCacheKey key{width, height};
   if (const auto it = g_offscreenCache.find(key); it != g_offscreenCache.end()) {
     return it->second;
@@ -532,6 +538,7 @@ void enqueue_pass(FramePacket& frame, uint32_t passIndex) {
 namespace detail {
 
 void begin_recording(FramePacket& packet, size_t frameSlot) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   CHECK(!g_recorder.active(), "A recording session is already active");
   g_recorder.packet = &packet;
   g_recorder.frameSlot = frameSlot;
@@ -558,6 +565,7 @@ void begin_recording(FramePacket& packet, size_t frameSlot) {
 }
 
 RecordedFrame end_recording() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   CHECK(g_recorder.active(), "No active recording session");
   AURORA_ASSERT(!g_recorder.inOffscreen, "end_frame called while offscreen rendering is active");
   AURORA_ASSERT(g_recorder.currentRenderPass == UINT32_MAX,
@@ -589,6 +597,7 @@ RecordedFrame end_recording() {
 }
 
 void shutdown_recording() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   for (auto& pool : g_passSnapshotPools) {
     pool = {};
   }
@@ -628,6 +637,7 @@ void increment_merged_draw_count() noexcept {
 } // namespace detail
 
 void queue_texture_upload(TextureUpload upload) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (g_recorder.currentRenderPass != UINT32_MAX) {
     AURORA_ASSERT(!current_render_passes()[g_recorder.currentRenderPass].sealed,
                   "Attempted to append texture upload to sealed render pass {}", g_recorder.currentRenderPass);
@@ -637,6 +647,7 @@ void queue_texture_upload(TextureUpload upload) {
 
 void queue_texture_upload_data(const uint8_t* data, uint32_t bytesPerRow, uint32_t rowsPerImage,
                                wgpu::TexelCopyTextureInfo tex, wgpu::Extent3D size) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   const auto copyBytesPerRow = AURORA_ALIGN(bytesPerRow, 256);
   auto& frame = current_frame_packet();
   if (frame.textureUpload.size() + copyBytesPerRow * rowsPerImage <= TextureUploadSize) {
@@ -675,6 +686,7 @@ void queue_texture_upload_data(const uint8_t* data, uint32_t bytesPerRow, uint32
 }
 
 void queue_texture_copy(wgpu::TexelCopyTextureInfo src, wgpu::TexelCopyTextureInfo dst, wgpu::Extent3D size) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
   auto& frame = current_frame_packet();
   if (g_recorder.currentRenderPass != UINT32_MAX) {
@@ -694,6 +706,7 @@ void queue_texture_copy(wgpu::TexelCopyTextureInfo src, wgpu::TexelCopyTextureIn
 }
 
 void begin_color_pass(const ColorPassDescriptor& desc) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
   auto& frame = current_frame_packet();
   if (g_recorder.currentRenderPass != UINT32_MAX) {
@@ -739,6 +752,7 @@ void begin_color_pass(const ColorPassDescriptor& desc) {
 }
 
 void end_color_pass() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
   if (g_recorder.currentRenderPass == UINT32_MAX) {
     return;
@@ -794,11 +808,13 @@ void push_draw_command(clear::DrawData data) {
 
 template <>
 PipelineRef pipeline_ref(const clear::PipelineConfig& config) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   return find_pipeline(ShaderType::Clear, config, [=] { return create_pipeline(config); });
 }
 
 void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
                        Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat, CopyFilter copyFilter) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   // Resolve current render pass
   auto& prevPass = current_render_passes()[g_recorder.currentRenderPass];
   prevPass.resolveTarget = std::move(texture);
@@ -891,6 +907,7 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
 }
 
 void queue_palette_conv(tex_palette_conv::ConvRequest req) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   auto& renderPass = current_render_passes()[g_recorder.currentRenderPass];
   AURORA_ASSERT(!renderPass.sealed, "Attempted to append palette conversion to sealed render pass {}",
                 g_recorder.currentRenderPass);
@@ -962,6 +979,7 @@ bool push_custom_draw(DrawTypeId type, const void* payload, size_t payloadSize) 
 }
 
 void begin_offscreen(uint32_t width, uint32_t height) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
   AURORA_ASSERT(width != 0 && height != 0, "begin_offscreen requires nonzero dimensions ({}x{})", width, height);
   AURORA_ASSERT(g_recorder.active() && g_recorder.currentRenderPass != UINT32_MAX,
@@ -976,12 +994,14 @@ void begin_offscreen(uint32_t width, uint32_t height) {
 }
 
 void end_offscreen() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
   finish_current_offscreen();
   restore_efb();
 }
 
 bool create_pass(uint32_t width, uint32_t height) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (width == 0 || height == 0) {
     Log.warn("create_pass: invalid size {}x{}", width, height);
     return false;
@@ -1003,6 +1023,7 @@ bool create_pass(uint32_t width, uint32_t height) {
 }
 
 bool resolve_pass(const ResolveDesc& desc, ResolvedTargets& out) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   out = {};
   gx::fifo::drain();
 
@@ -1052,6 +1073,7 @@ bool resolve_pass(const ResolveDesc& desc, ResolvedTargets& out) {
 }
 
 void request_depth_snapshot(uint64_t rawId) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   const auto id = static_cast<AuroraDepthSnapshotId>(rawId);
   if (id == AURORA_INVALID_DEPTH_SNAPSHOT_ID) {
     return;
@@ -1093,6 +1115,7 @@ void request_depth_snapshot(uint64_t rawId) noexcept {
 }
 
 bool push_encoder_task(EncoderTaskId type, const void* payload, size_t payloadSize) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (type == InvalidEncoderTask) {
     Log.warn("push_encoder_task: invalid encoder task type");
     return false;
@@ -1157,12 +1180,14 @@ void push_draw_command(rmlui::DrawData data) {
 
 template <>
 PipelineRef pipeline_ref(const gx::PipelineConfig& config) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   return find_pipeline(ShaderType::GX, config, [=] { return create_pipeline(config); });
 }
 
 #ifdef AURORA_ENABLE_RMLUI
 template <>
 PipelineRef pipeline_ref(const rmlui::PipelineConfig& config) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   return find_pipeline(ShaderType::Rml, config, [=] { return rmlui::create_pipeline(config); });
 }
 #endif
@@ -1232,23 +1257,26 @@ uint32_t align_uniform(uint32_t value) {
   return AURORA_ALIGN(value, detail::resources().limits.minUniformBufferOffsetAlignment);
 }
 
-void insert_debug_marker(std::string label) {
+void insert_debug_marker(std::string_view label) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
 #if defined(AURORA_GFX_DEBUG_GROUPS)
   auto& markers = current_frame_packet().debugMarkers;
   const auto idx = markers.size();
-  markers.emplace_back(std::move(label));
+  markers.emplace_back(label);
   push_command(CommandType::DebugMarker, {.debugMarkerIndex = idx});
 #endif
 }
 
-void push_debug_group(std::string label) {
+void push_debug_group(std::string_view label) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
 #if defined(AURORA_GFX_DEBUG_GROUPS)
-  g_recorder.debugGroupStack.push_back(std::move(label));
+  g_recorder.debugGroupStack.emplace_back(label);
 #endif
 }
 } // namespace aurora::gfx
 
 void push_debug_group(const char* label) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
 #ifdef AURORA_GFX_DEBUG_GROUPS
   aurora::gfx::g_recorder.debugGroupStack.emplace_back(label);
 #endif

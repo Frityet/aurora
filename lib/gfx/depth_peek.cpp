@@ -1,3 +1,5 @@
+#include <aurora/allocation.hpp>
+
 #include "depth_peek.hpp"
 #include "depth_snapshot_store.hpp"
 
@@ -294,6 +296,7 @@ Slot* find_available_slot(uint32_t width, uint32_t height) {
 
 void complete_slot(size_t slotIdx, AuroraDepthSnapshotId expectedSnapshotId, uint64_t expectedLegacySequence,
                    wgpu::MapAsyncStatus status, wgpu::StringView message) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   std::vector<uint32_t> data;
   bool succeeded = false;
   {
@@ -340,6 +343,7 @@ void complete_slot(size_t slotIdx, AuroraDepthSnapshotId expectedSnapshotId, uin
 } // namespace
 
 void initialize() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   g_enabled = false;
   if (!webgpu::g_hasCoreFeatures) {
     return;
@@ -350,6 +354,7 @@ void initialize() {
 }
 
 void shutdown() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   g_enabled = false;
   testing::reset();
   g_pipeline = {};
@@ -359,7 +364,10 @@ void shutdown() {
   }
 }
 
-AuroraDepthSnapshotId create_snapshot() noexcept { return g_snapshots.create(); }
+AuroraDepthSnapshotId create_snapshot() noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  return g_snapshots.create();
+}
 
 bool set_snapshot_info(AuroraDepthSnapshotId id, const AuroraDepthSnapshotInfo& info) noexcept {
   return g_snapshots.set_info(id, info);
@@ -498,6 +506,7 @@ static void encode_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::Texture
 
 void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
                            wgpu::Extent3D sourceSize, uint32_t msaaSamples) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (!g_enabled) {
     return;
   }
@@ -525,6 +534,7 @@ void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureV
 
 void encode_tagged_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
                             wgpu::Extent3D sourceSize, uint32_t msaaSamples, const SnapshotCapture& capture) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (capture.info.id == AURORA_INVALID_DEPTH_SNAPSHOT_ID ||
       get_snapshot_info(capture.info.id, nullptr) != AURORA_DEPTH_SNAPSHOT_PENDING) {
     return;
@@ -534,6 +544,7 @@ void encode_tagged_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::Texture
 }
 
 void after_submit() noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (!g_enabled) {
     return;
   }

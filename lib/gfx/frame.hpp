@@ -34,7 +34,7 @@ namespace aurora::gfx {
 void initialize();
 void shutdown();
 bool begin_frame();
-void end_frame(EndFrameCallback callback);
+void end_frame(const EndFrameCallback& callback);
 uint32_t current_frame() noexcept;
 void after_submit() noexcept;
 void gpu_synchronize();

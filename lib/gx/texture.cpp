@@ -1,3 +1,5 @@
+#include <aurora/allocation.hpp>
+
 #include "texture.hpp"
 #include "texture_memory.hpp"
 
@@ -588,11 +590,13 @@ size_t tlut_source_size(u16 numEntries) noexcept { return static_cast<size_t>(nu
 void invalidate_bindings() noexcept { s_pendingInvalidations.fetch_add(1, std::memory_order_release); }
 
 uint64_t current_bind_generation() noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   apply_pending_invalidations();
   return s_bindGeneration;
 }
 
 void invalidate_replacement(uint64_t replacementId) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   const auto users = s_replacementUsers.find(replacementId);
   if (users == s_replacementUsers.end()) {
     return;
@@ -612,6 +616,7 @@ void invalidate_replacement(uint64_t replacementId) noexcept {
 }
 
 gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
 
   if (obj.texObjId != 0) {
@@ -662,6 +667,7 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
 }
 
 gfx::TextureHandle resolve_static_palette_texture(const GXTexObj_& obj, const GXTlutObj_& tlut) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
 
   if (obj.texObjId != 0) {
@@ -718,6 +724,7 @@ gfx::TextureHandle resolve_static_palette_texture(const GXTexObj_& obj, const GX
 }
 
 void end_frame() noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   const auto streamingStats = gfx::texture_replacement::process_streaming();
   s_stats.pendingLoads = streamingStats.pendingLoads;
   s_stats.publishes = streamingStats.publishes;
@@ -744,6 +751,7 @@ void end_frame() noexcept {
 }
 
 void shutdown() noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   s_textureObjectCaches.clear();
   s_tlutObjectCaches.clear();
   s_replacementUsers.clear();
@@ -760,6 +768,7 @@ void shutdown() noexcept {
 }
 
 void set_content_cache_budget_for_testing(uint64_t bytes) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   s_contentCacheBudgetBytes = bytes;
   while (s_contentCacheBytes > s_contentCacheBudgetBytes && !s_contentLru.empty()) {
     const auto cacheIt = s_contentCache.find(s_contentLru.back());
@@ -775,6 +784,7 @@ void set_content_cache_budget_for_testing(uint64_t bytes) noexcept {
 } // namespace texture
 
 void evict_texture_object(u32 texObjId) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (const auto it = s_textureObjectCaches.find(texObjId); it != s_textureObjectCaches.end()) {
     const CachedTextureEntry entry = it->second;
     s_textureObjectCaches.erase(it);
@@ -790,6 +800,7 @@ void evict_texture_object(u32 texObjId) noexcept {
 }
 
 void evict_tlut_object(u32 tlutObjId) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (const auto it = s_tlutObjectCaches.find(tlutObjId); it != s_tlutObjectCaches.end()) {
     for (const u32 texObjId : it->second.staticTextureUsers) {
       if (const auto textureIt = s_textureObjectCaches.find(texObjId); textureIt != s_textureObjectCaches.end()) {
@@ -809,6 +820,7 @@ void evict_tlut_object(u32 tlutObjId) noexcept {
 }
 
 void clear_copy_texture_cache() noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   g_gxState.copyTextures.clear();
   g_gxState.copyTextureCache.clear();
   for (auto& [_, cache] : s_tlutObjectCaches) {
@@ -825,6 +837,7 @@ bool has_copy_texture(const void* dest) noexcept {
 void clear_static_texture_cache() noexcept { s_pendingCacheClears.fetch_add(1, std::memory_order_release); }
 
 void evict_copy_texture(const void* dest) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   absl::flat_hash_set<const void*> sourceIdentities;
   if (const auto it = g_gxState.copyTextures.find(dest); it != g_gxState.copyTextures.end()) {
     if (it->second.handle) {
@@ -859,6 +872,7 @@ void evict_copy_texture(const void* dest) noexcept {
 }
 
 void resolve_sampled_textures(const ShaderInfo& info) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
   apply_pending_invalidations();
 

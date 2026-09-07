@@ -1,3 +1,5 @@
+#include <aurora/allocation.hpp>
+
 #include "gx.hpp"
 #include "__gx.h"
 
@@ -128,6 +130,7 @@ bool display_copy_size(u32* width, u32* height) noexcept {
 }
 
 bool read_display_copy_rgba8(void* dst, u32 dstSize, u32* width, u32* height, u32* rowStrideOut) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (gpu_copy_ready()) {
     gfx::gpu_synchronize();
   }
@@ -244,6 +247,7 @@ bool read_display_copy_rgba8(void* dst, u32 dstSize, u32* width, u32* height, u3
 }
 
 void copy_tex(const void* dest, GXBool clear) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   const auto rect = map_logical_scissor(g_gxState.texCopySrc);
   const auto [dstWidth, dstHeight] = scale_copy_dst(g_gxState.texCopyDstWidth, g_gxState.texCopyDstHeight);
   const auto texCopyFmt = g_gxState.texCopyFmt;
@@ -470,6 +474,7 @@ void GXSetCopyFilter(GXBool aa, const u8 sample_pattern[12][2], GXBool vf, const
 void GXSetDispCopyGamma(GXGamma gamma) { g_gxState.dispCopy.gamma = gamma; }
 
 void GXCopyDisp(void* dest, GXBool clear) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   if (!gpu_copy_ready()) {
     return;
   }

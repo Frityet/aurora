@@ -73,6 +73,8 @@ struct PcmVoiceSpec {
   std::vector<PcmLayer> layers;
   float gain_multiplier = 1.0F;
   float pitch_multiplier = 1.0F;
+  // Independent output routing gain; changing it preserves voice/stop ramps.
+  float bus_gain_multiplier = 1.0F;
 };
 
 struct VoiceToken {
@@ -118,6 +120,7 @@ public:
   // without a check/update race.
   [[nodiscard]] bool try_update_voice(VoiceToken token, float gain_multiplier, float pitch_multiplier);
   void set_voice_gain(VoiceToken token, float gain_multiplier);
+  [[nodiscard]] bool try_set_voice_bus_gain(VoiceToken token, float gain_multiplier);
   void set_voice_pitch(VoiceToken token, float pitch_multiplier);
   // Gain ramps are advanced by rendered output frames, so their timing is
   // deterministic in tests and independent of callback chunk sizes.
@@ -135,6 +138,7 @@ public:
   // Returns the current rendered-frame value of an in-progress gain ramp.
   [[nodiscard]] std::optional<float> voice_gain_multiplier(VoiceToken token) const;
   [[nodiscard]] std::optional<float> voice_pitch_multiplier(VoiceToken token) const;
+  [[nodiscard]] std::optional<float> voice_bus_gain_multiplier(VoiceToken token) const;
   [[nodiscard]] std::optional<bool> voice_paused(VoiceToken token) const;
   // Counts output frames for which this voice actually advanced. Paused
   // voices retain their exact source/envelope/ramp position and therefore do

@@ -1,5 +1,6 @@
 #include <aurora/exception.hpp>
 #include <aurora/audio.hpp>
+#include <aurora/allocation.hpp>
 
 #include <SDL3/SDL.h>
 
@@ -141,6 +142,7 @@ struct PcmAudioMixer::Impl {
     std::uint64_t rendered_frames = 0;
     float pitch_multiplier = 1.0F;
     GainRamp gain_ramp;
+    float bus_gain_multiplier = 1.0F;
     bool stop_after_gain_ramp = false;
     bool paused = false;
     bool releasing = false;
@@ -307,7 +309,7 @@ struct PcmAudioMixer::Impl {
         if (voice.paused) {
           continue;
         }
-        const auto voice_gain = voice.gain_ramp.value();
+        const auto voice_gain = voice.gain_ramp.value() * voice.bus_gain_multiplier;
         for (auto& layer : voice.layers) {
           if (layer.finished) {
             continue;
@@ -502,6 +504,7 @@ bool PcmAudioMixer::is_device_open() const {
 }
 
 VoiceToken PcmAudioMixer::start_voice(const PcmVoiceSpec& spec) {
+  const auto host_allocations = aurora::allocation::HostAllocationScope{};
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   if (spec.layers.empty()) {
@@ -509,6 +512,9 @@ VoiceToken PcmAudioMixer::start_voice(const PcmVoiceSpec& spec) {
   }
   if (!std::isfinite(spec.gain_multiplier) || spec.gain_multiplier < 0.0F) {
     aurora::throw_host_exception<std::invalid_argument>("A PCM voice gain multiplier must be nonnegative");
+  }
+  if (!std::isfinite(spec.bus_gain_multiplier) || spec.bus_gain_multiplier < 0.0F) {
+    aurora::throw_host_exception<std::invalid_argument>("A PCM voice bus gain multiplier must be finite and nonnegative");
   }
   if (!std::isfinite(spec.pitch_multiplier) || spec.pitch_multiplier <= 0.0F) {
     aurora::throw_host_exception<std::invalid_argument>("A PCM voice pitch multiplier must be positive");
@@ -530,6 +536,7 @@ VoiceToken PcmAudioMixer::start_voice(const PcmVoiceSpec& spec) {
               .start = spec.gain_multiplier,
               .target = spec.gain_multiplier,
           },
+      .bus_gain_multiplier = spec.bus_gain_multiplier,
   };
   voice.layers.reserve(spec.layers.size());
   for (const auto& layer : spec.layers) {
@@ -571,6 +578,20 @@ void PcmAudioMixer::set_voice_gain(VoiceToken token, float gain_multiplier) {
   }
   voice->gain_ramp = Impl::GainRamp{.start = gain_multiplier, .target = gain_multiplier};
   voice->stop_after_gain_ramp = false;
+}
+
+bool PcmAudioMixer::try_set_voice_bus_gain(VoiceToken token, float gain_multiplier) {
+  if (!std::isfinite(gain_multiplier) || gain_multiplier < 0.0F) {
+    aurora::throw_host_exception<std::invalid_argument>("A PCM voice bus gain multiplier must be finite and nonnegative");
+  }
+  const auto lock = std::scoped_lock(m_impl->mutex);
+  m_impl->reclaim_finished_voices();
+  const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
+  if (voice == m_impl->voices.end()) {
+    return false;
+  }
+  voice->bus_gain_multiplier = gain_multiplier;
+  return true;
 }
 
 void PcmAudioMixer::set_voice_pitch(VoiceToken token, float pitch_multiplier) {
@@ -680,6 +701,16 @@ std::optional<float> PcmAudioMixer::voice_gain_multiplier(VoiceToken token) cons
     return std::nullopt;
   }
   return voice->gain_ramp.value();
+}
+
+std::optional<float> PcmAudioMixer::voice_bus_gain_multiplier(VoiceToken token) const {
+  const auto lock = std::scoped_lock(m_impl->mutex);
+  m_impl->reclaim_finished_voices();
+  const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
+  if (voice == m_impl->voices.end()) {
+    return std::nullopt;
+  }
+  return voice->bus_gain_multiplier;
 }
 
 std::optional<float> PcmAudioMixer::voice_pitch_multiplier(VoiceToken token) const {

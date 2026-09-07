@@ -222,6 +222,10 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
       // render/logical viewport size, proj
       .uniformSize = 8 + 8 + 16 + 64,
   };
+  info.clippingDisabled = config.clippingDisabled && config.lineMode == 0;
+  if (info.clippingDisabled) {
+    info.uniformSize += 16; // authored viewport scale/offset within the full attachment
+  }
 
   if (config.lineMode != 0) {
     info.uniformSize += 4 + 4 + 4 + 4; // line_width, line_aspect_y, line_tex_offset, line_texcoord_mask
@@ -381,6 +385,14 @@ static void fill_uniform(ByteBuffer& buf, const ShaderInfo& info) noexcept {
   buf.append<f32>(minDepth);
   buf.append<f32>(maxDepth);
   buf.append_zeroes(8); // align following vec4/matrix uniforms
+  if (info.clippingDisabled) {
+    const auto target = gfx::get_render_target_size();
+    const auto& viewport = g_gxState.renderViewport;
+    buf.append<f32>(viewport.width / target.x);
+    buf.append<f32>(viewport.height / target.y);
+    buf.append<f32>((2.f * viewport.left + viewport.width) / target.x - 1.f);
+    buf.append<f32>(1.f - (2.f * viewport.top + viewport.height) / target.y);
+  }
   if (info.lineMode != 0) {
     if (info.lineMode == 3) { // GX_POINTS
       buf.append<f32>(static_cast<f32>(g_gxState.pointSize) / 6.f);

@@ -482,6 +482,8 @@ void start_offscreen(uint32_t width, uint32_t height) {
   g_recorder.inOffscreen = true;
 
   g_recorder.cachedViewport = {0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
+  gx::set_render_viewport(g_recorder.cachedViewport);
+  gx::g_gxState.dirty |= gx::DirtyUniform;
   g_recorder.cachedScissor = {0, 0, static_cast<int32_t>(width), static_cast<int32_t>(height)};
   push_command(CommandType::SetViewport, Command::Data{.setViewport = g_recorder.cachedViewport});
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_recorder.cachedScissor});
@@ -509,6 +511,8 @@ void restore_efb() {
   set_efb_targets(current_render_passes()[g_recorder.currentRenderPass]);
 
   g_recorder.cachedViewport = g_recorder.suspendedEfbViewport;
+  gx::set_render_viewport(g_recorder.cachedViewport);
+  gx::g_gxState.dirty |= gx::DirtyUniform;
   g_recorder.cachedScissor = g_recorder.suspendedEfbScissor;
   push_command(CommandType::SetViewport, Command::Data{.setViewport = g_recorder.cachedViewport});
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_recorder.cachedScissor});

@@ -953,10 +953,41 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
   std::string vtxXfrAttrsPre;
   std::string vtxXfrAttrs;
   size_t vtxOutIdx = 0;
+  const bool disabledPolygonClipping = config.clippingDisabled && config.lineMode == 0;
 
   // Load points for line/point expansion
   std::string_view vidxAttr = "vidx"sv;
-  if (config.lineMode != 0) {
+  if (disabledPolygonClipping) {
+    vtxInAttrs += ",\n    @builtin(instance_index) iidx: u32";
+    uniBufAttrs += "\n    viewport_to_target: vec4f,";
+    vtxXfrAttrsPre +=
+        "\n    let in_vidx = raw_fetch_u16_1(&abuf, imm.triangle_index_start + (iidx * 3u + vidx) * 2u, true);";
+    vidxAttr = "in_vidx"sv;
+    if (config.attrs[GX_VA_PNMTXIDX].attrType == GX_NONE) {
+      vtxXfrAttrsPre += "\n    let in_pnmtxidx = imm.current_pnmtx;";
+    }
+    const auto matrix = config.attrs[GX_VA_PNMTXIDX].attrType == GX_NONE
+                            ? std::string{"imm.current_pnmtx"}
+                            : attr_load(config, GX_VA_PNMTXIDX, "vertex"sv);
+    uniformPre += fmt::format(
+        "\nfn gx_project_vertex(vertex: u32) -> vec4f {{"
+        "\n    let position = {};"
+        "\n    let matrix = {};"
+        "\n    let view = vec4f(position, 1.0) * ubuf.postex_mtx[matrix];"
+        "\n    return vec4f(view, 1.0) * ubuf.proj;"
+        "\n}}"
+        "\nfn gx_clip_mask(position: vec4f) -> u32 {{"
+        "\n    let gx_z = {};"
+        "\n    return select(0u, 1u, position.w - position.x < 0.0) |"
+        "\n           select(0u, 2u, position.x + position.w < 0.0) |"
+        "\n           select(0u, 4u, position.w - position.y < 0.0) |"
+        "\n           select(0u, 8u, position.y + position.w < 0.0) |"
+        "\n           select(0u, 16u, position.w * gx_z > 0.0) |"
+        "\n           select(0u, 32u, gx_z + position.w < 0.0);"
+        "\n}}",
+        attr_load(config, GX_VA_POS, "vertex"sv), matrix,
+        UseReversedZ ? "-position.z" : "position.z - position.w");
+  } else if (config.lineMode != 0) {
     vtxInAttrs += ",\n    @builtin(instance_index) iidx: u32";
     uniBufAttrs +=
         "\n    line_width: f32,"
@@ -1028,9 +1059,30 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
 
   if (config.lineMode == 0) {
     vtxXfrAttrsPre += fmt::format(
-        "\n    let mv_pos = vec4f({}, 1.0) * ubuf.postex_mtx[in_pnmtxidx];"
-        "\n    out.pos = vec4f(mv_pos, 1.0) * ubuf.proj;",
+        "\n    let mv_pos = vec4f({}, 1.0) * ubuf.postex_mtx[in_pnmtxidx];",
         vtx_attr(config, GX_VA_POS));
+    if (disabledPolygonClipping) {
+      vtxXfrAttrsPre +=
+          "\n    let triangle_base = imm.triangle_index_start + iidx * 6u;"
+          "\n    let clip_a = gx_project_vertex(raw_fetch_u16_1(&abuf, triangle_base, true));"
+          "\n    let clip_b = gx_project_vertex(raw_fetch_u16_1(&abuf, triangle_base + 2u, true));"
+          "\n    let clip_c = gx_project_vertex(raw_fetch_u16_1(&abuf, triangle_base + 4u, true));"
+          "\n    let triangle_positions = array<vec4f, 3>(clip_a, clip_b, clip_c);"
+          "\n    out.pos = triangle_positions[vidx];"
+          "\n    let rejected = (gx_clip_mask(clip_a) & gx_clip_mask(clip_b) & gx_clip_mask(clip_c)) != 0u;"
+          "\n    let needs_clipping = clip_a.w < 0.0 || clip_b.w < 0.0 || clip_c.w < 0.0;"
+          "\n    if (rejected) {"
+          "\n        out.clip_distances = array<f32, 6>(-1.0, -1.0, -1.0, -1.0, -1.0, -1.0);"
+          "\n    } else if (needs_clipping) {"
+          "\n        out.clip_distances = array<f32, 6>(out.pos.z, out.pos.w - out.pos.z,"
+          "\n            out.pos.w - out.pos.x, out.pos.x + out.pos.w,"
+          "\n            out.pos.w - out.pos.y, out.pos.y + out.pos.w);"
+          "\n    } else {"
+          "\n        out.clip_distances = array<f32, 6>(1.0, 1.0, 1.0, 1.0, 1.0, 1.0);"
+          "\n    }";
+    } else {
+      vtxXfrAttrsPre += "\n    out.pos = vec4f(mv_pos, 1.0) * ubuf.proj;";
+    }
   } else if (config.lineMode == 3) {
     // GX_POINTS: expand single vertex to axis-aligned screen-space square
     vtxXfrAttrsPre +=
@@ -1059,8 +1111,16 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
         "\n    let clip_base = select(clip_a, clip_b, use_b);"
         "\n    out.pos = vec4f(clip_base.xy + offset_ndc * clip_base.w, clip_base.zw);";
   }
+  if (disabledPolygonClipping) {
+    // WebGPU's fixed XY planes surround the full attachment. The authored
+    // viewport transform remains exact, including pixels in its guardband.
+    vtxXfrAttrsPre +=
+        "\n    out.pos = vec4f(out.pos.xy * ubuf.viewport_to_target.xy +"
+        "\n                    out.pos.w * ubuf.viewport_to_target.zw, out.pos.zw);";
+  } else {
+    vtxXfrAttrsPre += "\n    out.clip_distances = array<f32, 2>(out.pos.z, out.pos.w - out.pos.z);";
+  }
   vtxXfrAttrsPre +=
-      "\n    out.clip_distances = array<f32, 2>(out.pos.z, out.pos.w - out.pos.z);"
       "\n    out.pos.z = out.pos.w * ubuf.depth_range.x + out.pos.z * (ubuf.depth_range.y - ubuf.depth_range.x);";
   vtxXfrAttrsPre += fmt::format(
       "\n    let nrm_tmp = vec4f({}, 0.0) * ubuf.nrm_mtx[in_pnmtxidx];"
@@ -1983,7 +2043,7 @@ struct Immediate {{
     vtx_start: u32,
     current_pnmtx: u32,
     fog_range_base: u32,
-    _pad: u32,
+    triangle_index_start: u32,
     array_start0: vec4u,
     array_start1: vec4u,
     array_start2: vec4u,
@@ -2005,7 +2065,7 @@ var<uniform> ubuf: Uniform;{1}
 
 struct VertexOutput {{
     @builtin(position) pos: vec4f,
-    @builtin(clip_distances) clip_distances: array<f32, 2>,{2}
+    @builtin(clip_distances) clip_distances: array<f32, {9}>,{2}
 }};
 
 struct FragmentInput {{
@@ -2026,7 +2086,7 @@ fn fs_main(in: FragmentInput) -> @location(0) vec4f {{{6}{5}
 }}
 )""",
                                         uniBufAttrs, texBindings, vtxOutAttrs, vtxInAttrs, vtxXfrAttrs, fragmentFn,
-                                        fragmentFnPre, vtxXfrAttrsPre, uniformPre);
+                                        fragmentFnPre, vtxXfrAttrsPre, uniformPre, disabledPolygonClipping ? 6 : 2);
   if (EnableDebugPrints) {
     Log.info("Generated shader (hash {:x}): {}", hash, shaderSource);
   }

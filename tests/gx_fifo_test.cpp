@@ -2276,6 +2276,26 @@ TEST_F(GXFifoTest, DestroyCopyTex_RemovesActiveCopyTextureAndCacheEntriesForPoin
 
 // --- GXSetCullMode ---
 
+TEST_F(GXFifoTest, ClipMode_XfStateAndPipelineInvalidation) {
+  GXSetClipMode(GX_CLIP_DISABLE);
+  const auto disabled = capture_fifo();
+  EXPECT_EQ(disabled, (std::vector<u8>{GX_LOAD_XF_REG, 0, 0, 0x10, 0x05, 0, 0, 0, 1}));
+  reset_gx_state();
+  g_gxState.dirty = 0;
+  decode_fifo(disabled);
+  EXPECT_TRUE(g_gxState.clippingDisabled);
+  EXPECT_NE(g_gxState.dirty & aurora::gx::DirtyPipeline, 0);
+  g_gxState.dirty = 0;
+  decode_fifo(disabled);
+  EXPECT_EQ(g_gxState.dirty, 0);
+
+  GXSetClipMode(GX_CLIP_ENABLE);
+  const auto enabled = capture_fifo();
+  decode_fifo(enabled);
+  EXPECT_FALSE(g_gxState.clippingDisabled);
+  EXPECT_NE(g_gxState.dirty & aurora::gx::DirtyPipeline, 0);
+}
+
 TEST_F(GXFifoTest, CullMode_Back) {
   GXSetCullMode(GX_CULL_BACK);
   auto bytes = flush_and_capture();

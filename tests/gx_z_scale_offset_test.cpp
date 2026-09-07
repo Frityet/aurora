@@ -90,15 +90,26 @@ TEST_F(GXFifoTest, ZScaleOffset_MarioDrawRangeRoundTripsWithoutViewportClamping)
   EXPECT_FLOAT_EQ(gxState().logicalViewport.zfar, 1.0F + expected_offset);
 }
 
-TEST_F(GXFifoTest, ClipDisableApiIsRejectedExplicitly) {
-  EXPECT_DEATH(GXSetClipMode(GX_CLIP_DISABLE), "GX_CLIP_DISABLE");
+TEST_F(GXFifoTest, ClipDisablePreservesViewportDepthScaleAndOffset) {
+  GXSetViewport(0.0F, 0.0F, 640.0F, 456.0F, 0.0F, 1.0F);
+  GXSetZScaleOffset(1.0F, 0.00001F);
+  GXSetClipMode(GX_CLIP_DISABLE);
+  GXFlush();
+  decode_fifo(capture_fifo());
+  EXPECT_TRUE(gxState().clippingDisabled);
+  constexpr auto expected_offset = 168.0F / 16777216.0F;
+  EXPECT_FLOAT_EQ(gxState().logicalViewport.znear, expected_offset);
+  EXPECT_FLOAT_EQ(gxState().logicalViewport.zfar, 1.0F + expected_offset);
 }
 
-TEST_F(GXFifoTest, ClipDisableDirectXfCommandIsRejectedExplicitly) {
+TEST_F(GXFifoTest, ClipDisableDirectXfCommandPreservesViewport) {
   const std::vector<u8> bytes{
       0x10,                   // GX_LOAD_XF_REG
       0x00, 0x00, 0x10, 0x05, // one value at XF register 0x1005
       0x00, 0x00, 0x00, 0x01, // GX_CLIP_DISABLE
   };
-  EXPECT_DEATH(decode_fifo(bytes), "GX_CLIP_DISABLE");
+  const auto viewport = gxState().logicalViewport;
+  decode_fifo(bytes);
+  EXPECT_TRUE(gxState().clippingDisabled);
+  EXPECT_EQ(gxState().logicalViewport, viewport);
 }

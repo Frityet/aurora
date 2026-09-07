@@ -735,6 +735,13 @@ constexpr auto kCpRegs = [] {
 
 // XF register decode
 
+// Bit 0 disables polygon clipping detection; bits 1/2 control separate XF
+// rejection/acceleration facilities and are not emitted by GXSetClipMode.
+void xf_clip_disable(u8, u32 value) noexcept {
+  CHECK((value & ~1u) == 0, "Unsupported XF clipping control bits 0x{:08x}", value);
+  g_gxState.clippingDisabled = (value & 1u) != 0;
+}
+
 // numChans (0x09)
 void xf_num_chans(u8, u32 value) noexcept {
   g_gxState.numChans = value;
@@ -862,6 +869,7 @@ constexpr auto kXfRegs = [] {
   for (auto& reg : regs) {
     reg = {xf_unhandled};
   }
+  regs[0x05] = {xf_clip_disable, DirtyPipeline};
   regs[0x08] = {}; // vertex specs (numColors/numNormals/numTexCoords)
   regs[0x09] = {xf_num_chans};
   for (u8 r = 0x0A; r <= 0x0D; ++r) {
@@ -889,9 +897,6 @@ constexpr auto kXfRegs = [] {
 
 // Returns true if the value did not change, otherwise updates the shadow register
 bool xf_reg_unchanged(u32 reg, u32 val) noexcept {
-  if (reg == 0x05 && val != GX_CLIP_ENABLE) {
-    FATAL("GX_CLIP_DISABLE is unsupported by Aurora's exact GX depth path");
-  }
   if (g_gxState.xfRegValid.test(reg) && g_gxState.xfRegCache[reg] == val) {
     return true;
   }

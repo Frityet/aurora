@@ -26,8 +26,8 @@ namespace aurora::gx::fifo {
 namespace {
 constexpr Module Log{"aurora::gx::fifo"};
 
-u16 prepare_idx_buffer(ByteBuffer& buf, GXPrimitive prim, u16 vtxStart, u16 vtxCount) noexcept {
-  u16 numIndices = 0;
+u32 prepare_idx_buffer(ByteBuffer& buf, GXPrimitive prim, u16 vtxStart, u16 vtxCount) noexcept {
+  u32 numIndices = 0;
   if (prim == GX_QUADS) {
     buf.reserve_extra((vtxCount / 4) * 6 * sizeof(u16));
 
@@ -461,11 +461,12 @@ static void require_draw_array_spans(GXVtxFmt fmt, const u8* data, u16 vtxCount,
 }
 
 static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Range vertRange, gfx::Range idxRange,
-                         u32 numIndices) noexcept {
+                         u32 numIndices, gfx::Range triangleIndices = {}) noexcept {
   auto& state = g_gxState;
   auto& cache = sDrawCache;
 
   DrawImmediateData immediates{.vtxStart = vertRange.offset, .currentPnMtx = state.currentPnMtx};
+  if (triangleIndices.size != 0) immediates.triangleIndexStart = triangleIndices.offset;
   for (int i = GX_VA_POS; i <= GX_VA_TEX7; ++i) {
     if (state.vtxDesc[i] != GX_INDEX8 && state.vtxDesc[i] != GX_INDEX16) {
       continue;
@@ -530,7 +531,15 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
   state.dirty &= ~DirtyImmediates;
 
   uint32_t instanceCount = 1;
-  if (prim == GX_LINES) {
+  const bool disabledPolygonClipping = triangleIndices.size != 0;
+  u32 drawVertexCount = vtxCount;
+  if (disabledPolygonClipping) {
+    // Each invocation can inspect the complete original triangle before XF's
+    // independent trivial-rejection and polygon-clipping decisions.
+    instanceCount = numIndices / 3;
+    drawVertexCount = 3;
+    numIndices = 0;
+  } else if (prim == GX_LINES) {
     instanceCount = vtxCount / 2;
   } else if (prim == GX_LINESTRIP) {
     instanceCount = vtxCount - 1;
@@ -538,18 +547,21 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
     instanceCount = vtxCount;
   }
   cache.lastDrawFmt = fmt;
-  gfx::push_draw_command(DrawData{
+  DrawData draw{
       .pipeline = cache.pipelineRef,
-      .vertRange = vertRange,
-      .idxRange = idxRange,
       .uniformRange = cache.uniformRange,
       .immediateData = immediates,
-      .vtxCount = vtxCount,
-      .indexCount = numIndices,
       .instanceCount = instanceCount,
       .bindGroups = cache.bindGroups,
       .dstAlpha = state.dstAlpha,
-  });
+  };
+  if (disabledPolygonClipping) {
+    const auto& viewport = state.renderViewport;
+    draw.clippingViewport = {viewport.left, viewport.top, viewport.width, viewport.height, gfx::get_render_target_size()};
+  } else {
+    draw.geometry = {vertRange, idxRange, drawVertexCount, numIndices};
+  }
+  gfx::push_draw_command(draw);
 }
 
 static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Range vertRange) noexcept {
@@ -557,7 +569,14 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, g
   u32 numIndices = 0;
   gfx::Range idxRange;
 
-  if (prim != GX_TRIANGLES) {
+  if (g_gxState.clippingDisabled && line_mode_for_prim(prim) == 0) {
+    static ByteBuffer triangleIndices;
+    numIndices = prepare_idx_buffer(triangleIndices, prim, 0, vtxCount);
+    const auto storage = gfx::push_storage(triangleIndices.data(), triangleIndices.size());
+    triangleIndices.clear();
+    push_gx_draw(prim, fmt, vtxCount, vertRange, {}, numIndices, storage);
+    return;
+  } else if (prim != GX_TRIANGLES) {
     ZoneScopedN("build idx buffer");
     static ByteBuffer idxBuf;
     numIndices = prepare_idx_buffer(idxBuf, prim, 0, vtxCount);
@@ -582,7 +601,7 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader& 
 
   require_draw_array_spans(fmt, reader.data() + reader.offset(), vtxCount, vtxSize);
 
-  const bool cleanState = g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt && sDrawCache.lineMode == 0 &&
+  const bool cleanState = !g_gxState.clippingDisabled && g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt && sDrawCache.lineMode == 0 &&
                           prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS;
   auto* lastDraw = cleanState ? gfx::get_last_draw_command<DrawData>() : nullptr;
   const bool canMerge = lastDraw != nullptr && lastDraw->instanceCount == 1;
@@ -596,32 +615,32 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader& 
     u32 numIndices = 0;
     gfx::Range idxRange;
     static ByteBuffer idxBuf;
-    const bool hadIndexRange = lastDraw->idxRange.size != 0;
-    if (lastDraw->indexCount == 0 && prim != GX_TRIANGLES) {
+    const bool hadIndexRange = lastDraw->geometry.idxRange.size != 0;
+    if (lastDraw->geometry.indexCount == 0 && prim != GX_TRIANGLES) {
       // Generate triangle index buffer for previous draw
-      lastDraw->indexCount = prepare_idx_buffer(idxBuf, GX_TRIANGLES, 0, lastDraw->vtxCount);
+      lastDraw->geometry.indexCount = prepare_idx_buffer(idxBuf, GX_TRIANGLES, 0, lastDraw->geometry.vtxCount);
     }
-    if (lastDraw->indexCount != 0) {
-      numIndices += prepare_idx_buffer(idxBuf, prim, lastDraw->vtxCount, vtxCount);
+    if (lastDraw->geometry.indexCount != 0) {
+      numIndices += prepare_idx_buffer(idxBuf, prim, lastDraw->geometry.vtxCount, vtxCount);
       idxRange = gfx::push_indices(idxBuf.data(), idxBuf.size(), hadIndexRange ? 0 : 4);
       idxBuf.clear();
     }
-    CHECK(lastDraw->vertRange.offset + lastDraw->vertRange.size == vertRange.offset,
-          "Non-consecutive vertex ranges ({} < {})", lastDraw->vertRange.offset + lastDraw->vertRange.size,
+    CHECK(lastDraw->geometry.vertRange.offset + lastDraw->geometry.vertRange.size == vertRange.offset,
+          "Non-consecutive vertex ranges ({} < {})", lastDraw->geometry.vertRange.offset + lastDraw->geometry.vertRange.size,
           vertRange.offset);
     if (hadIndexRange) {
-      CHECK(lastDraw->idxRange.offset + lastDraw->idxRange.size == idxRange.offset,
-            "Non-consecutive index ranges ({} < {})", lastDraw->idxRange.offset + lastDraw->idxRange.size,
+      CHECK(lastDraw->geometry.idxRange.offset + lastDraw->geometry.idxRange.size == idxRange.offset,
+            "Non-consecutive index ranges ({} < {})", lastDraw->geometry.idxRange.offset + lastDraw->geometry.idxRange.size,
             idxRange.offset);
     }
-    lastDraw->vertRange.size += vertRange.size;
-    if (lastDraw->idxRange.size == 0) {
-      lastDraw->idxRange = idxRange;
+    lastDraw->geometry.vertRange.size += vertRange.size;
+    if (lastDraw->geometry.idxRange.size == 0) {
+      lastDraw->geometry.idxRange = idxRange;
     } else {
-      lastDraw->idxRange.size += idxRange.size;
+      lastDraw->geometry.idxRange.size += idxRange.size;
     }
-    lastDraw->vtxCount += vtxCount;
-    lastDraw->indexCount += numIndices;
+    lastDraw->geometry.vtxCount += vtxCount;
+    lastDraw->geometry.indexCount += numIndices;
     gfx::detail::increment_merged_draw_count();
     return;
   }
@@ -836,7 +855,6 @@ void handle_aurora(ByteReader& reader) noexcept {
     const size_t idxBytes = static_cast<size_t>(indexCount) * sizeof(u16);
     // Index data is always host-endian; push it to the GPU buffer as-is
     const auto indexData = reader.take(idxBytes);
-    const gfx::Range idxRange = gfx::push_indices(indexData.data(), indexData.size(), 4);
     u32 vtxSize;
     if (g_gxState.lastVtxFmt == fmt) {
       vtxSize = g_gxState.lastVtxSize;
@@ -848,7 +866,13 @@ void handle_aurora(ByteReader& reader) noexcept {
     require_draw_array_spans(fmt, vertexData.data(), vtxCount, vtxSize);
     const gfx::Range vertRange = gfx::push_verts(vertexData.data(), vertexData.size(), 4);
     if (indexCount != 0) {
-      push_gx_draw(prim, fmt, vtxCount, vertRange, idxRange, indexCount);
+      if (g_gxState.clippingDisabled) {
+        const auto storage = gfx::push_storage(indexData.data(), indexData.size());
+        push_gx_draw(prim, fmt, vtxCount, vertRange, {}, indexCount, storage);
+      } else {
+        const auto idxRange = gfx::push_indices(indexData.data(), indexData.size(), 4);
+        push_gx_draw(prim, fmt, vtxCount, vertRange, idxRange, indexCount);
+      }
     }
   } else if (subCmd == GX_AURORA_DEBUG_GROUP_PUSH) {
     auto label = reader.read_string();

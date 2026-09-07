@@ -33,15 +33,26 @@ void render(const DrawData& data, const wgpu::RenderPassEncoder& pass) {
   if (data.bindGroups.textureBindGroup) {
     pass.SetBindGroup(2, gfx::find_bind_group(data.bindGroups.textureBindGroup));
   }
-  pass.SetIndexBuffer(resources.indexBuffer, wgpu::IndexFormat::Uint16, data.idxRange.offset, data.idxRange.size);
+  const bool disabledPolygonClipping = data.immediateData.triangleIndexStart != UINT32_MAX;
+  if (disabledPolygonClipping) {
+    const auto& size = data.clippingViewport.targetSize;
+    pass.SetViewport(0, 0, size.x, size.y, 0.f, 1.f);
+  } else if (data.geometry.indexCount != 0) {
+    const auto& indices = data.geometry.idxRange;
+    pass.SetIndexBuffer(resources.indexBuffer, wgpu::IndexFormat::Uint16, indices.offset, indices.size);
+  }
   if (data.dstAlpha != UINT32_MAX) {
     const wgpu::Color color{0.f, 0.f, 0.f, data.dstAlpha / 255.f};
     pass.SetBlendConstant(&color);
   }
-  if (data.indexCount == 0) {
-    pass.Draw(data.vtxCount, data.instanceCount);
+  if (disabledPolygonClipping) {
+    pass.Draw(3, data.instanceCount);
+    const auto& viewport = data.clippingViewport;
+    pass.SetViewport(viewport.left, viewport.top, viewport.width, viewport.height, 0.f, 1.f);
+  } else if (data.geometry.indexCount == 0) {
+    pass.Draw(data.geometry.vtxCount, data.instanceCount);
   } else {
-    pass.DrawIndexed(data.indexCount, data.instanceCount);
+    pass.DrawIndexed(data.geometry.indexCount, data.instanceCount);
   }
 }
 

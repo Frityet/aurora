@@ -153,6 +153,20 @@ if (AURORA_ENABLE_GX)
   endif ()
   set_tests_properties(gx_z_scale_offset_render PROPERTIES LABELS gpu RUN_SERIAL TRUE)
 
+  add_executable(gx_clip_mode_render_test gx_clip_mode_render_test.cpp ../lib/compat.cpp)
+  target_link_libraries(gx_clip_mode_render_test PRIVATE aurora::core)
+  if (AURORA_XVFB_RUN_EXECUTABLE)
+    add_test(NAME gx_clip_mode_render
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "XDG_RUNTIME_DIR=${AURORA_GX_RENDER_TEST_RUNTIME_DIR}"
+        "XDG_CONFIG_HOME=${AURORA_GX_RENDER_TEST_CONFIG_DIR}"
+        "XDG_CACHE_HOME=${AURORA_GX_RENDER_TEST_CACHE_DIR}"
+        "${AURORA_XVFB_RUN_EXECUTABLE}" -a $<TARGET_FILE:gx_clip_mode_render_test>)
+  else ()
+    add_test(NAME gx_clip_mode_render COMMAND gx_clip_mode_render_test)
+  endif ()
+  set_tests_properties(gx_clip_mode_render PROPERTIES LABELS gpu RUN_SERIAL TRUE)
+
   add_executable(gx_depth_snapshot_render_test
     gx_depth_snapshot_render_test.cpp
     ../lib/compat.cpp

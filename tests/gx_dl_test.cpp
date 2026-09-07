@@ -305,8 +305,8 @@ TEST_F(GXFifoTest, DrawIndexed_RoundTripThroughProcessor) {
   decode_fifo(*result);
 
   EXPECT_EQ(aurora::gfx::g_testDrawCount, 1u);
-  EXPECT_EQ(aurora::gfx::g_testLastDraw.vtxCount, 8u);
-  EXPECT_EQ(aurora::gfx::g_testLastDraw.indexCount, 12u);
+  EXPECT_EQ(aurora::gfx::g_testLastDraw.geometry.vtxCount, 8u);
+  EXPECT_EQ(aurora::gfx::g_testLastDraw.geometry.indexCount, 12u);
   EXPECT_EQ(aurora::gfx::g_testLastDraw.instanceCount, 1u);
 }
 
@@ -340,8 +340,8 @@ TEST_F(GXFifoTest, BeginIndexed_RoundTripsThroughProcessor) {
   aurora::gfx::g_testDrawCount = 0;
   decode_fifo(draw);
   EXPECT_EQ(aurora::gfx::g_testDrawCount, 1u);
-  EXPECT_EQ(aurora::gfx::g_testLastDraw.vtxCount, 4u);
-  EXPECT_EQ(aurora::gfx::g_testLastDraw.indexCount, 6u);
+  EXPECT_EQ(aurora::gfx::g_testLastDraw.geometry.vtxCount, 4u);
+  EXPECT_EQ(aurora::gfx::g_testLastDraw.geometry.indexCount, 6u);
 }
 
 TEST_F(GXFifoTest, BeginIndexed_RecordsDisplayList) {
@@ -369,6 +369,6 @@ TEST_F(GXFifoTest, BeginIndexed_RecordsDisplayList) {
   aurora::gfx::g_testDrawCount = 0;
   aurora::gx::fifo::process(storage, size);
   EXPECT_EQ(aurora::gfx::g_testDrawCount, 1u);
-  EXPECT_EQ(aurora::gfx::g_testLastDraw.vtxCount, 3u);
-  EXPECT_EQ(aurora::gfx::g_testLastDraw.indexCount, 3u);
+  EXPECT_EQ(aurora::gfx::g_testLastDraw.geometry.vtxCount, 3u);
+  EXPECT_EQ(aurora::gfx::g_testLastDraw.geometry.indexCount, 3u);
 }

@@ -40,9 +40,7 @@ void GXSetCullMode(GXCullMode mode) {
 }
 
 void GXSetClipMode(GXClipMode mode) {
-  if (mode != GX_CLIP_ENABLE) {
-    FATAL("GX_CLIP_DISABLE is unsupported by Aurora's exact GX depth path");
-  }
+  CHECK(mode == GX_CLIP_ENABLE || mode == GX_CLIP_DISABLE, "Invalid GX clip mode {}", static_cast<u32>(mode));
   GX_WRITE_XF_REG(5, mode);
   __gx->bpSent = 1;
 }

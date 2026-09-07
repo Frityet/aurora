@@ -393,7 +393,7 @@ void wgpuTextureViewAddRef(WGPUTextureView) {}
 void wgpuInstanceAddRef(WGPUInstance) {}
 }
 
-void aurora::gfx::push_debug_group(std::string) {}
+void aurora::gfx::push_debug_group(std::string_view) {}
 void push_debug_group(const char*) {}
 void pop_debug_group() {}
-void aurora::gfx::insert_debug_marker(std::string) {}
+void aurora::gfx::insert_debug_marker(std::string_view) {}

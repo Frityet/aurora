@@ -297,7 +297,7 @@ void set_logical_viewport(const gfx::Viewport& viewport) noexcept {
 
 void set_render_viewport(const gfx::Viewport& viewport) noexcept {
   if (viewport.left != g_gxState.renderViewport.left || viewport.width != g_gxState.renderViewport.width ||
-      viewport.height != g_gxState.renderViewport.height) {
+      viewport.height != g_gxState.renderViewport.height || viewport.top != g_gxState.renderViewport.top) {
     g_gxState.dirty |= DirtyUniform;
   }
   g_gxState.renderViewport = viewport;
@@ -371,6 +371,7 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
   config.shaderConfig = {};
   config.shaderConfig.fogType = g_gxState.fog.type;
   config.shaderConfig.fogRangeEnabled = g_gxState.fog.rangeEnabled;
+  config.shaderConfig.clippingDisabled = g_gxState.clippingDisabled;
   u8 vtxOffset = 0;
   for (int i = GX_VA_PNMTXIDX; i <= GX_VA_TEX7; ++i) {
     const auto attr = static_cast<GXAttr>(i);

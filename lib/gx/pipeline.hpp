@@ -6,18 +6,30 @@
 namespace aurora::gx {
 struct DrawData {
   gfx::PipelineRef pipeline;
-  gfx::Range vertRange;
-  gfx::Range idxRange;
+  struct Geometry {
+    gfx::Range vertRange;
+    gfx::Range idxRange;
+    uint32_t vtxCount;
+    uint32_t indexCount;
+  };
+  struct ClippingViewport {
+    float left, top, width, height;
+    Vec2<u32> targetSize;
+  };
+  // Clip-disabled polygons use vertex pulling for their triangle indices, so
+  // they need no index-buffer binding or CPU vertex range after recording.
+  union {
+    Geometry geometry{};
+    ClippingViewport clippingViewport;
+  };
   gfx::Range uniformRange;
   DrawImmediateData immediateData;
-  uint32_t vtxCount;
-  uint32_t indexCount;
   uint32_t instanceCount;
   GXBindGroups bindGroups;
   uint32_t dstAlpha;
 };
 
-constexpr uint32_t GXPipelineConfigVersion = 14;
+constexpr uint32_t GXPipelineConfigVersion = 15;
 struct PipelineConfig {
   uint32_t version = GXPipelineConfigVersion;
   uint32_t msaaSamples = 1;

@@ -79,8 +79,10 @@ find_package(Threads REQUIRED)
 add_executable(os_execution_tests
   os_execution_test.cpp
   os_mutex_test.cpp
+  os_message_test.cpp
   ../lib/dolphin/os/OSExecution.cpp
   ../lib/dolphin/os/OSMutex.cpp
+  ../lib/dolphin/os/OSMessage.cpp
 )
 target_include_directories(os_execution_tests PRIVATE ../include)
 target_compile_definitions(os_execution_tests PRIVATE AURORA TARGET_PC)

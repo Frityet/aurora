@@ -5,8 +5,17 @@
 
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/gx/GXCpu2Efb.h>
+#include <aurora/depth_snapshot.hpp>
+#include <aurora/exception.hpp>
+#include <stdexcept>
 
 void GXPeekZ(u16 x, u16 y, u32* z) {
+  if (aurora::selected_depth_snapshot != 0) {
+    if (z != nullptr && !aurora::gfx::depth_peek::read_snapshot(aurora::selected_depth_snapshot, x, y, *z)) {
+      aurora::throw_host_exception<std::logic_error>("GXPeekZ draw-sync snapshot is unavailable or its coordinates are outside the captured EFB");
+    }
+    return;
+  }
   if (z != nullptr) {
     u32 value = 0;
     if (aurora::gfx::depth_peek::read_latest(x, y, value)) {

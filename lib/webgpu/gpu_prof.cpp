@@ -2,6 +2,7 @@
 
 #include "../internal.hpp"
 #include "gpu.hpp"
+#include "map_future.hpp"
 
 #include <tracy/Tracy.hpp>
 
@@ -59,6 +60,7 @@ enum class SlotState : uint8_t {
 
 struct Slot {
   wgpu::Buffer readback;
+  wgpu::Future mapFuture{};
   std::vector<Event> events;
   uint32_t passCount = 0;
   int64_t submitNs = 0;
@@ -328,15 +330,23 @@ void initialize() {
 }
 
 void shutdown() {
+  g_enabled = false;
+  // The render worker has stopped before WebGPU teardown. Finish callbacks
+  // while their buffers and the WebGPU instance still belong to this run.
+  for (auto& slot : g_slots) {
+    complete_map_future(slot.mapFuture, true);
+  }
   g_querySet = {};
   g_resolveBuffer = {};
   for (auto& slot : g_slots) {
+    if (slot.state.load(std::memory_order_acquire) == SlotState::Mapped) {
+      slot.readback.Unmap();
+    }
     slot.readback = {};
     slot.events.clear();
     slot.passCount = 0;
     slot.state = SlotState::Free;
   }
-  g_enabled = false;
   g_timestampsEnabled = false;
   g_frameActive = false;
   g_framePending = false;
@@ -388,11 +398,12 @@ void after_submit() {
     auto& slot = record_slot();
     slot.submitNs = now_ns();
     slot.state = SlotState::InFlight;
-    slot.readback.MapAsync(wgpu::MapMode::Read, 0, ReadbackSize, wgpu::CallbackMode::AllowSpontaneous,
-                           [&slot](wgpu::MapAsyncStatus status, wgpu::StringView) {
-                             slot.state =
-                                 status == wgpu::MapAsyncStatus::Success ? SlotState::Mapped : SlotState::Failed;
-                           });
+    slot.mapFuture =
+        slot.readback.MapAsync(wgpu::MapMode::Read, 0, ReadbackSize, wgpu::CallbackMode::AllowSpontaneous,
+                               [&slot](wgpu::MapAsyncStatus status, wgpu::StringView) {
+                                 slot.state =
+                                     status == wgpu::MapAsyncStatus::Success ? SlotState::Mapped : SlotState::Failed;
+                               });
     g_recordSlot = (g_recordSlot + 1) % RingDepth;
   }
   {
@@ -402,11 +413,17 @@ void after_submit() {
   while (true) {
     auto& slot = g_slots[g_emitSlot];
     const auto state = slot.state.load(std::memory_order_acquire);
+    if (state != SlotState::Mapped && state != SlotState::Failed) {
+      break;
+    }
+    // A callback can publish its result before returning. Keep its future
+    // until completion so the next map cannot overwrite a live callback.
+    if (!complete_map_future(slot.mapFuture, false)) {
+      break;
+    }
     if (state == SlotState::Mapped) {
       emit_frame(slot);
       slot.readback.Unmap();
-    } else if (state != SlotState::Failed) {
-      break;
     }
     slot.state.store(SlotState::Free, std::memory_order_release);
     g_emitSlot = (g_emitSlot + 1) % RingDepth;

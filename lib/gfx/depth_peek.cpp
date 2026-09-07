@@ -7,6 +7,7 @@
 #include "../gx/gx.hpp"
 #include "../gfx/render_worker.hpp"
 #include "../webgpu/gpu.hpp"
+#include "../webgpu/map_future.hpp"
 #include "../webgpu/gpu_prof.hpp"
 
 #include <algorithm>
@@ -90,6 +91,7 @@ uint64_t g_nextLegacySequence = 1;
 LatestSnapshot g_latest;
 detail::SnapshotStore g_snapshots;
 std::mutex g_mutex;
+webgpu::MapFutureTracker g_mapFutures;
 
 constexpr std::string_view ShaderPreamble = R"(
 struct Params {
@@ -549,6 +551,7 @@ void after_submit() noexcept {
     return;
   }
 
+  g_mapFutures.retire_ready();
   std::vector<PendingMap> pendingMaps;
   {
     std::lock_guard lock{g_mutex};
@@ -569,17 +572,21 @@ void after_submit() noexcept {
   }
 
   for (const auto& pending : pendingMaps) {
-    pending.readbackBuffer.MapAsync(
+    const auto future = pending.readbackBuffer.MapAsync(
         wgpu::MapMode::Read, 0, pending.byteSize, wgpu::CallbackMode::AllowSpontaneous,
         [slotIdx = pending.slotIdx, snapshotId = pending.snapshotId,
          legacySequence = pending.legacySequence](wgpu::MapAsyncStatus status, wgpu::StringView message) {
           complete_slot(slotIdx, snapshotId, legacySequence, status, message);
         });
+    g_mapFutures.add(future);
   }
 }
 
 namespace testing {
 void reset() noexcept {
+  // The caller must stop map producers first. Callback completion takes g_mutex,
+  // so retire every future before locking or recycling slot and snapshot IDs.
+  g_mapFutures.drain();
   {
     std::lock_guard lock{g_mutex};
     g_snapshotRequested = false;

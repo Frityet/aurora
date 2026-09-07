@@ -15,6 +15,7 @@
 #include "../rmlui/pipeline.hpp"
 #endif
 #include "../webgpu/gpu.hpp"
+#include "../webgpu/map_future.hpp"
 #include "../webgpu/gpu_prof.hpp"
 
 #include <array>
@@ -215,14 +216,17 @@ void pace_frame_start() {
   }
 }
 
+webgpu::MapFutureTracker g_stagingMapFutures;
+
 void map_staging_buffer(size_t slot, bool releaseSlotOnCompletion = false) {
+  g_stagingMapFutures.retire_ready();
   auto expected = BufferMapState::Unmapped;
   if (!g_mappingStates[slot].compare_exchange_strong(expected, BufferMapState::Mapping, std::memory_order_acq_rel,
                                                      std::memory_order_acquire)) {
     return;
   }
 
-  g_stagingBuffers[slot].MapAsync(
+  const auto future = g_stagingBuffers[slot].MapAsync(
       wgpu::MapMode::Write, 0, StagingBufferSize, wgpu::CallbackMode::AllowSpontaneous,
       [slot, releaseSlotOnCompletion](wgpu::MapAsyncStatus status, wgpu::StringView message) {
         if (status == wgpu::MapAsyncStatus::CallbackCancelled || status == wgpu::MapAsyncStatus::Aborted) {
@@ -240,6 +244,7 @@ void map_staging_buffer(size_t slot, bool releaseSlotOnCompletion = false) {
           g_stagingSlots.release(slot);
         }
       });
+  g_stagingMapFutures.add(future);
 }
 } // namespace
 
@@ -529,6 +534,9 @@ void shutdown() {
   const aurora::allocation::HostAllocationScope hostAllocations;
   render_worker::synchronize();
   render_worker::shutdown();
+  // The worker has stopped publishing maps. Complete callbacks while buffers,
+  // slot pools and the WebGPU instance are all still alive.
+  g_stagingMapFutures.drain();
   g_processEventsQueued.store(false, std::memory_order_release);
   g_lastPresentNs.store(0, std::memory_order_release);
   g_presentPeriodNs.store(0, std::memory_order_release);

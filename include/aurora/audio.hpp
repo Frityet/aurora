@@ -77,6 +77,11 @@ struct PcmVoiceSpec {
   float bus_gain_multiplier = 1.0F;
 };
 
+struct PcmLayerControls {
+  float gain = 1.0F;
+  float pan = 0.5F;
+};
+
 struct VoiceToken {
   std::uint64_t value = 0;
 
@@ -119,6 +124,8 @@ public:
   // has already retired the token, allowing the owner to attach a new voice
   // without a check/update race.
   [[nodiscard]] bool try_update_voice(VoiceToken token, float gain_multiplier, float pitch_multiplier);
+  [[nodiscard]] bool try_update_voice_controls(VoiceToken token, float pitch, bool paused,
+                                               std::span<const PcmLayerControls> layers);
   void set_voice_gain(VoiceToken token, float gain_multiplier);
   [[nodiscard]] bool try_set_voice_bus_gain(VoiceToken token, float gain_multiplier);
   void set_voice_pitch(VoiceToken token, float pitch_multiplier);
@@ -135,6 +142,7 @@ public:
   void stop_voice(VoiceToken token);
   void stop_all_voices();
   [[nodiscard]] bool is_voice_active(VoiceToken token) const;
+  [[nodiscard]] std::size_t active_voice_count() const;
   // Returns the current rendered-frame value of an in-progress gain ramp.
   [[nodiscard]] std::optional<float> voice_gain_multiplier(VoiceToken token) const;
   [[nodiscard]] std::optional<float> voice_pitch_multiplier(VoiceToken token) const;

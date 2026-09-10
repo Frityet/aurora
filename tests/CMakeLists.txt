@@ -30,6 +30,10 @@ add_executable(audio_tests audio_test.cpp)
 target_link_libraries(audio_tests PRIVATE aurora::base gtest gtest_main)
 gtest_discover_tests(audio_tests)
 
+add_executable(audio_controls_test audio_controls_test.cpp)
+target_link_libraries(audio_controls_test PRIVATE aurora::base)
+add_test(NAME audio_controls COMMAND audio_controls_test)
+
 add_executable(wpad_tests
   wpad_test.cpp
   wpad_test_stubs.cpp

@@ -438,7 +438,8 @@ void PcmAudioMixer::open_default_playback() {
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
     m_impl->owns_sdl_events_ref = false;
     m_impl->owns_sdl_audio_ref = false;
-    aurora::throw_host_exception<std::runtime_error>("SDL audio driver is not an audible playback device: " + rejected_driver);
+    aurora::throw_host_exception<std::runtime_error>("SDL audio driver is not an audible playback device: " +
+                                                     rejected_driver);
   }
 
   const auto spec = SDL_AudioSpec{
@@ -514,7 +515,8 @@ VoiceToken PcmAudioMixer::start_voice(const PcmVoiceSpec& spec) {
     aurora::throw_host_exception<std::invalid_argument>("A PCM voice gain multiplier must be nonnegative");
   }
   if (!std::isfinite(spec.bus_gain_multiplier) || spec.bus_gain_multiplier < 0.0F) {
-    aurora::throw_host_exception<std::invalid_argument>("A PCM voice bus gain multiplier must be finite and nonnegative");
+    aurora::throw_host_exception<std::invalid_argument>(
+        "A PCM voice bus gain multiplier must be finite and nonnegative");
   }
   if (!std::isfinite(spec.pitch_multiplier) || spec.pitch_multiplier <= 0.0F) {
     aurora::throw_host_exception<std::invalid_argument>("A PCM voice pitch multiplier must be positive");
@@ -566,6 +568,32 @@ bool PcmAudioMixer::try_update_voice(VoiceToken token, float gain_multiplier, fl
   return true;
 }
 
+bool PcmAudioMixer::try_update_voice_controls(VoiceToken token, float pitch, bool paused,
+                                              std::span<const PcmLayerControls> layers) {
+  if (!std::isfinite(pitch) || pitch <= 0.0F || !std::ranges::all_of(layers, [](const auto& layer) {
+        return std::isfinite(layer.gain) && layer.gain >= 0.0F && std::isfinite(layer.pan) && layer.pan >= 0.0F &&
+               layer.pan <= 1.0F;
+      })) {
+    aurora::throw_host_exception<std::invalid_argument>("PCM channel controls must be finite and in range");
+  }
+  const auto lock = std::scoped_lock(m_impl->mutex);
+  m_impl->reclaim_finished_voices();
+  const auto voice = std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token);
+  if (voice == m_impl->voices.end()) {
+    return false;
+  }
+  if (layers.size() != voice->layers.size()) {
+    aurora::throw_host_exception<std::invalid_argument>("PCM channel control count must match the voice layer count");
+  }
+  voice->pitch_multiplier = pitch;
+  voice->paused = paused;
+  for (std::size_t i = 0; i < layers.size(); ++i) {
+    voice->layers[i].spec.gain = layers[i].gain;
+    voice->layers[i].spec.pan = layers[i].pan;
+  }
+  return true;
+}
+
 void PcmAudioMixer::set_voice_gain(VoiceToken token, float gain_multiplier) {
   if (!std::isfinite(gain_multiplier) || gain_multiplier < 0.0F) {
     aurora::throw_host_exception<std::invalid_argument>("A PCM voice gain multiplier must be nonnegative");
@@ -582,7 +610,8 @@ void PcmAudioMixer::set_voice_gain(VoiceToken token, float gain_multiplier) {
 
 bool PcmAudioMixer::try_set_voice_bus_gain(VoiceToken token, float gain_multiplier) {
   if (!std::isfinite(gain_multiplier) || gain_multiplier < 0.0F) {
-    aurora::throw_host_exception<std::invalid_argument>("A PCM voice bus gain multiplier must be finite and nonnegative");
+    aurora::throw_host_exception<std::invalid_argument>(
+        "A PCM voice bus gain multiplier must be finite and nonnegative");
   }
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
@@ -691,6 +720,12 @@ bool PcmAudioMixer::is_voice_active(VoiceToken token) const {
   const auto lock = std::scoped_lock(m_impl->mutex);
   m_impl->reclaim_finished_voices();
   return std::ranges::find(m_impl->voices, token, &Impl::VoiceState::token) != m_impl->voices.end();
+}
+
+std::size_t PcmAudioMixer::active_voice_count() const {
+  const auto lock = std::scoped_lock(m_impl->mutex);
+  m_impl->reclaim_finished_voices();
+  return m_impl->voices.size();
 }
 
 std::optional<float> PcmAudioMixer::voice_gain_multiplier(VoiceToken token) const {

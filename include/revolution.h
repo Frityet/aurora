@@ -38,7 +38,9 @@ constexpr s32 WPAD_CHAN3 = 3;
 constexpr s32 WPAD_MAX_CONTROLLERS = 4;
 constexpr u32 WPAD_DEV_CORE = 0;
 constexpr u32 WPAD_DEV_FREESTYLE = 1;
+constexpr u32 WPAD_DEV_NOT_FOUND = 253;
 constexpr s32 WPAD_ERR_BUSY = -2;
+constexpr s32 WPAD_ERR_TRANSFER = -3;
 
 constexpr u32 WPAD_MOTOR_STOP = 0;
 constexpr u32 WPAD_MOTOR_RUMBLE = 1;
@@ -120,7 +122,7 @@ void KPADSetHoriParam(s32 channel, f32 radius, f32 sensitivity);
 void KPADSetDistParam(s32 channel, f32 radius, f32 sensitivity);
 void KPADSetAccParam(s32 channel, f32 radius, f32 sensitivity);
 s32 KPADRead(s32 channel, KPADStatus sampling_bufs[], u32 length);
-BOOL WPADProbe(s32 channel, u32 *type);
+s32 WPADProbe(s32 channel, u32 *type);
 void WPADDisconnect(s32 channel);
 void WPADEnableURCC(BOOL enable);
 void WPADSetDataFormat(s32 channel, s32 format);

@@ -372,11 +372,12 @@ extern "C" s32 KPADRead(s32 channel, KPADStatus sampling_bufs[], u32 length) {
   return 1;
 }
 
-extern "C" BOOL WPADProbe(s32 channel, u32* type) {
+extern "C" s32 WPADProbe(s32 channel, u32* type) {
+  const bool connected = aurora::wpad_service().is_connected(channel);
   if (type != nullptr) {
-    *type = 0U;
+    *type = connected ? WPAD_DEV_CORE : WPAD_DEV_NOT_FOUND;
   }
-  return aurora::wpad_service().is_connected(channel) ? TRUE : FALSE;
+  return connected ? WPAD_ERR_NONE : WPAD_ERR_NO_CONTROLLER;
 }
 
 extern "C" void WPADDisconnect(s32 channel) { aurora::wpad_service().set_connected(channel, false); }

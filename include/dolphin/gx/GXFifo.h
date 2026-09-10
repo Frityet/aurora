@@ -15,13 +15,15 @@ typedef struct OSThread OSThread;
 
 void GXInitFifoBase(GXFifoObj* fifo, void* base, u32 size);
 void GXInitFifoPtrs(GXFifoObj* fifo, void* readPtr, void* writePtr);
-void GXGetFifoPtrs(GXFifoObj* fifo, void** readPtr, void** writePtr);
+void GXGetFifoPtrs(const GXFifoObj* fifo, void** readPtr, void** writePtr);
 OSThread *GXSetCurrentGXThread(void);
 OSThread *GXGetCurrentGXThread(void);
-GXFifoObj* GXGetCPUFifo(void);
-GXFifoObj* GXGetGPFifo(void);
-void GXSetCPUFifo(GXFifoObj* fifo);
-void GXSetGPFifo(GXFifoObj* fifo);
+GXBool GXGetCPUFifo(GXFifoObj* fifo);
+GXBool GXGetGPFifo(GXFifoObj* fifo);
+void GXEnableBreakPt(void* breakPt);
+void GXDisableBreakPt(void);
+void GXSetCPUFifo(const GXFifoObj* fifo);
+void GXSetGPFifo(const GXFifoObj* fifo);
 void GXSaveCPUFifo(GXFifoObj* fifo);
 void GXGetFifoStatus(GXFifoObj* fifo, GXBool* overhi, GXBool* underlow, u32* fifoCount, GXBool* cpu_write,
                      GXBool* gp_read, GXBool* fifowrap);
@@ -29,6 +31,8 @@ void GXGetGPStatus(GXBool* overhi, GXBool* underlow, GXBool* readIdle, GXBool* c
 void GXInitFifoLimits(GXFifoObj* fifo, u32 hiWaterMark, u32 loWaterMark);
 void* GXGetFifoBase(const GXFifoObj* fifo);
 u32 GXGetFifoSize(const GXFifoObj* fifo);
+u32 GXGetFifoCount(const GXFifoObj* fifo);
+GXBool GXGetFifoWrap(const GXFifoObj* fifo);
 
 #ifdef __cplusplus
 }

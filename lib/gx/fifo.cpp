@@ -30,6 +30,8 @@ constexpr auto kProcessingMode = ProcessingMode::Thread;
 constexpr uint32_t kDrawBatchSize = 1;
 
 bool sFrameActive = false;
+bool sActive = false;
+uint64_t sGeneration = 0;
 uint32_t sPendingDraws = 0;
 std::atomic<uint64_t> sPublished{0};
 std::atomic<uint64_t> sProcessed{0};
@@ -139,6 +141,8 @@ void init() {
   sPublished.store(0, std::memory_order_relaxed);
   sProcessed.store(0, std::memory_order_relaxed);
   sWorkerWake.store(0, std::memory_order_relaxed);
+  ++sGeneration;
+  sActive = true;
 
   start_worker();
 }
@@ -146,6 +150,7 @@ void init() {
 void shutdown() {
   const aurora::allocation::HostAllocationScope hostAllocations;
   stop_worker();
+  sActive = false;
   clear_draw_cache();
 }
 
@@ -284,6 +289,15 @@ void drain() {
 
 const uint8_t* get_buffer_data() { return detail::sBufferData; }
 uint32_t get_buffer_size() { return detail::sBufferSize; }
+
+CursorSnapshot cursor_snapshot() {
+  // All GX producers are serialized by the caller. Only the consumed watermark
+  // changes independently, on the decoder worker.
+  std::lock_guard lock{sBufferMutex};
+  return {detail::sBufferData, detail::sBufferCapacity, sStreamBase,
+          sStreamBase + detail::sBufferSize, sPublished.load(std::memory_order_acquire),
+          sProcessed.load(std::memory_order_acquire), sGeneration, sActive};
+}
 
 void clear_buffer() {
   const uint64_t processed = sProcessed.load(std::memory_order_acquire);

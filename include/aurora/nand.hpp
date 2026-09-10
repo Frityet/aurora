@@ -34,6 +34,11 @@ struct NandCheckResult {
   u32 free_inodes = 0U;
 };
 
+struct NandUsage {
+  u32 blocks = 0;
+  u32 inodes = 0;
+};
+
 struct NandOperationTrace {
   NandOperationKind kind = NandOperationKind::Read;
   std::string path;
@@ -63,6 +68,7 @@ public:
   std::size_t erase_subtree(std::string_view path);
   [[nodiscard]] s32 rename(std::string_view source_path, std::string_view destination_path);
   [[nodiscard]] NandCheckResult check(u32 requested_blocks, u32 requested_inodes);
+  [[nodiscard]] NandUsage usage(std::string_view root) const;
   [[nodiscard]] std::optional<NandFileMetadata> metadata(std::string_view path) const;
   [[nodiscard]] std::span<const NandOperationTrace> trace() const;
   void clear();

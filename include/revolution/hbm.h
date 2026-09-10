@@ -1,13 +1,14 @@
-#pragma once
+#ifndef HBM_H
+#define HBM_H
 
-#include <revolution/kpad.h>
+#include <revolution/hbm/HBMBase.h>
 
-struct HBMKPadData {
-  KPADStatus* kpad;
-  KPADVec2 pos;
-  u32 use_devtype;
-};
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-struct HBMControllerData {
-  HBMKPadData wiiCon[WPAD_MAX_CONTROLLERS];
-};
+#ifdef __cplusplus
+}
+#endif
+
+#endif  // HBM_H

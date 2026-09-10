@@ -196,6 +196,19 @@ std::optional<NandFileMetadata> NandFileSystem::metadata(std::string_view path) 
   };
 }
 
+NandUsage NandFileSystem::usage(std::string_view root) const {
+  const auto normalized = normalize_path(root);
+  const auto prefix = normalized == "/" ? normalized : normalized + "/";
+  NandUsage result;
+  for (const auto& [path, file] : m_files) {
+    if (path == normalized || path.starts_with(prefix)) {
+      result.blocks += static_cast<u32>((file.bytes.size() + 0x3fffU) / 0x4000U);
+      ++result.inodes;
+    }
+  }
+  return result;
+}
+
 std::span<const NandOperationTrace> NandFileSystem::trace() const { return m_trace; }
 
 void NandFileSystem::clear() {

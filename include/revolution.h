@@ -187,6 +187,7 @@ WPADConnectCallback WPADSetConnectCallback(s32 channel, WPADConnectCallback call
 WPADExtensionCallback WPADSetExtensionCallback(s32 channel, WPADExtensionCallback callback);
 s32 WPADGetInfoAsync(s32 channel, WPADInfo* info, WPADCallback callback);
 void WPADRegisterAllocator(WPADAlloc alloc, WPADFree free);
+u32 WPADGetWorkMemorySize();
 u8 WPADGetSensorBarPosition();
 void WPADSetAutoSleepTime(u8 minutes);
 }

@@ -112,4 +112,18 @@ const uint8_t* get_buffer_data();
 uint32_t get_buffer_size();
 void clear_buffer();
 
+// Snapshot on the serialized GX producer thread, like command emission itself.
+// Consumed bytes are commands decoded by the FIFO worker, not GPU completion.
+struct CursorSnapshot {
+  uint8_t* data;
+  uint32_t capacity;
+  uint64_t bufferBegin;
+  uint64_t written;
+  uint64_t published;
+  uint64_t consumed;
+  uint64_t generation;
+  bool active;
+};
+CursorSnapshot cursor_snapshot();
+
 } // namespace aurora::gx::fifo

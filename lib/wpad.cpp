@@ -542,6 +542,11 @@ extern "C" WPADExtensionCallback WPADSetExtensionCallback(s32 channel, WPADExten
 extern "C" s32 WPADGetInfoAsync(s32 channel, WPADInfo* info, WPADCallback callback) {
   return aurora::wpad_service().request_info(channel, info, callback);
 }
+extern "C" u32 WPADGetWorkMemorySize() {
+  // Native input does not allocate a Bluetooth/WUD work buffer in Game heaps.
+  return 0;
+}
+
 extern "C" void WPADRegisterAllocator(WPADAlloc allocate, WPADFree free) {
   aurora::wpad_service().register_allocator(allocate, free);
 }

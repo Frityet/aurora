@@ -1416,7 +1416,7 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
     const bool hasIndirectStage = stage.indTexStage < config.numIndStages;
     const bool needsTevTexCoord =
         needsIndirectCoord || stage.indTexWrapS != GX_ITW_OFF || stage.indTexWrapT != GX_ITW_OFF || stage.indTexAddPrev;
-    const bool needsTextureSample = uses_texture_sample(stage);
+    const bool needsTextureSample = uses_texture_sample(stage) || i == z_texture_stage(config);
     if (!needsTevTexCoord && !needsTextureSample) {
       continue;
     }
@@ -1601,6 +1601,25 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
   if (info.usesPTTexMtx.any()) {
     uniBufAttrs += fmt::format("\n    postmtx: array<mat3x4f, {}>,", MaxPTTexMtx);
   }
+  if (info.usesZTexture) {
+    const s32 sampledStage = z_texture_stage(config);
+    const std::string sample = sampledStage >= 0 ? fmt::format("sampled{}", sampledStage) : "vec4f(0.0)";
+    fragmentFn += fmt::format("\n    let ztex = vec4u(round(clamp({}, vec4f(0.0), vec4f(1.0)) * 255.0));", sample);
+    std::string texDepth;
+    switch (config.zTextureFormat) {
+    case 0: texDepth = "ztex.a"; break;
+    case 1: texDepth = "ztex.r + (ztex.a << 8u)"; break;
+    case 2: texDepth = "(ztex.r << 16u) + (ztex.g << 8u) + ztex.b"; break;
+    default: FATAL("invalid Z texture type {}", config.zTextureFormat);
+    }
+    if (config.zTextureOp == GX_ZT_ADD) {
+      const std::string_view originalDepth = UseReversedZ ? "(1.0 - in.pos.z)" : "in.pos.z";
+      texDepth += fmt::format(" + min(u32(clamp({}, 0.0, 1.0) * 16777216.0), 0xFFFFFFu)", originalDepth);
+    } else {
+      CHECK(config.zTextureOp == GX_ZT_REPLACE, "invalid Z texture operation {}", config.zTextureOp);
+    }
+    fragmentFn += fmt::format("\n    let ztexture_depth = f32(({} + ubuf.z_texture_bias.x) & 0xFFFFFFu) / 16777216.0;", texDepth);
+  }
   if (info.usesFog) {
     uniformPre +=
         "\n"
@@ -1614,7 +1633,8 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
         "}";
     uniBufAttrs += "\n    fog: Fog,";
 
-    const std::string_view fogDepth = UseReversedZ ? "(1.0 - in.pos.z)" : "in.pos.z";
+    const std::string_view fogDepth = info.usesZTexture ? "ztexture_depth" :
+        (UseReversedZ ? "(1.0 - in.pos.z)" : "in.pos.z");
     if ((config.fogType & 0x08) != 0) {
       fragmentFn += fmt::format("\n    // Orthographic fog\n    var fogBase = ubuf.fog.a * {};", fogDepth);
     } else {
@@ -1668,6 +1688,7 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
         "var tex{0}_samp: sampler;",
         i, i * 2, i * 2 + 1);
   }
+  if (info.usesZTexture) uniBufAttrs += "\n    z_texture_bias: vec4u,";
   if (!prevColorNormalized && !prevAlphaNormalized) {
     fragmentFn += "\n    prev = tev_overflow_vec4f(prev);";
   } else if (!prevColorNormalized) {
@@ -1708,6 +1729,7 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
     fragmentFn += "\n    prev = vec4f(in.nrm, prev.a);";
   }
 
+  const bool writesTextureDepth = info.usesZTexture && !config.zCompLocBeforeTex;
   const auto shaderSource = fmt::format(R"""(
 enable clip_distances;
 
@@ -2080,13 +2102,17 @@ fn vs_main(
     return out;
 }}
 
+{10}
 @fragment
-fn fs_main(in: FragmentInput) -> @location(0) vec4f {{{6}{5}
-    return prev;
+fn fs_main(in: FragmentInput) -> {11} {{{6}{5}
+    return {12};
 }}
 )""",
                                         uniBufAttrs, texBindings, vtxOutAttrs, vtxInAttrs, vtxXfrAttrs, fragmentFn,
-                                        fragmentFnPre, vtxXfrAttrsPre, uniformPre, disabledPolygonClipping ? 6 : 2);
+                                        fragmentFnPre, vtxXfrAttrsPre, uniformPre, disabledPolygonClipping ? 6 : 2,
+                                        writesTextureDepth ? "struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f32, };" : "",
+                                        writesTextureDepth ? "FragmentOutput" : "@location(0) vec4f",
+                                        writesTextureDepth ? (UseReversedZ ? "FragmentOutput(prev, 1.0 - ztexture_depth)" : "FragmentOutput(prev, ztexture_depth)") : "prev");
   if (EnableDebugPrints) {
     Log.info("Generated shader (hash {:x}): {}", hash, shaderSource);
   }

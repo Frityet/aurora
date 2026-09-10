@@ -222,6 +222,16 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
       // render/logical viewport size, proj
       .uniformSize = 8 + 8 + 16 + 64,
   };
+  info.usesZTexture = config.zTextureOp != GX_ZT_DISABLE;
+  if (info.usesZTexture) {
+    info.uniformSize += 16; // 24-bit Z texture bias, aligned with texture uniforms
+    if (const s32 stageIndex = z_texture_stage(config); stageIndex >= 0) {
+      const auto& stage = config.tevStages[stageIndex];
+      CHECK(stage.texCoordId != GX_TEXCOORD_NULL, "Z texture coordinate not bound");
+      info.sampledTexCoords.set(stage.texCoordId);
+      info.sampledTextures.set(stage.texMapId);
+    }
+  }
   info.clippingDisabled = config.clippingDisabled && config.lineMode == 0;
   if (info.clippingDisabled) {
     info.uniformSize += 16; // authored viewport scale/offset within the full attachment
@@ -506,6 +516,10 @@ static void fill_uniform(ByteBuffer& buf, const ShaderInfo& info) noexcept {
       continue;
     }
     buf.append(texture_size_bias(get_texture(static_cast<GXTexMapID>(i))));
+  }
+  if (info.usesZTexture) {
+    buf.append<u32>(g_gxState.zTextureBias);
+    buf.append_zeroes(12);
   }
 }
 

@@ -428,6 +428,12 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
     config.shaderConfig.tevStages[i] = g_gxState.tevStages[i];
   }
   config.shaderConfig.tevStageCount = g_gxState.numTevStages;
+  config.shaderConfig.texGenCount = g_gxState.numTexGens;
+  config.shaderConfig.zTextureOp = g_gxState.zTextureOp;
+  if (g_gxState.zTextureOp != GX_ZT_DISABLE) {
+    config.shaderConfig.zTextureFormat = g_gxState.zTextureFormat;
+    config.shaderConfig.zCompLocBeforeTex = g_gxState.zCompLocBeforeTex;
+  }
   for (u8 i = 0; i < g_gxState.numIndStages; ++i) {
     config.shaderConfig.indStages[i] = g_gxState.indStages[i];
   }

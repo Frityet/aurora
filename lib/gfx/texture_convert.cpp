@@ -602,12 +602,14 @@ ConvertedTexture convert_texture(u32 format, uint32_t width, uint32_t height, ui
   case GX_TF_I4:
     converted = DecodeTiled<TextureDecoderI4>(width, height, mips, data);
     break;
+  case GX_TF_Z8:
   case GX_TF_I8:
     converted = DecodeTiled<TextureDecoderI8>(width, height, mips, data);
     break;
   case GX_TF_IA4:
     converted = DecodeTiled<TextureDecoderIA4>(width, height, mips, data);
     break;
+  case GX_TF_Z16:
   case GX_TF_IA8:
     converted = DecodeTiled<TextureDecoderIA8>(width, height, mips, data);
     break;
@@ -626,6 +628,7 @@ ConvertedTexture convert_texture(u32 format, uint32_t width, uint32_t height, ui
   case GX_TF_RGB5A3:
     converted = DecodeTiled<TextureDecoderRGB5A3>(width, height, mips, data);
     break;
+  case GX_TF_Z24X8:
   case GX_TF_RGBA8:
     converted = BuildRGBA8FromGCN(width, height, mips, data);
     break;

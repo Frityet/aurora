@@ -563,17 +563,20 @@ size_t texture_source_size(u32 format, u32 width, u32 height, u32 mipCount) noex
     case GX_TF_CMPR:
       total += div_ceil(static_cast<u32>(mipWidth), 8) * div_ceil(static_cast<u32>(mipHeight), 8) * 32;
       break;
+    case GX_TF_Z8:
     case GX_TF_I8:
     case GX_TF_IA4:
     case GX_TF_C8:
       total += div_ceil(static_cast<u32>(mipWidth), 8) * div_ceil(static_cast<u32>(mipHeight), 4) * 32;
       break;
+    case GX_TF_Z16:
     case GX_TF_IA8:
     case GX_TF_RGB565:
     case GX_TF_RGB5A3:
     case GX_TF_C14X2:
       total += div_ceil(static_cast<u32>(mipWidth), 4) * div_ceil(static_cast<u32>(mipHeight), 4) * 32;
       break;
+    case GX_TF_Z24X8:
     case GX_TF_RGBA8:
       total += div_ceil(static_cast<u32>(mipWidth), 4) * div_ceil(static_cast<u32>(mipHeight), 4) * 64;
       break;

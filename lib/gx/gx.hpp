@@ -356,6 +356,9 @@ struct GXState {
   GXPixelFmt pixelFmt = GX_PF_RGB8_Z24;
   GXZFmt16 zFmt = GX_ZC_LINEAR;
   bool zCompLocBeforeTex = false;
+  u32 zTextureBias = 0;
+  u8 zTextureFormat = 0;
+  GXZTexOp zTextureOp = GX_ZT_DISABLE;
   u32 dstAlpha; // u8; UINT32_MAX = disabled
   AlphaCompare alphaCompare;
   std::array<Vec4<float>, MaxTevRegs> colorRegs;
@@ -530,11 +533,15 @@ struct ShaderConfig {
   u8 fogRangeEnabled : 1 = false;
   u8 clippingDisabled : 1 = false;
   u8 pad1 : 4 = 0;
-  u8 pad2 = 0;
+  u8 zTextureOp : 2 = GX_ZT_DISABLE;
+  u8 zTextureFormat : 2 = 0;
+  u8 zCompLocBeforeTex : 1 = false;
+  u8 pad2 : 3 = 0;
   std::array<AttrConfig, MaxVtxAttr> attrs;
   std::array<TevSwap, MaxTevSwap> tevSwapTable;
   std::array<TevStage, MaxTevStages> tevStages;
   u32 tevStageCount = 0;
+  u32 texGenCount = 0;
   std::array<ColorChannelConfig, MaxColorChannels> colorChannels;
   std::array<TcgConfig, MaxTexCoord> tcgs;
   AlphaCompare alphaCompare;
@@ -544,6 +551,16 @@ struct ShaderConfig {
   bool operator==(const ShaderConfig& rhs) const { return memcmp(this, &rhs, sizeof(*this)) == 0; }
 };
 static_assert(std::has_unique_object_representations_v<ShaderConfig>);
+
+// Z textures consume the raw, unswizzled sample from the last enabled TEV
+// texture stage, even if that stage's color/alpha inputs do not use it.
+inline s32 z_texture_stage(const ShaderConfig& config) noexcept {
+  if (config.zTextureOp == GX_ZT_DISABLE || config.texGenCount == 0) return -1;
+  for (s32 i = static_cast<s32>(config.tevStageCount) - 1; i >= 0; --i) {
+    if (config.tevStages[i].texMapId != GX_TEXMAP_NULL) return i;
+  }
+  return -1;
+}
 
 struct PipelineConfig;
 
@@ -565,6 +582,7 @@ struct ShaderInfo {
   std::bitset<MaxIndTexMtxs> usedIndTexMtxs;
   u32 uniformSize = 0;
   bool usesFog : 1 = false;
+  bool usesZTexture : 1 = false;
   bool lightingEnabled : 1 = false;
   u8 lineMode : 2 = 0;
   bool clippingDisabled : 1 = false;

@@ -219,6 +219,13 @@ void bp_z_mode(u8, u32 value) noexcept {
   g_gxState.depthUpdate = reg_get(value, 1, 4) != 0;
 }
 
+// Z texture bias/type/operation (0xF4/0xF5).
+void bp_z_texture_bias(u8, u32 value) noexcept { g_gxState.zTextureBias = value & 0xFFFFFFu; }
+void bp_z_texture_config(u8, u32 value) noexcept {
+  g_gxState.zTextureFormat = reg_get(value, 2, 0);
+  g_gxState.zTextureOp = static_cast<GXZTexOp>(reg_get(value, 2, 2));
+}
+
 // Blend mode / cmode0 (0x41)
 void bp_cmode0(u8, u32 value) noexcept {
   bool blendEn = reg_get(value, 1, 0) != 0;
@@ -557,7 +564,7 @@ constexpr auto kBpRegs = [] {
   regs[0x40] = {bp_z_mode, DirtyPipeline};
   regs[0x41] = {bp_cmode0, DirtyPipeline};
   regs[0x42] = {bp_cmode1, DirtyPipeline};
-  regs[0x43] = {bp_pe_ctrl};
+  regs[0x43] = {bp_pe_ctrl, DirtyPipeline};
   regs[0x4F] = {bp_clear_ra};
   regs[0x50] = {bp_clear_bg};
   regs[0x51] = {bp_clear_depth};
@@ -592,6 +599,8 @@ constexpr auto kBpRegs = [] {
   regs[0xF1] = {bp_fog3, DirtyPipeline | DirtyUniform}; // fog.type affects shader
   regs[0xF2] = {bp_fog_color, DirtyUniform};
   regs[0xF3] = {bp_alpha_compare, DirtyPipeline};
+  regs[0xF4] = {bp_z_texture_bias, DirtyUniform};
+  regs[0xF5] = {bp_z_texture_config, DirtyPipeline};
   for (u8 r = 0xF6; r <= 0xFD; ++r) {
     regs[r] = {bp_ksel, DirtyPipeline};
   }

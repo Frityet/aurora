@@ -1,9 +1,7 @@
 #include <aurora/exception.hpp>
 #include "aurora/nw4r/brlan.hpp"
 
-#include <algorithm>
 #include <bit>
-#include <cmath>
 #include <stdexcept>
 #include <string_view>
 
@@ -82,6 +80,12 @@ constexpr auto CURVE_HERMITE = std::uint8_t{2U};
   return std::string(reinterpret_cast<const char*>(data.data() + offset), end - offset);
 }
 
+[[nodiscard]] bool is_same_frame(float frame, float key_frame) {
+  constexpr auto tolerance = 0.001F;
+  const auto difference = frame - key_frame;
+  return -tolerance < difference && difference < tolerance;
+}
+
 [[nodiscard]] float evaluate_hermite(std::span<const BrlanAnimation::HermiteKey> keys, float frame) {
   if (keys.empty()) {
     return 0.0F;
@@ -93,48 +97,65 @@ constexpr auto CURVE_HERMITE = std::uint8_t{2U};
     return keys.back().value;
   }
 
-  auto right = std::ranges::upper_bound(keys, frame, {}, &BrlanAnimation::HermiteKey::frame);
-  if (right == keys.begin()) {
-    return keys.front().value;
+  auto left = std::size_t{0U};
+  auto right = keys.size() - 1U;
+  while (left != right - 1U && left != right) {
+    const auto center = (left + right) / 2U;
+    if (frame <= keys[center].frame) {
+      right = center;
+    } else {
+      left = center;
+    }
   }
 
-  auto left = right;
-  --left;
-  while (right != keys.end() && right->frame == left->frame) {
-    ++right;
-  }
-  if (right == keys.end()) {
-    return left->value;
-  }
-
-  const auto duration = right->frame - left->frame;
-  if (std::abs(duration) <= 0.00001F) {
-    return right->value;
+  const auto& key0 = keys[left];
+  const auto& key1 = keys[right];
+  if (is_same_frame(frame, key1.frame)) {
+    if (right < keys.size() - 1U && key1.frame == keys[right + 1U].frame) {
+      return keys[right + 1U].value;
+    }
+    return key1.value;
   }
 
-  const auto t = (frame - left->frame) / duration;
-  const auto t2 = t * t;
-  const auto t3 = t2 * t;
-  const auto h00 = 2.0F * t3 - 3.0F * t2 + 1.0F;
-  const auto h10 = t3 - 2.0F * t2 + t;
-  const auto h01 = -2.0F * t3 + 3.0F * t2;
-  const auto h11 = t3 - t2;
-  return h00 * left->value + h10 * duration * left->slope + h01 * right->value + h11 * duration * right->slope;
+  // Preserve NW4R's frame-offset arithmetic order, including the separate reciprocal and products.
+  const auto t1 = frame - key0.frame;
+  const auto t2 = 1.0F / (key1.frame - key0.frame);
+  const auto v0 = key0.value;
+  const auto v1 = key1.value;
+  const auto s0 = key0.slope;
+  const auto s1 = key1.slope;
+  const auto t1t1t2 = t1 * t1 * t2;
+  const auto t1t1t2t2 = t1t1t2 * t2;
+  const auto t1t1t1t2t2 = t1 * t1t1t2t2;
+  const auto t1t1t1t2t2t2 = t1t1t1t2t2 * t2;
+
+  return v0 * (2.0F * t1t1t1t2t2t2 - 3.0F * t1t1t2t2 + 1.0F) + v1 * (-2.0F * t1t1t1t2t2t2 + 3.0F * t1t1t2t2) +
+         s0 * (t1t1t1t2t2 - 2.0F * t1t1t2 + t1) + s1 * (t1t1t1t2t2 - t1t1t2);
 }
 
 [[nodiscard]] std::uint16_t evaluate_step(std::span<const BrlanAnimation::StepKey> keys, float frame) {
   if (keys.empty()) {
     return 0U;
   }
-
-  auto value = keys.front().value;
-  for (const auto& key : keys) {
-    if (frame < key.frame) {
-      break;
-    }
-    value = key.value;
+  if (keys.size() == 1U || frame <= keys.front().frame) {
+    return keys.front().value;
   }
-  return value;
+  if (frame >= keys.back().frame) {
+    return keys.back().value;
+  }
+
+  auto left = std::size_t{0U};
+  auto right = keys.size() - 1U;
+  while (left != right - 1U && left != right) {
+    const auto center = (left + right) / 2U;
+    if (frame < keys[center].frame) {
+      right = center;
+    } else {
+      left = center;
+    }
+  }
+
+  return is_same_frame(frame, keys[right].frame) ? keys[right].value : keys[left].value;
 }
 
 [[nodiscard]] std::optional<float> evaluate_float_target(const BrlanAnimation::Target& target, float frame) {

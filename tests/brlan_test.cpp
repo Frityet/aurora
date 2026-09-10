@@ -2,10 +2,12 @@
 
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -197,6 +199,100 @@ TEST(BrlanEvaluator, SamplesGenericTextureAndMaterialTargets) {
   EXPECT_FLOAT_EQ(*material.material_color[0U], 255.0F);
   EXPECT_FLOAT_EQ(*material.tev_colors[0U][0U], 64.0F);
   EXPECT_FLOAT_EQ(*material.tev_k_colors[0U][0U], 32.0F);
+}
+
+
+TEST(BrlanEvaluator, StepCurveUsesStrictRightKeyFrameTolerance) {
+  auto animation = BrlanAnimation{};
+  animation.contents = {{"Pane", {{"RLVI", {step_target(0U, {{-1.0F, 0U}, {0.0F, 1U}, {1.0F, 0U}})}}}}};
+
+  const auto tolerance_edge = -0.001F;
+  const auto inside = std::nextafter(tolerance_edge, 0.0F);
+  const auto outside = std::nextafter(tolerance_edge, -std::numeric_limits<float>::infinity());
+  EXPECT_FALSE(animation.pane_frame("Pane", outside).visible.value());
+  EXPECT_FALSE(animation.pane_frame("Pane", tolerance_edge).visible.value());
+  EXPECT_TRUE(animation.pane_frame("Pane", inside).visible.value());
+  EXPECT_TRUE(animation.pane_frame("Pane", 0.0F).visible.value());
+  EXPECT_TRUE(animation.pane_frame("Pane", 0.5F).visible.value());
+  EXPECT_FALSE(animation.pane_frame("Pane", 0.9995F).visible.value());
+}
+
+TEST(BrlanEvaluator, StepCurveKeepsOriginalDuplicateKeySearch) {
+  auto animation = BrlanAnimation{};
+  animation.contents = {{"Pane", {{"RLPA", {step_target(0U, {{0.0F, 1U}, {10.0F, 2U}, {10.0F, 3U},
+                                                           {10.0F, 4U}, {20.0F, 5U}})}}}}};
+
+  // The tolerance selects the first right key; at the exact frame, the step search passes all duplicates.
+  EXPECT_EQ(animation.pane_frame("Pane", 9.998F).translate_x.value(), 1.0F);
+  EXPECT_EQ(animation.pane_frame("Pane", 9.9995F).translate_x.value(), 2.0F);
+  EXPECT_EQ(animation.pane_frame("Pane", 10.0F).translate_x.value(), 4.0F);
+  EXPECT_EQ(animation.pane_frame("Pane", 10.0005F).translate_x.value(), 4.0F);
+}
+
+TEST(BrlanEvaluator, HermiteCurveUsesStrictRightKeyFrameTolerance) {
+  auto animation = BrlanAnimation{};
+  animation.contents = {{"Pane", {{"RLPA", {hermite_target(0U, {{-1.0F, 0.0F, 10.0F}, {0.0F, 10.0F, 10.0F},
+                                                              {1.0F, 20.0F, 10.0F}})}}}}};
+
+  const auto tolerance_edge = -0.001F;
+  const auto inside = std::nextafter(tolerance_edge, 0.0F);
+  const auto outside = std::nextafter(tolerance_edge, -std::numeric_limits<float>::infinity());
+  EXPECT_LT(animation.pane_frame("Pane", outside).translate_x.value(), 10.0F);
+  EXPECT_LT(animation.pane_frame("Pane", tolerance_edge).translate_x.value(), 10.0F);
+  EXPECT_EQ(animation.pane_frame("Pane", inside).translate_x.value(), 10.0F);
+  EXPECT_EQ(animation.pane_frame("Pane", 0.0F).translate_x.value(), 10.0F);
+  EXPECT_GT(animation.pane_frame("Pane", 0.0005F).translate_x.value(), 10.0F);
+}
+
+TEST(BrlanEvaluator, HermiteCurveSelectsOnlyTheImmediatelyFollowingDuplicate) {
+  auto animation = BrlanAnimation{};
+  animation.contents = {{"Pane", {{"RLPA", {hermite_target(0U, {{0.0F, 0.0F, 0.0F}, {10.0F, 10.0F, 0.0F},
+                                                              {10.0F, 20.0F, 0.0F}, {10.0F, 30.0F, 0.0F},
+                                                              {20.0F, 40.0F, 0.0F}})}}}}};
+
+  EXPECT_LT(animation.pane_frame("Pane", 9.998F).translate_x.value(), 10.0F);
+  EXPECT_EQ(animation.pane_frame("Pane", 9.9995F).translate_x.value(), 20.0F);
+  EXPECT_EQ(animation.pane_frame("Pane", 10.0F).translate_x.value(), 20.0F);
+  EXPECT_GE(animation.pane_frame("Pane", 10.0005F).translate_x.value(), 30.0F);
+}
+
+TEST(BrlanEvaluator, CurvesClampEndpointsBeforeDuplicateAndToleranceHandling) {
+  auto animation = BrlanAnimation{};
+  animation.contents = {{"Pane", {{"RLPA", {
+      step_target(0U, {{0.0F, 1U}, {0.0F, 2U}, {10.0F, 3U}, {10.0F, 4U}}),
+      hermite_target(1U, {{0.0F, 5.0F, 0.0F}, {0.0F, 6.0F, 0.0F}, {10.0F, 7.0F, 0.0F}, {10.0F, 8.0F, 0.0F}}),
+      step_target(2U, {{5.0F, 9U}}),
+      hermite_target(3U, {{5.0F, 10.0F, 99.0F}}),
+  }}}}};
+
+  for (const auto frame : {-1.0F, 0.0F}) {
+    const auto state = animation.pane_frame("Pane", frame);
+    EXPECT_EQ(state.translate_x.value(), 1.0F);
+    EXPECT_EQ(state.translate_y.value(), 5.0F);
+    EXPECT_EQ(state.translate_z.value(), 9.0F);
+    EXPECT_EQ(state.rotate_x.value(), 10.0F);
+  }
+  for (const auto frame : {10.0F, 11.0F}) {
+    const auto state = animation.pane_frame("Pane", frame);
+    EXPECT_EQ(state.translate_x.value(), 4.0F);
+    EXPECT_EQ(state.translate_y.value(), 8.0F);
+    EXPECT_EQ(state.translate_z.value(), 9.0F);
+    EXPECT_EQ(state.rotate_x.value(), 10.0F);
+  }
+}
+
+TEST(BrlanEvaluator, HermiteCurvePreservesOriginalArithmeticAndSlopesAcrossPublicChannels) {
+  auto animation = BrlanAnimation{};
+  const auto rounding = hermite_target(0U, {{0.0F, 0.0F, 0.0F}, {10.0F, 10.0F, 0.0F}});
+  const auto slopes = hermite_target(0U, {{2.0F, 4.0F, 3.0F}, {6.0F, 8.0F, -1.0F}});
+  animation.contents = {{"Pane", {{"RLPA", {rounding}}}},
+                        {"Material", {{"RLTS", {slopes}}, {"RLMC", {slopes}}}}};
+
+  // Original offset/reciprocal evaluation gives 0x411ffffe here; normalized-t evaluation gives 0x411fffff.
+  const auto value = animation.pane_frame("Pane", 9.998F).translate_x.value();
+  EXPECT_EQ(std::bit_cast<std::uint32_t>(value), 0x411FFFFEU);
+  EXPECT_EQ(animation.texture_frame("Material", 4.0F).translate_s.value(), 8.0F);
+  EXPECT_EQ(animation.material_frame("Material", 4.0F).material_color[0U].value(), 8.0F);
 }
 
 } // namespace

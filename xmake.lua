@@ -190,6 +190,9 @@ target("aurora-nw4r")
     add_includedirs("include", {public = true})
     add_files("lib/nw4r/brlan.cpp")
     add_headerfiles("include/(aurora/nw4r/**.hpp)")
+    -- Original NW4R evaluates the curve polynomial without fused multiply/add operations.
+    add_cxxflags("-ffp-contract=off", {tools = {"clang", "clangxx", "gcc", "gxx"}})
+    add_cxxflags("/fp:strict", {tools = "cl"})
 
 target("aurora-base")
     set_kind("static")

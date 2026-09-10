@@ -86,6 +86,9 @@ void create_context() noexcept {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
+  if (g_config.hideSystemCursor) {
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+  }
   g_imguiSettings = std::string{g_config.userPath} + "/imgui.ini";
   g_imguiLog = std::string{g_config.cachePath} + "/imgui.log";
   io.IniFilename = g_imguiSettings.c_str();

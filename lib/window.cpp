@@ -12,6 +12,7 @@
 #include <aurora/math.hpp>
 #include <SDL3/SDL_error.h>
 #include <SDL3/SDL_events.h>
+#include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_render.h>
 #include <SDL3/SDL_surface.h>
@@ -57,6 +58,29 @@ std::atomic_bool g_surfaceReady = true;
 #endif
 bool g_lastPaused = false;
 bool g_gotFocus = false;
+bool g_systemCursorHidden = false;
+
+void set_system_cursor_hidden(bool hidden) {
+  if (g_systemCursorHidden == hidden) {
+    return;
+  }
+  const bool changed = hidden ? SDL_HideCursor() : SDL_ShowCursor();
+  if (changed) {
+    g_systemCursorHidden = hidden;
+  } else {
+    Log.warn("Failed to change system cursor visibility: {}", SDL_GetError());
+  }
+}
+
+void sync_system_cursor() {
+  if (!g_config.hideSystemCursor) {
+    return;
+  }
+  const auto flags = g_window != nullptr ? SDL_GetWindowFlags(g_window) : SDL_WindowFlags{};
+  constexpr auto focused = SDL_WINDOW_INPUT_FOCUS | SDL_WINDOW_MOUSE_FOCUS;
+  const bool hidden = (flags & focused) == focused && (flags & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED)) == 0;
+  set_system_cursor_hidden(hidden);
+}
 
 void retain_event_strings(SDL_Event& event) {
   switch (event.type) {
@@ -308,6 +332,7 @@ const AuroraEvent* poll_events() {
       break;
     }
   }
+  sync_system_cursor();
   g_events.push_back(AuroraEvent{
       .type = AURORA_NONE,
   });
@@ -387,6 +412,7 @@ bool create_renderer() {
 }
 
 void destroy_window() {
+  set_system_cursor_hidden(false);
   if (g_renderer != nullptr) {
     SDL_DestroyRenderer(g_renderer);
     g_renderer = nullptr;
@@ -400,6 +426,7 @@ void destroy_window() {
 void show_window() {
   if (g_window != nullptr) {
     TRY_WARN(SDL_ShowWindow(g_window), "Failed to show window: {}", SDL_GetError());
+    sync_system_cursor();
   }
 }
 

@@ -93,6 +93,8 @@ typedef struct {
   bool pauseOnFocusLost;
   bool allowTextureDumps;
   bool allowCpuAdapter;
+  /** Hide the system cursor over the focused game window; retain absolute mouse input. */
+  bool hideSystemCursor;
   int32_t windowPosX;
   int32_t windowPosY;
   uint32_t windowWidth;

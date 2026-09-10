@@ -163,6 +163,15 @@ void apply_target(BrlanPaneFrame& frame_values, std::string_view kind, const Brl
     case 1U:
       frame_values.translate_y = *value;
       break;
+    case 2U:
+      frame_values.translate_z = *value;
+      break;
+    case 3U:
+      frame_values.rotate_x = *value;
+      break;
+    case 4U:
+      frame_values.rotate_y = *value;
+      break;
     case 5U:
       frame_values.rotate_z = *value;
       break;

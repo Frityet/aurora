@@ -112,6 +112,9 @@ TEST(BrlanEvaluator, SamplesGenericPaneCurvesWithoutSequenceKnowledge) {
               {
                   hermite_target(0U, {{0.0F, 0.0F, 1.0F}, {10.0F, 10.0F, 1.0F}}),
                   step_target(1U, {{0.0F, 2U}, {5.0F, 8U}}),
+                  hermite_target(2U, {{0.0F, -20.0F, 2.0F}, {10.0F, 0.0F, 2.0F}}),
+                  hermite_target(3U, {{0.0F, 0.0F, 9.0F}, {10.0F, 90.0F, 9.0F}}),
+                  step_target(4U, {{0.0F, 45U}, {5.0F, 90U}}),
               },
       },
       BrlanAnimation::Info{
@@ -132,6 +135,12 @@ TEST(BrlanEvaluator, SamplesGenericPaneCurvesWithoutSequenceKnowledge) {
   ASSERT_TRUE(early.visible.has_value());
   EXPECT_NEAR(*early.translate_x, 4.0F, 0.0001F);
   EXPECT_FLOAT_EQ(*early.translate_y, 2.0F);
+  ASSERT_TRUE(early.translate_z.has_value());
+  ASSERT_TRUE(early.rotate_x.has_value());
+  ASSERT_TRUE(early.rotate_y.has_value());
+  EXPECT_NEAR(*early.translate_z, -12.0F, 0.0001F);
+  EXPECT_NEAR(*early.rotate_x, 36.0F, 0.0001F);
+  EXPECT_FLOAT_EQ(*early.rotate_y, 45.0F);
   EXPECT_FLOAT_EQ(*early.alpha, 200.0F);
   EXPECT_TRUE(*early.visible);
 
@@ -139,6 +148,7 @@ TEST(BrlanEvaluator, SamplesGenericPaneCurvesWithoutSequenceKnowledge) {
   ASSERT_TRUE(late.translate_y.has_value());
   ASSERT_TRUE(late.visible.has_value());
   EXPECT_FLOAT_EQ(*late.translate_y, 8.0F);
+  EXPECT_FLOAT_EQ(*late.rotate_y, 90.0F);
   EXPECT_FALSE(*late.visible);
 
   const auto absent = animation.pane_frame("DifferentPane", 4.0F);

@@ -13,8 +13,11 @@ namespace aurora::nw4r::lyt {
 struct BrlanPaneFrame {
   std::optional<float> translate_x;
   std::optional<float> translate_y;
+  std::optional<float> translate_z;
   std::optional<float> scale_x;
   std::optional<float> scale_y;
+  std::optional<float> rotate_x;
+  std::optional<float> rotate_y;
   std::optional<float> rotate_z;
   std::optional<float> alpha;
   std::optional<bool> visible;

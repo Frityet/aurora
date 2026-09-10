@@ -133,6 +133,92 @@ TEST_F(GXFifoTest, AutoSizedDrawPublishesAfterLengthPatch) {
   EXPECT_EQ(aurora::gfx::g_testDrawCount, 1u);
 }
 
+TEST_F(GXFifoTest, FixedCountDrawsNeedNoEndAcrossStateChangesAndRawWrites) {
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 0);
+  const auto state = flush_and_capture();
+  GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+  GXPosition3u8(0, 1, 2);
+  GXPosition3u8(3, 4, 5);
+  GXPosition3u8(6, 7, 8);
+  GXSetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+  GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+  for (u8 value = 9; value < 18; ++value) GXParam1u8(value);
+  const auto draws = capture_fifo();
+
+  reset_gx_state();
+  decode_fifo(state);
+  aurora::gfx::g_testDrawCount = 0;
+  decode_fifo(draws);
+  EXPECT_EQ(aurora::gfx::g_testDrawCount, 2u);
+  EXPECT_EQ(gxState().bpRegCache[0x40] & 0x1fu, 0xeu);
+}
+
+TEST_F(GXFifoTest, FixedCountDisplayListDrawsNeedNoEnd) {
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 0);
+  const auto state = flush_and_capture();
+  std::array<u8, 64> list{};
+  GXBeginDisplayList(list.data(), list.size());
+  for (int draw = 0; draw < 2; ++draw) {
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    const std::array<u8, 9> vertices{0, 1, 2, 3, 4, 5, 6, 7, 8};
+    aurora::gx::fifo::write_data(vertices.data(), vertices.size());
+  }
+  const auto size = GXEndDisplayList();
+  reset_gx_state();
+  decode_fifo(state);
+  aurora::gfx::g_testDrawCount = 0;
+  aurora::gx::fifo::process(list.data(), size);
+  EXPECT_EQ(aurora::gfx::g_testDrawCount, 2u);
+}
+
+TEST_F(GXFifoTest, NextBeginPublishesOnlyThePreviousFixedCountDraw) {
+  aurora::gx::fifo::init();
+  aurora::gx::fifo::begin_frame();
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 0);
+  aurora::gfx::g_testDrawCount = 0;
+  aurora::gfx::g_testProcessedDrawCount.store(0, std::memory_order_relaxed);
+  GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+  for (u8 value = 0; value < 9; ++value) GXParam1u8(value);
+  GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+  ASSERT_TRUE(wait_for(aurora::gfx::g_testProcessedDrawCount, 1));
+  for (u8 value = 9; value < 18; ++value) GXParam1u8(value);
+  aurora::gx::fifo::drain();
+  aurora::gx::fifo::end_frame();
+  EXPECT_EQ(aurora::gfx::g_testDrawCount, 2u);
+}
+
+TEST_F(GXFifoTest, IncompleteFixedCountPayloadIsRejectedByTheDecoder) {
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 0);
+  const auto state = flush_and_capture();
+  GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+  GXPosition3u8(0, 1, 2);
+  GXPosition3u8(3, 4, 5);
+  const auto incomplete = capture_fifo();
+  reset_gx_state();
+  decode_fifo(state);
+  EXPECT_DEATH(decode_fifo(incomplete), "draw vertex data overrun");
+}
+
+TEST_F(GXFifoTest, AuroraDrawExtensionsStillRequireEndBeforeAnotherBegin) {
+  EXPECT_DEATH({
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, GX_AUTO);
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+  }, "matching GXEnd");
+  const u16 indices[] = {0, 1, 2};
+  EXPECT_DEATH({
+    GXBeginIndexed(GX_VTXFMT0, 3, indices, 3);
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+  }, "matching GXEnd");
+}
+
 TEST_F(GXFifoTest, CommandsAfterFinalDrawRemainPendingUntilDrain) {
   aurora::gx::fifo::init();
   aurora::gx::fifo::begin_frame();

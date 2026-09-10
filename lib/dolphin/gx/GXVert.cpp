@@ -3,16 +3,24 @@
 #include "../../gx/fifo.hpp"
 
 namespace {
-// Track vertex count between GXBegin/GXEnd for mismatch detection
+// Retail primitives end at their FIFO-declared vertex count. Only Aurora draw
+// extensions require an explicit GXEnd; fixed draws may use it as a publish hint.
 u16 sBeginNVerts = 0;
 u32 sBeginFifoSize = 0;
 bool sInBegin = false;
+bool sBeginNeedsEnd = false;
 // GX_AUTO: offset of the u32 byte-length placeholder to patch in GXEnd
 u32 sBeginSizeOffset = 0;
 bool sBeginAuto = false;
 
 void pre_begin() {
-  CHECK(!sInBegin, "GXBegin: called without matching GXEnd");
+  CHECK(!sInBegin || !sBeginNeedsEnd, "GXBegin: Aurora draw requires matching GXEnd");
+  if (sInBegin) {
+    // Publish before the next header, never while its vertex payload is partial.
+    // The decoder validates counts for all writes, including raw FIFO writers.
+    sInBegin = false;
+    aurora::gx::fifo::finish_draw();
+  }
 
   // Flush dirty state before starting a draw
   if (__gx->dirtyState != 0) {
@@ -25,10 +33,11 @@ void pre_begin() {
   }
 }
 
-void post_begin(u16 nVerts) {
+void post_begin(u16 nVerts, bool needsEnd) {
   sBeginNVerts = nVerts;
   sBeginFifoSize = aurora::gx::fifo::get_buffer_size();
   sInBegin = true;
+  sBeginNeedsEnd = needsEnd;
 }
 } // namespace
 
@@ -50,7 +59,7 @@ void GXBegin(GXPrimitive primitive, GXVtxFmt vtxFmt, u16 nVerts) {
     GX_WRITE_U16(nVerts);
   }
 
-  post_begin(nVerts);
+  post_begin(nVerts, sBeginAuto);
 }
 
 void GXBeginIndexed(GXVtxFmt vtxFmt, u16 nVerts, const u16* indices, u32 nIndices) {
@@ -70,7 +79,7 @@ void GXBeginIndexed(GXVtxFmt vtxFmt, u16 nVerts, const u16* indices, u32 nIndice
   // Indices are host-endian even in a big-endian FIFO
   aurora::gx::fifo::write_data(indices, nIndices * sizeof(u16));
 
-  post_begin(nVerts);
+  post_begin(nVerts, true);
 }
 
 void GXEnd() {
@@ -79,7 +88,7 @@ void GXEnd() {
     if (sBeginAuto) {
       aurora::gx::fifo::patch_u32(sBeginSizeOffset, bytesWritten);
       sBeginAuto = false;
-    } else if (sBeginNVerts > 0 && bytesWritten > 0) {
+    } else if (sBeginNeedsEnd && sBeginNVerts > 0 && bytesWritten > 0) {
       // We don't know the vertex size without processing the FIFO for vtxFmt changes
       // so this is just a best-effort check to find obvious issues
       if (bytesWritten % sBeginNVerts != 0) {
@@ -87,6 +96,7 @@ void GXEnd() {
       }
     }
     sInBegin = false;
+    sBeginNeedsEnd = false;
     aurora::gx::fifo::finish_draw();
   }
 }

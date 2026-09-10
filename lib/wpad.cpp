@@ -36,6 +36,8 @@ void WpadService::begin_frame() {
     channel.previous_sub_stick_hold = channel.sub_stick_hold;
     channel.previous_core_swing = channel.core_swing;
     channel.previous_sub_swing = channel.sub_swing;
+    channel.previous_core_acceleration = channel.core_acceleration;
+    channel.previous_sub_acceleration = channel.sub_acceleration;
     channel.trigger = 0U;
     channel.release = 0U;
     channel.repeat = 0U;
@@ -87,8 +89,18 @@ void WpadService::set_connected(s32 channel, bool connected) {
     state->sub_stick_hold = WpadStickNone;
     state->sub_stick_trigger = WpadStickNone;
     state->sub_stick_release = WpadStickNone;
+    state->core_acceleration = {};
+    state->sub_acceleration = {};
+    state->previous_core_acceleration = {};
+    state->previous_sub_acceleration = {};
     state->pointer.valid = false;
     state->pointer_history_count = 0U;
+  }
+}
+
+void WpadService::set_device_type(s32 channel, WpadDeviceType device_type) {
+  if (auto* state = mutable_channel_state(channel)) {
+    state->device_type = device_type;
   }
 }
 
@@ -345,14 +357,32 @@ extern "C" s32 KPADRead(s32 channel, KPADStatus sampling_bufs[], u32 length) {
     return 0;
   }
 
-  sampling_bufs[0].hold = state->hold | (state->repeat != 0U ? KPAD_BUTTON_RPT : 0U);
-  sampling_bufs[0].trig = state->trigger;
-  sampling_bufs[0].release = state->release;
+  const u32 excluded_buttons = state->device_type == aurora::WpadDeviceType::Core ? WPAD_BUTTON_C | WPAD_BUTTON_Z : 0U;
+  sampling_bufs[0].hold = (state->hold & ~excluded_buttons) |
+                          ((state->repeat & ~excluded_buttons) != 0U ? KPAD_BUTTON_RPT : 0U);
+  sampling_bufs[0].trig = state->trigger & ~excluded_buttons;
+  sampling_bufs[0].release = state->release & ~excluded_buttons;
   sampling_bufs[0].acc = KPADVec3{
       .x = state->core_acceleration.x,
       .y = state->core_acceleration.y,
       .z = state->core_acceleration.z,
   };
+  sampling_bufs[0].acc_value = std::hypot(state->core_acceleration.x, state->core_acceleration.y, state->core_acceleration.z);
+  sampling_bufs[0].acc_speed = std::hypot(state->core_acceleration.x - state->previous_core_acceleration.x,
+                                         state->core_acceleration.y - state->previous_core_acceleration.y,
+                                         state->core_acceleration.z - state->previous_core_acceleration.z);
+  sampling_bufs[0].dev_type = static_cast<u8>(state->device_type);
+  sampling_bufs[0].data_format = WPAD_FMT_CORE_ACC_DPD;
+  if (state->device_type == aurora::WpadDeviceType::Freestyle) {
+    sampling_bufs[0].data_format = WPAD_FMT_FREESTYLE_ACC_DPD;
+    auto& extension = sampling_bufs[0].ex_status.fs;
+    extension.stick = {state->sub_stick.x, state->sub_stick.y};
+    extension.acc = {state->sub_acceleration.x, state->sub_acceleration.y, state->sub_acceleration.z};
+    extension.acc_value = std::hypot(extension.acc.x, extension.acc.y, extension.acc.z);
+    extension.acc_speed = std::hypot(extension.acc.x - state->previous_sub_acceleration.x,
+                                      extension.acc.y - state->previous_sub_acceleration.y,
+                                      extension.acc.z - state->previous_sub_acceleration.z);
+  }
   sampling_bufs[0].pos = KPADVec2{
       .x = state->pointer.x * 2.0F / state->pointer_width - 1.0F,
       .y = state->pointer.y * 2.0F / state->pointer_height - 1.0F,
@@ -373,9 +403,10 @@ extern "C" s32 KPADRead(s32 channel, KPADStatus sampling_bufs[], u32 length) {
 }
 
 extern "C" s32 WPADProbe(s32 channel, u32* type) {
-  const bool connected = aurora::wpad_service().is_connected(channel);
+  const auto* state = aurora::wpad_service().channel_state(channel);
+  const bool connected = state != nullptr && state->connected;
   if (type != nullptr) {
-    *type = connected ? WPAD_DEV_CORE : WPAD_DEV_NOT_FOUND;
+    *type = connected ? static_cast<u32>(state->device_type) : WPAD_DEV_NOT_FOUND;
   }
   return connected ? WPAD_ERR_NONE : WPAD_ERR_NO_CONTROLLER;
 }

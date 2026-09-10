@@ -38,7 +38,18 @@ constexpr s32 WPAD_CHAN3 = 3;
 constexpr s32 WPAD_MAX_CONTROLLERS = 4;
 constexpr u32 WPAD_DEV_CORE = 0;
 constexpr u32 WPAD_DEV_FREESTYLE = 1;
+constexpr u32 WPAD_DEV_CLASSIC = 2;
 constexpr u32 WPAD_DEV_NOT_FOUND = 253;
+constexpr u32 WPAD_DEV_UNKNOWN = 255;
+constexpr u32 WPAD_FMT_CORE = 0;
+constexpr u32 WPAD_FMT_CORE_ACC = 1;
+constexpr u32 WPAD_FMT_CORE_ACC_DPD = 2;
+constexpr u32 WPAD_FMT_FREESTYLE = 3;
+constexpr u32 WPAD_FMT_FREESTYLE_ACC = 4;
+constexpr u32 WPAD_FMT_FREESTYLE_ACC_DPD = 5;
+constexpr u32 WPAD_FMT_CLASSIC = 6;
+constexpr u32 WPAD_FMT_CLASSIC_ACC = 7;
+constexpr u32 WPAD_FMT_CLASSIC_ACC_DPD = 8;
 constexpr s32 WPAD_ERR_BUSY = -2;
 constexpr s32 WPAD_ERR_TRANSFER = -3;
 
@@ -85,14 +96,33 @@ constexpr s32 NAND_RESULT_FATAL_ERROR = -128;
 constexpr u32 NAND_MAX_PATH = 64U;
 
 struct KPADVec2 {
-    f32 x = 0.0F;
-    f32 y = 0.0F;
+    f32 x;
+    f32 y;
 };
 
 struct KPADVec3 {
-    f32 x = 0.0F;
-    f32 y = 0.0F;
-    f32 z = 0.0F;
+    f32 x;
+    f32 y;
+    f32 z;
+};
+
+union KPADEXStatus {
+    struct {
+        KPADVec2 stick;
+        KPADVec3 acc;
+        f32 acc_value;
+        f32 acc_speed;
+    } fs;
+
+    struct {
+        u32 hold;
+        u32 trig;
+        u32 release;
+        KPADVec2 lstick;
+        KPADVec2 rstick;
+        f32 ltrigger;
+        f32 rtrigger;
+    } cl;
 };
 
 struct KPADStatus {
@@ -100,6 +130,8 @@ struct KPADStatus {
     u32 trig = 0U;
     u32 release = 0U;
     KPADVec3 acc {};
+    f32 acc_value = 0.0F;
+    f32 acc_speed = 0.0F;
     KPADVec2 pos {};
     KPADVec2 vec {};
     f32 speed = 0.0F;
@@ -110,8 +142,11 @@ struct KPADStatus {
     f32 dist_vec = 0.0F;
     f32 dist_speed = 0.0F;
     KPADVec2 acc_vertical {};
-    s32 wpad_err = WPAD_ERR_NO_CONTROLLER;
+    u8 dev_type = WPAD_DEV_NOT_FOUND;
+    s8 wpad_err = WPAD_ERR_NO_CONTROLLER;
     s8 dpd_valid_fg = 0;
+    u8 data_format = WPAD_FMT_CORE;
+    KPADEXStatus ex_status {};
 };
 
 extern "C" {

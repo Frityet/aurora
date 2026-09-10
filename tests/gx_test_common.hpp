@@ -21,6 +21,7 @@ protected:
   void SetUp() override {
     GXInit(nullptr, 0);
     aurora::gx::fifo::clear_buffer();
+    aurora::gx::fifo::clear_draw_cache();
     aurora::gx::g_gxState = aurora::gx::GXState{};
     aurora::gfx::depth_peek::testing::reset();
   }
@@ -40,7 +41,10 @@ protected:
   }
 
   // Reset g_gxState to default-constructed state
-  void reset_gx_state() { aurora::gx::g_gxState = aurora::gx::GXState{}; }
+  void reset_gx_state() {
+    aurora::gx::fifo::clear_draw_cache();
+    aurora::gx::g_gxState = aurora::gx::GXState{};
+  }
 
   // Decode a captured FIFO byte stream through the command processor
   void decode_fifo(const std::vector<u8>& bytes) {

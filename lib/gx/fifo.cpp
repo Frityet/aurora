@@ -146,6 +146,7 @@ void init() {
 void shutdown() {
   const aurora::allocation::HostAllocationScope hostAllocations;
   stop_worker();
+  clear_draw_cache();
 }
 
 void begin_frame() noexcept { sFrameActive = true; }

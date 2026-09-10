@@ -327,7 +327,7 @@ if has_config("aurora_enable_gx") then
                   "lib/gfx/texture_format.cpp",
                   "lib/gfx/texture_convert.cpp", "lib/gfx/texture_replacement.cpp",
                   "lib/gfx/png_io.cpp",
-                  "lib/gx/attr_fmt.cpp", "lib/gx/command_processor.cpp", "lib/gx/destruction_state.cpp",
+                  "lib/gx/array_registry.cpp", "lib/gx/attr_fmt.cpp", "lib/gx/command_processor.cpp", "lib/gx/destruction_state.cpp",
                   "lib/gx/regs.cpp",
                   "lib/gx/dl.cpp", "lib/gx/fifo.cpp", "lib/gx/gx.cpp", "lib/gx/texture.cpp",
                   "lib/gx/pipeline.cpp", "lib/gx/shader.cpp", "lib/gx/shader_info.cpp",

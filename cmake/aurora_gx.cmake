@@ -14,6 +14,7 @@ add_library(aurora_gx STATIC
         lib/gfx/texture_format.cpp
         lib/gfx/texture_convert.cpp
         lib/gfx/texture_replacement.cpp
+        lib/gx/array_registry.cpp
         lib/gx/attr_fmt.cpp
         lib/gx/command_processor.cpp
         lib/gx/destruction_state.cpp

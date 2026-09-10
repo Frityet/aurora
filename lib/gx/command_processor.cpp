@@ -1,4 +1,5 @@
 #include <aurora/allocation.hpp>
+#include <aurora/gx_array.hpp>
 
 #include "command_processor.hpp"
 
@@ -145,6 +146,34 @@ struct DrawCache {
   GXVtxFmt lastDrawFmt = GX_MAX_VTXFMT;
 };
 DrawCache sDrawCache;
+
+struct ArrayUploadSnapshot {
+  std::vector<u8> bytes;
+  gfx::Range range{};
+};
+
+// Bindings and GXInvalidateVtxCache may discard an attribute's current range without
+// changing its contents. Retain one owned snapshot per source for this frame so a
+// later binding can reuse the immutable upload without trusting pointer identity.
+absl::flat_hash_map<const void*, ArrayUploadSnapshot> sArrayUploadSnapshots;
+
+gfx::Range push_array_snapshot(const void* data, u32 size) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  if (size == 0) {
+    return gfx::push_storage(static_cast<const u8*>(data), size);
+  }
+  auto& snapshot = sArrayUploadSnapshots[data];
+  if (snapshot.bytes.size() >= size && snapshot.range.size != 0 &&
+      std::memcmp(snapshot.bytes.data(), data, size) == 0) {
+    return {snapshot.range.offset, size};
+  }
+
+  const auto* bytes = static_cast<const u8*>(data);
+  const auto range = gfx::push_storage(bytes, size);
+  snapshot.bytes.assign(bytes, bytes + size);
+  snapshot.range = range;
+  return range;
+}
 
 FogRangeLutKey fog_range_lut_key() noexcept {
   const auto& state = g_gxState.fog;
@@ -474,7 +503,7 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
     auto& array = state.arrays[i];
     if (array.cachedRange.size == 0) {
       const u32 uploadSize = array.sizeKnown ? array.size : array.requiredSize;
-      array.cachedRange = gfx::push_storage(static_cast<const uint8_t*>(array.data), uploadSize);
+      array.cachedRange = push_array_snapshot(array.data, uploadSize);
     }
     immediates.arrayStart[i - GX_VA_POS] = array.cachedRange.offset;
   }
@@ -694,14 +723,24 @@ void handle_aurora(ByteReader& reader) noexcept {
   } else if (subCmd >= GX_AURORA_LOAD_ARRAYBASE && subCmd <= (GX_AURORA_LOAD_ARRAYBASE | 0x0f)) {
     const u32 attrIdx = subCmd - GX_AURORA_LOAD_ARRAYBASE + GX_VA_POS;
     const u64 arrayAddr = reader.read<u64>();
-    const u32 arraySize = reader.read<u32>();
+    u32 arraySize = reader.read<u32>();
     const u8 flags = reader.read<u8>();
     AURORA_ASSERT((flags & ~0x3) == 0, "GX_AURORA_LOAD_ARRAYBASE has invalid flags 0x{:02x}", flags);
-    const bool le = (flags & 0x1) != 0;
-    const bool sizeKnown = (flags & 0x2) == 0;
+    bool le = (flags & 0x1) != 0;
+    bool sizeKnown = (flags & 0x2) == 0;
 
     auto& array = g_gxState.arrays[attrIdx];
     const auto newData = reinterpret_cast<void*>(arrayAddr);
+    if (!sizeKnown) {
+      // Resolve the final pointer at replay time: GDPatchArrayPtr may replace it
+      // after the unsized binding was recorded. Explicit-sized bindings retain
+      // their authored cap and byte order.
+      if (const auto extent = find_registered_array(newData)) {
+        arraySize = extent->size;
+        le = extent->littleEndian;
+        sizeKnown = true;
+      }
+    }
     if (array.data != newData || array.size != arraySize || array.le != le || array.sizeKnown != sizeKnown) {
       if (array.le != le) {
         // Endianness is baked into the shader
@@ -890,6 +929,8 @@ void handle_aurora(ByteReader& reader) noexcept {
 }
 
 void clear_draw_cache() noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  sArrayUploadSnapshots.clear();
   sDrawCache.bindGeneration = 0;
   sDrawCache.uniformRange = {};
   sDrawCache.fogRange = {};

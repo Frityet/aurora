@@ -22,6 +22,7 @@ using aurora::gx::g_gxState;
 
 namespace aurora::gfx {
 extern std::vector<u8> g_lastStorageUpload;
+extern uint32_t g_testStorageUploadCount;
 extern std::vector<CopyFilter> g_testResolvedCopyFilters;
 extern uint32_t g_testDrawCount;
 extern std::atomic<uint32_t> g_testProcessedDrawCount;
@@ -1638,6 +1639,75 @@ TEST_F(GXFifoTest, CachedRetailSpanOwnsUploadForItsCacheLifetime) {
   decode_fifo(indexed_pos_draw(0));
   EXPECT_EQ(gxState().arrays[GX_VA_POS].cachedRange.size, 12u);
   EXPECT_EQ(aurora::gfx::g_lastStorageUpload, firstUpload);
+}
+
+TEST_F(GXFifoTest, InvalidatedUnchangedArrayReusesFrameSnapshot) {
+  std::array<f32, 3> position{1.f, 2.f, 3.f};
+  const auto draw = record_indexed_pos_draw(position.data(), 12, 0);
+  reset_gx_state();
+  aurora::gfx::g_testStorageUploadCount = 0;
+  decode_fifo(draw);
+  ASSERT_EQ(aurora::gfx::g_testStorageUploadCount, 1u);
+  const auto firstRange = gxState().arrays[GX_VA_POS].cachedRange;
+
+  decode_fifo(std::vector<u8>{GX_CMD_INVL_VC});
+  decode_fifo(indexed_pos_draw(0));
+  EXPECT_EQ(aurora::gfx::g_testStorageUploadCount, 1u);
+  EXPECT_EQ(gxState().arrays[GX_VA_POS].cachedRange.offset, firstRange.offset);
+
+  position[0] = 42.f;
+  decode_fifo(std::vector<u8>{GX_CMD_INVL_VC});
+  decode_fifo(indexed_pos_draw(0));
+  EXPECT_EQ(aurora::gfx::g_testStorageUploadCount, 2u);
+  EXPECT_NE(gxState().arrays[GX_VA_POS].cachedRange.offset, firstRange.offset);
+  EXPECT_EQ(0, std::memcmp(aurora::gfx::g_lastStorageUpload.data(), position.data(), sizeof(position)));
+}
+
+TEST_F(GXFifoTest, ArrayRebindingReusesOnlyMatchingProvenSnapshotPrefix) {
+  std::array<f32, 12> first{1.f, 2.f, 3.f, 4.f};
+  std::array<f32, 3> second{5.f, 6.f, 7.f};
+  const auto firstDraw = record_indexed_pos_draw(first.data(), 12, 3);
+  const auto secondDraw = record_indexed_pos_draw(second.data(), 12, 0);
+  const auto firstPrefix = record_indexed_pos_draw(first.data(), 12, 0);
+  reset_gx_state();
+  aurora::gfx::g_testStorageUploadCount = 0;
+  decode_fifo(firstDraw);
+  const auto firstRange = gxState().arrays[GX_VA_POS].cachedRange;
+  decode_fifo(secondDraw);
+  ASSERT_EQ(aurora::gfx::g_testStorageUploadCount, 2u);
+  decode_fifo(firstPrefix);
+  EXPECT_EQ(aurora::gfx::g_testStorageUploadCount, 2u);
+  EXPECT_EQ(gxState().arrays[GX_VA_POS].cachedRange.offset, firstRange.offset);
+  EXPECT_EQ(gxState().arrays[GX_VA_POS].cachedRange.size, 12u);
+
+  first[11] = 99.f;
+  decode_fifo(std::vector<u8>{GX_CMD_INVL_VC});
+  decode_fifo(indexed_pos_draw(0));
+  EXPECT_EQ(aurora::gfx::g_testStorageUploadCount, 2u);
+  decode_fifo(indexed_pos_draw(3));
+  EXPECT_EQ(aurora::gfx::g_testStorageUploadCount, 3u);
+  EXPECT_NE(gxState().arrays[GX_VA_POS].cachedRange.offset, firstRange.offset);
+  EXPECT_EQ(0, std::memcmp(aurora::gfx::g_lastStorageUpload.data(), first.data(), sizeof(first)));
+
+  first[0] = 42.f;
+  decode_fifo(secondDraw);
+  decode_fifo(firstPrefix);
+  EXPECT_EQ(aurora::gfx::g_testStorageUploadCount, 4u);
+  EXPECT_EQ(0, std::memcmp(aurora::gfx::g_lastStorageUpload.data(), first.data(), 12u));
+}
+
+TEST_F(GXFifoTest, ArraySnapshotReuseEndsWithTheFrame) {
+  std::array<f32, 3> position{1.f, 2.f, 3.f};
+  const auto draw = record_indexed_pos_draw(position.data(), 12, 0);
+  reset_gx_state();
+  aurora::gfx::g_testStorageUploadCount = 0;
+  decode_fifo(draw);
+  ASSERT_EQ(aurora::gfx::g_testStorageUploadCount, 1u);
+
+  aurora::gx::fifo::clear_draw_cache();
+  gxState().arrays[GX_VA_POS].cachedRange = {};
+  decode_fifo(indexed_pos_draw(0));
+  EXPECT_EQ(aurora::gfx::g_testStorageUploadCount, 2u);
 }
 
 TEST_F(GXFifoTest, SetArray_RetailDerivesIndexedXfOnlySpanAndHostEndianness) {

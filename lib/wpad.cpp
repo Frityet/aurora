@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace aurora {
 namespace {
@@ -30,12 +31,121 @@ constexpr float kSubStickDirectionThreshold = 0.2F;
 
 void WpadService::clear() { m_channels = {}; }
 
+void WpadService::initialize_sampling() {
+  for (auto& channel : m_channels) {
+    channel.position_parameters = channel.horizon_parameters = channel.distance_parameters =
+        channel.acceleration_parameters = {0.0F, 1.0F};
+    channel.button_repeat_parameters = {};
+    channel.sensor_height = 0.0F;
+  }
+  reset_sampling();
+}
+
+void WpadService::reset_sampling() {
+  for (s32 index = 0; index < WPAD_MAX_CONTROLLERS; ++index) {
+    auto& channel = m_channels[index];
+    channel.previous_hold = 0;
+    channel.trigger = channel.hold;
+    channel.release = channel.repeat = channel.hold_frame_count = 0;
+    channel.previous_sub_stick_hold = 0;
+    channel.sub_stick_trigger = channel.sub_stick_hold;
+    channel.sub_stick_release = 0;
+    channel.pointer_history = {};
+    channel.pointer_history_count = 0;
+    channel.previous_core_acceleration = channel.core_acceleration;
+    channel.previous_sub_acceleration = channel.sub_acceleration;
+    WPADControlMotor(index, WPAD_MOTOR_STOP);
+  }
+}
+
+WpadClientState WpadService::exchange_client(WpadClientState state) {
+  ++m_client_generation;
+  return std::exchange(m_client, state);
+}
+
+WPADConnectCallback WpadService::set_connect_callback(s32 channel, WPADConnectCallback callback) {
+  if (!channel_state(channel)) return nullptr;
+  return std::exchange(m_client.channels[channel].connect, callback);
+}
+
+WPADExtensionCallback WpadService::set_extension_callback(s32 channel, WPADExtensionCallback callback) {
+  if (!channel_state(channel)) return nullptr;
+  return std::exchange(m_client.channels[channel].extension, callback);
+}
+
+s32 WpadService::request_info(s32 channel, WPADInfo* info, WPADCallback callback) {
+  s32 result = WPAD_ERR_NONE;
+  if (!is_connected(channel)) result = WPAD_ERR_NO_CONTROLLER;
+  else if (!info) result = WPAD_ERR_INVALID;
+  else if (m_client.channels[channel].pending_info) result = WPAD_ERR_BUSY;
+  if (result != WPAD_ERR_NONE) {
+    if (callback) callback(channel, result);
+    return result;
+  }
+  m_client.channels[channel].pending_info = info;
+  m_client.channels[channel].info_callback = callback;
+  m_client.channels[channel].info_request = ++m_info_request;
+  return result;
+}
+
+void WpadService::register_allocator(WPADAlloc allocate, WPADFree free) {
+  // The virtual device requires no Bluetooth work memory. Retain the SDK
+  // allocation contract with its client, without manufacturing such a buffer.
+  m_client.allocate = allocate;
+  m_client.free = free;
+}
+
+void WpadService::set_sensor_bar_position(u8 position) {
+  if (position == WPAD_SENSOR_BAR_POS_TOP || position == WPAD_SENSOR_BAR_POS_BOTTOM)
+    m_sensor_bar_position = position;
+}
+
+void WpadService::dispatch_callbacks() {
+  // Capture identities, not borrowed buffers: callbacks may retire their
+  // client. Requests stay in the client scope until their actual completion.
+  const auto generation = m_client_generation;
+  std::array<std::uint64_t, WPAD_MAX_CONTROLLERS> requests{};
+  for (s32 index = 0; index < WPAD_MAX_CONTROLLERS; ++index) {
+    if (m_client.channels[index].pending_info)
+      requests[index] = m_client.channels[index].info_request;
+  }
+  for (s32 index = 0; index < WPAD_MAX_CONTROLLERS; ++index) {
+    auto& client = m_client.channels[index];
+    const bool connected = is_connected(index);
+    if (connected != client.connected) {
+      client.connected = connected;
+      client.device_type = WPAD_DEV_NOT_FOUND;
+      if (client.connect) client.connect(index, connected ? WPAD_ERR_NONE : WPAD_ERR_NO_CONTROLLER);
+      if (generation != m_client_generation) return;
+    }
+    // A connection callback may disconnect the device or register its extension
+    // callback. Observe those changes before publishing the extension event.
+    if (is_connected(index)) {
+      const auto type = static_cast<u32>(m_channels[index].device_type);
+      if (type != client.device_type) {
+        client.device_type = type;
+        if (client.extension) client.extension(index, static_cast<s32>(type));
+        if (generation != m_client_generation) return;
+      }
+    }
+    if (!client.pending_info || client.info_request != requests[index]) continue;
+    auto* info = std::exchange(client.pending_info, nullptr);
+    const auto completion = std::exchange(client.info_callback, nullptr);
+    const s32 result = is_connected(index) ? WPAD_ERR_NONE : WPAD_ERR_NO_CONTROLLER;
+    if (result == WPAD_ERR_NONE) {
+      // A mains-powered virtual remote has full battery and no speaker/radio.
+      *info = WPADInfo{TRUE, FALSE, m_channels[index].device_type != WpadDeviceType::Core,
+                              FALSE, FALSE, 4, static_cast<u8>(1U << index), 0, 0};
+    }
+    if (completion) completion(index, result);
+    if (generation != m_client_generation) return;
+  }
+}
+
 void WpadService::begin_frame() {
   for (auto& channel : m_channels) {
     channel.previous_hold = channel.hold;
     channel.previous_sub_stick_hold = channel.sub_stick_hold;
-    channel.previous_core_swing = channel.core_swing;
-    channel.previous_sub_swing = channel.sub_swing;
     channel.previous_core_acceleration = channel.core_acceleration;
     channel.previous_sub_acceleration = channel.sub_acceleration;
     channel.trigger = 0U;
@@ -211,17 +321,6 @@ void WpadService::set_sub_acceleration(s32 channel, float x, float y, float z) {
   };
 }
 
-void WpadService::set_swing(s32 channel, bool core_swing, bool sub_swing) {
-  auto* state = mutable_channel_state(channel);
-  if (state == nullptr) {
-    return;
-  }
-
-  state->connected = true;
-  state->core_swing = core_swing;
-  state->sub_swing = sub_swing;
-}
-
 void WpadService::set_distance_to_display(s32 channel, float distance) {
   auto* state = mutable_channel_state(channel);
   if (state == nullptr) {
@@ -304,21 +403,6 @@ WpadVec3State WpadService::core_acceleration(s32 channel) const {
 WpadVec3State WpadService::sub_acceleration(s32 channel) const {
   const auto* state = channel_state(channel);
   return state == nullptr ? WpadVec3State{} : state->sub_acceleration;
-}
-
-bool WpadService::is_core_swing(s32 channel) const {
-  const auto* state = channel_state(channel);
-  return state != nullptr && state->connected && state->core_swing;
-}
-
-bool WpadService::is_core_swing_triggered(s32 channel) const {
-  const auto* state = channel_state(channel);
-  return state != nullptr && state->connected && state->core_swing && !state->previous_core_swing;
-}
-
-bool WpadService::is_sub_swing(s32 channel) const {
-  const auto* state = channel_state(channel);
-  return state != nullptr && state->connected && state->sub_swing;
 }
 
 float WpadService::distance_to_display(s32 channel) const {
@@ -434,15 +518,37 @@ extern "C" BOOL WPADSupportsRumble(s32 channel) {
   return channel >= 0 && channel < PAD_CHANMAX ? PADSupportsRumble(static_cast<u32>(channel)) : FALSE;
 }
 
-extern "C" void WPADControlSpeaker(s32, s32, void*) {}
+extern "C" s32 WPADControlSpeaker(s32 channel, u32 command, WPADCallback callback) {
+  // The native keyboard/mouse device has no Wii Remote speaker. Disabling an
+  // already-disabled speaker succeeds; enabling/streaming is unsupported.
+  const s32 result = !aurora::wpad_service().is_connected(channel) ? WPAD_ERR_NO_CONTROLLER
+                     : command == 0 ? WPAD_ERR_NONE : WPAD_ERR_INVALID;
+  if (callback) callback(channel, result);
+  return result;
+}
 
 extern "C" void WPADStartFastSimpleSync() {}
 
 extern "C" void WPADStopSimpleSync() {}
 
-extern "C" void WPADSetConnectCallback(s32, void*) {}
+extern "C" WPADConnectCallback WPADSetConnectCallback(s32 channel, WPADConnectCallback callback) {
+  return aurora::wpad_service().set_connect_callback(channel, callback);
+}
 
-extern "C" void WPADSetExtensionCallback(s32, void*) {}
+extern "C" WPADExtensionCallback WPADSetExtensionCallback(s32 channel, WPADExtensionCallback callback) {
+  return aurora::wpad_service().set_extension_callback(channel, callback);
+}
+
+extern "C" s32 WPADGetInfoAsync(s32 channel, WPADInfo* info, WPADCallback callback) {
+  return aurora::wpad_service().request_info(channel, info, callback);
+}
+extern "C" void WPADRegisterAllocator(WPADAlloc allocate, WPADFree free) {
+  aurora::wpad_service().register_allocator(allocate, free);
+}
+extern "C" u8 WPADGetSensorBarPosition() { return aurora::wpad_service().sensor_bar_position(); }
+extern "C" void WPADSetAutoSleepTime(u8 minutes) { aurora::wpad_service().set_auto_sleep_time(minutes); }
+extern "C" void KPADInit() { aurora::wpad_service().initialize_sampling(); }
+extern "C" void KPADReset() { aurora::wpad_service().reset_sampling(); }
 
 extern "C" void KPADSetPosParam(s32 channel, f32 first, f32 second) {
   aurora::wpad_service().set_sampling_parameter(channel, aurora::WpadService::SamplingParameter::Position, first, second);

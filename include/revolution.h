@@ -52,6 +52,9 @@ constexpr u32 WPAD_FMT_CLASSIC_ACC = 7;
 constexpr u32 WPAD_FMT_CLASSIC_ACC_DPD = 8;
 constexpr s32 WPAD_ERR_BUSY = -2;
 constexpr s32 WPAD_ERR_TRANSFER = -3;
+constexpr s32 WPAD_ERR_INVALID = -4;
+constexpr u8 WPAD_SENSOR_BAR_POS_BOTTOM = 0;
+constexpr u8 WPAD_SENSOR_BAR_POS_TOP = 1;
 
 constexpr u32 WPAD_MOTOR_STOP = 0;
 constexpr u32 WPAD_MOTOR_RUMBLE = 1;
@@ -149,7 +152,19 @@ struct KPADStatus {
     KPADEXStatus ex_status {};
 };
 
+struct WPADInfo {
+    BOOL dpd, speaker, attach, lowBat, nearempty;
+    u8 battery, led, protocol, firmware;
+};
+using WPADCallback = void (*)(s32, s32);
+using WPADConnectCallback = WPADCallback;
+using WPADExtensionCallback = WPADCallback;
+using WPADAlloc = void* (*)(u32);
+using WPADFree = u8 (*)(void*);
+
 extern "C" {
+void KPADInit();
+void KPADReset();
 void KPADSetBtnRepeat(s32 channel, f32 delay, f32 pulse);
 void KPADSetSensorHeight(s32 channel, f32 height);
 void KPADSetPosParam(s32 channel, f32 radius, f32 sensitivity);
@@ -165,9 +180,13 @@ void WPADSetVRes(s32 channel, u32 xres, u32 yres);
 void WPADSetAutoSamplingBuf(s32 channel, void *buffer, u32 length);
 void WPADControlMotor(s32 channel, u32 command);
 BOOL WPADSupportsRumble(s32 channel);
-void WPADControlSpeaker(s32 channel, s32 command, void *callback);
+s32 WPADControlSpeaker(s32 channel, u32 command, WPADCallback callback);
 void WPADStartFastSimpleSync(void);
 void WPADStopSimpleSync(void);
-void WPADSetConnectCallback(s32 channel, void *callback);
-void WPADSetExtensionCallback(s32 channel, void *callback);
+WPADConnectCallback WPADSetConnectCallback(s32 channel, WPADConnectCallback callback);
+WPADExtensionCallback WPADSetExtensionCallback(s32 channel, WPADExtensionCallback callback);
+s32 WPADGetInfoAsync(s32 channel, WPADInfo* info, WPADCallback callback);
+void WPADRegisterAllocator(WPADAlloc alloc, WPADFree free);
+u8 WPADGetSensorBarPosition();
+void WPADSetAutoSleepTime(u8 minutes);
 }

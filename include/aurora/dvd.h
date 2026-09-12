@@ -95,6 +95,9 @@ typedef struct AuroraOverlayCallbacks {
 
 /**
  * \brief Specify callbacks for overlaid files.
+ *
+ * Replacement waits for active operations and invalidates existing DVDFileInfo
+ * descriptors. Do not call from an executing overlay callback.
  */
 void aurora_dvd_overlay_callbacks(const AuroraOverlayCallbacks* callbacks);
 
@@ -105,7 +108,12 @@ void aurora_dvd_overlay_callbacks(const AuroraOverlayCallbacks* callbacks);
  * previously specified set. It may be called again at runtime; FST reads and overlay opens are
  * serialized against the rebuild, and previously assigned EntryNums are stable per path. Files
  * removed by a re-registration fail to open from then on (or revert to the underlying DVD file);
- * already-open handles are unaffected. Only call from one thread at a time.
+ * already executing commands keep their acquired handle and callback table.
+ * Replacement waits until active operations have closed their old handles, so
+ * the old overlay payload may be retired when this call returns. Rebuilding
+ * invalidates existing DVDFileInfo descriptors; reopen them before submitting
+ * another command. Only call from one thread at a time, and never from inside
+ * an executing overlay open/read/seek/close callback.
  *
  * This function must be called *after* aurora_dvd_overlay_callbacks.
  *

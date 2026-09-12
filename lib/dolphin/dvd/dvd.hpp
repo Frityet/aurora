@@ -3,6 +3,7 @@
 #include <string>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 
 #include <nod.h>
 
@@ -67,7 +68,27 @@ extern bool s_initialized;
 extern bool s_overlayCallbacksSet;
 extern AuroraOverlayCallbacks s_overlayCallbacks;
 extern std::mutex s_fstLock;
+// Protected by s_fstLock; replaced disc/catalog identities never alias.
+extern u64 s_generation;
 
+// An operation retains the catalog's borrowed overlay payload until its host
+// handle has closed. Mutation waits without retaining the guest CPU gate.
+class CatalogOperationScope final {
+public:
+  CatalogOperationScope();
+  ~CatalogOperationScope();
+private:
+  std::shared_lock<std::shared_mutex> m_lock;
+};
+
+class CatalogMutationScope final {
+public:
+  CatalogMutationScope();
+private:
+  std::unique_lock<std::shared_mutex> m_lock;
+};
+
+// The caller holds CatalogMutationScope across rebuilding and publication.
 bool rebuildFST();
 bool nameEqualsIgnoreCase(std::string_view lhs, std::string_view rhs);
 

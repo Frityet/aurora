@@ -392,7 +392,7 @@ if has_config("aurora_enable_dvd") then
         set_kind("static")
         add_aurora_common_settings(true)
         add_files("lib/dolphin/dvd/dvd.cpp", "lib/dolphin/dvd/fst.cpp")
-        add_deps("aurora-base")
+        add_deps("aurora-base", "aurora-os")
         add_packages("encounter-nod", "libsdl3", {public = true})
         add_packages("fmt", "tracy")
 end

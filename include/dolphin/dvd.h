@@ -95,6 +95,9 @@ struct DVDCommandBlock {
     /* 0x24 */ DVDDiskID* id;
     /* 0x28 */ DVDCBCallback callback;
     /* 0x2C */ void* userData;
+    // Native operation identity. Original userData remains caller-owned.
+    u64 nativeGeneration;
+    s32 nativeFileEntry;
 };
 
 typedef struct DVDFileInfo DVDFileInfo;
@@ -104,6 +107,9 @@ struct DVDFileInfo {
     /* 0x30 */ u32 startAddr;
     /* 0x34 */ u32 length;
     /* 0x38 */ DVDCallback callback;
+    // A descriptor borrows the mounted DVD catalog; opening owns no handle.
+    u64 nativeGeneration;
+    s32 nativeFileEntry;
 };
 
 typedef struct {

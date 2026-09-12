@@ -1,4 +1,5 @@
 #include "dvd.hpp"
+#include <aurora/allocation.hpp>
 
 #include <algorithm>
 #include <limits>
@@ -245,6 +246,7 @@ bool validateOverlayFile(const AuroraOverlayFile& file) {
 namespace aurora::dvd::impl {
 
 bool rebuildFST() {
+  const aurora::allocation::HostAllocationScope host;
   using namespace std::string_literals;
 
   if (s_partition == nullptr) {
@@ -252,6 +254,7 @@ bool rebuildFST() {
   }
 
   std::lock_guard lock(s_fstLock);
+  if (++s_generation == 0) Log.fatal("DVD catalog generation exhausted");
 
   s32 currentDirEntryNum = k_invalidFstEntry;
   const std::string currentPath = s_currentPath;
@@ -317,6 +320,8 @@ s32 aurora_dvd_base_entry_count() {
 }
 
 void aurora_dvd_overlay_files(const AuroraOverlayFile* files, size_t nFiles, s32* outEntryNums) {
+  const aurora::allocation::HostAllocationScope host;
+  const CatalogMutationScope mutation;
   if (!s_overlayCallbacksSet) {
     Log.fatal("aurora_dvd_overlay_callbacks not called before aurora_dvd_overlay_files!");
   }
@@ -348,6 +353,9 @@ void aurora_dvd_overlay_files(const AuroraOverlayFile* files, size_t nFiles, s32
 }
 
 void aurora_dvd_overlay_callbacks(const AuroraOverlayCallbacks* callbacks) {
+  const CatalogMutationScope mutation;
+  std::lock_guard lock(s_fstLock);
+  if (++s_generation == 0) Log.fatal("DVD catalog generation exhausted");
   s_overlayCallbacks = *callbacks;
   s_overlayCallbacksSet = true;
 }

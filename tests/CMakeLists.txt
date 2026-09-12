@@ -286,7 +286,9 @@ if (AURORA_ENABLE_GX)
   # GX FIFO round-trip tests
   # Compile GX sources directly to avoid pulling in the full renderer/WebGPU runtime
   add_executable(gx_fifo_tests
+    byte_buffer_test.cpp
     gx_fifo_test.cpp
+    gx_fifo_breakpoint_test.cpp
     gx_array_registry_test.cpp
     gd_array_test.cpp
     gd_texture_test.cpp
@@ -319,6 +321,9 @@ if (AURORA_ENABLE_GX)
     ../lib/dolphin/os/OSAddress.cpp
     ../lib/dolphin/os/OSAlloc.cpp
     ../lib/dolphin/os/OSCache.cpp
+    ../lib/dolphin/os/OSExecution.cpp
+    ../lib/dolphin/os/OSMutex.cpp
+    ../lib/dolphin/os/OSMessage.cpp
     # FIFO/command processor (encoder + decoder)
     ../lib/gx/array_registry.cpp
     ../lib/gx/fifo.cpp

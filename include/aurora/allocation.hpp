@@ -26,11 +26,14 @@ private:
   RoutingState previous_;
 };
 
-// Use only at an actual client callback. A newly started worker has its own
-// default host state; this scope does not borrow another thread's guest heap.
+// Use only at an actual client callback. Deferred callbacks may supply the
+// routing captured at registration. This transfers allocation policy only;
+// the client still owns and selects the actual guest heap.
 class ClientAllocationScope final {
 public:
-  ClientAllocationScope() noexcept : previous_(routing_state) {
+  ClientAllocationScope() noexcept : ClientAllocationScope(routing_state) {}
+  explicit ClientAllocationScope(RoutingState routing) noexcept : previous_(routing_state) {
+    routing_state = routing;
     routing_state.guest = routing_state.callbackGuest;
   }
   ~ClientAllocationScope() { routing_state = previous_; }

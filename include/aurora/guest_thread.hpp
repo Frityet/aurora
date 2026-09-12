@@ -14,4 +14,18 @@ public:
   GuestThreadExecutionScope& operator=(const GuestThreadExecutionScope&) = delete;
 };
 
+// Use only around a blocking native wait that cannot execute guest code on
+// this thread. Let SDK threads and callbacks run while the host worker finishes,
+// then restore this caller's CPU ownership, nesting and interrupt state.
+class GuestThreadWaitScope final {
+public:
+  GuestThreadWaitScope();
+  ~GuestThreadWaitScope() noexcept(false);
+  GuestThreadWaitScope(const GuestThreadWaitScope&) = delete;
+  GuestThreadWaitScope& operator=(const GuestThreadWaitScope&) = delete;
+
+private:
+  bool owned_;
+};
+
 } // namespace aurora::os

@@ -286,6 +286,7 @@ public:
   [[nodiscard]] bool empty() const noexcept { return m_length == 0; }
 
   void append(const void* data, size_t size) {
+    if (size == 0) return;
     resize(m_length + size, false);
     memcpy(m_data + m_length, data, size);
     m_length += size;
@@ -297,7 +298,9 @@ public:
   }
 
   void append_zeroes(size_t size) {
-    resize(m_length + size, true);
+    if (size == 0) return;
+    resize(m_length + size, false);
+    memset(m_data + m_length, 0, size);
     m_length += size;
   }
 
@@ -329,6 +332,7 @@ private:
   void resize(size_t size, bool zeroed) {
     if (size == 0) {
       clear();
+      return;
     } else if (m_data == nullptr) {
       m_data = static_cast<uint8_t*>(zeroed ? calloc(1, size) : malloc(size));
       m_owned = true;

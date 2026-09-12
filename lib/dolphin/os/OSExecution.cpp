@@ -377,6 +377,18 @@ GuestThreadExecutionScope::~GuestThreadExecutionScope() {
   --sGuestExecutionDepth;
   release_cpu_if_enabled();
 }
+
+GuestThreadWaitScope::GuestThreadWaitScope() : owned_(sOwnsCpu) {
+  if (!owned_) return;
+  if (scheduler_count() > 0) {
+    unsupported_thread_boundary("blocking host wait while scheduler is disabled");
+  }
+  release_cpu();
+}
+
+GuestThreadWaitScope::~GuestThreadWaitScope() noexcept(false) {
+  if (owned_) acquire_cpu();
+}
 } // namespace aurora::os
 
 BOOL OSCreateThread(OSThread* thread, void* (*function)(void*), void* argument, void* stack,

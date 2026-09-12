@@ -12,6 +12,7 @@ typedef struct {
 } GXFifoObj;
 
 typedef struct OSThread OSThread;
+typedef void (*GXBreakPtCallback)(void);
 
 void GXInitFifoBase(GXFifoObj* fifo, void* base, u32 size);
 void GXInitFifoPtrs(GXFifoObj* fifo, void* readPtr, void* writePtr);
@@ -22,6 +23,7 @@ GXBool GXGetCPUFifo(GXFifoObj* fifo);
 GXBool GXGetGPFifo(GXFifoObj* fifo);
 void GXEnableBreakPt(void* breakPt);
 void GXDisableBreakPt(void);
+GXBreakPtCallback GXSetBreakPtCallback(GXBreakPtCallback callback);
 void GXSetCPUFifo(const GXFifoObj* fifo);
 void GXSetGPFifo(const GXFifoObj* fifo);
 void GXSaveCPUFifo(GXFifoObj* fifo);

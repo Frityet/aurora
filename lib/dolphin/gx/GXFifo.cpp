@@ -88,37 +88,29 @@ FifoRecord snapshot(const FifoBinding& binding, const CursorSnapshot& cursor) {
   const uint64_t count = cursor.written - cursor.consumed;
   AURORA_ASSERT(count <= std::numeric_limits<u32>::max(), "GX FIFO byte count exceeds its API width");
   record.count = static_cast<u32>(count);
-  if (record.nativeBuffer) {
-    // GXInit(nullptr, 0) selects Aurora's actual growable linear stream. These
-    // addresses are snapshots, valid until the producer grows or drains it.
-    record.base = reinterpret_cast<uintptr_t>(cursor.data);
-    record.size = cursor.capacity;
-    record.read = record.base + (cursor.consumed - cursor.bufferBegin);
-    record.write = record.base + (cursor.written - cursor.bufferBegin);
-    record.wrap = false;
-    if (!record.customLimits) set_default_limits(record);
-  } else {
-    // A supplied Wii ring is a logical address space over the native decoder
-    // stream. Commands remain in Aurora's backing storage; no guest buffer copy
-    // or GPU completion is implied by these producer/consumer positions.
-    const uint64_t produced = cursor.written - binding.writtenOrigin + record.write - record.base;
-    const uint64_t consumed = cursor.consumed - binding.consumedOrigin + record.read - record.base;
-    record.write = record.base + produced % record.size;
-    record.read = record.base + consumed % record.size;
-    record.wrap = produced >= record.size;
-  }
+  // Both default and caller-supplied FIFOs use a stable logical ring over the
+  // decoder stream. A saved address survives growth and reclamation of decoded
+  // command storage. Counts retain actual outstanding bytes, including overflow.
+  const uint64_t produced = cursor.written - binding.writtenOrigin + record.write - record.base;
+  const uint64_t consumed = cursor.consumed - binding.consumedOrigin + record.read - record.base;
+  record.write = record.base + produced % record.size;
+  record.read = record.base + consumed % record.size;
+  record.wrap = produced >= record.size;
   return record;
 }
 
 void bind_fifo(FifoBinding& binding, const GXFifoObj* fifo, const CursorSnapshot& cursor) {
   AURORA_ASSERT(cursor.active, "GX FIFO attachment requires an initialized Aurora command stream");
-  AURORA_ASSERT(cursor.written == cursor.consumed,
+  AURORA_ASSERT(cursor.written == cursor.completed,
                 "GX FIFO rebinding with pending commands requires native stream routing support");
   if (fifo == nullptr) {
     binding = {};
     return;
   }
   const FifoRecord record = read_record(fifo);
+  AURORA_ASSERT(!record.nativeBuffer ||
+                    (record.base == reinterpret_cast<uintptr_t>(cursor.addressBase) && record.size == cursor.addressSize),
+                "GX FIFO attachment refers to a retired default address space");
   AURORA_ASSERT(record.count == 0,
                 "Attaching a prefilled GX FIFO requires importing its command bytes into the native decoder");
   binding = {record, cursor.written, cursor.consumed, cursor.generation, true};
@@ -131,11 +123,11 @@ void GXInitFifoBase(GXFifoObj* fifo, void* base, u32 size) {
   FifoRecord record;
   if (base == nullptr && size == 0) {
     const auto cursor = aurora::gx::fifo::cursor_snapshot();
-    AURORA_ASSERT(cursor.active && cursor.data != nullptr && cursor.capacity != 0,
+    AURORA_ASSERT(cursor.active && cursor.addressBase != nullptr && cursor.addressSize != 0,
                   "GXInit requires an initialized Aurora command stream");
     record.nativeBuffer = true;
-    record.base = reinterpret_cast<uintptr_t>(cursor.data);
-    record.size = cursor.capacity;
+    record.base = reinterpret_cast<uintptr_t>(cursor.addressBase);
+    record.size = cursor.addressSize;
   } else {
     AURORA_ASSERT(base != nullptr && size != 0 &&
                       reinterpret_cast<uintptr_t>(base) <= std::numeric_limits<uintptr_t>::max() - size,
@@ -184,6 +176,7 @@ void GXSetGPFifo(const GXFifoObj* fifo) {
                   "Independent GP FIFO storage requires native stream routing support");
   }
   bind_fifo(sGPFifo, fifo, cursor);
+  aurora::gx::fifo::disable_breakpoint();
 }
 
 GXBool GXGetCPUFifo(GXFifoObj* fifo) {
@@ -236,11 +229,29 @@ void GXGetGPStatus(GXBool* overhi, GXBool* underlow, GXBool* readIdle, GXBool* c
   *overhi = record.count > record.highWatermark;
   *underlow = record.count < record.lowWatermark;
   *readIdle = cursor.consumed == cursor.published;
-  *cmdIdle = cursor.consumed == cursor.published;
-  // No breakpoint can be installed yet. Decoder idle is not Metal/GPU idle.
-  *brkpt = GX_FALSE;
+  *cmdIdle = cursor.breakpoint || cursor.consumed == cursor.published;
+  // A stopped command decoder does not imply submitted Metal/GPU work is idle.
+  *brkpt = cursor.breakpoint;
 }
 
-// Breakpoints, interrupt callbacks, and independent FIFO command routing remain
-// unsupported. Metadata snapshots must not manufacture their completion events.
+GXBreakPtCallback GXSetBreakPtCallback(GXBreakPtCallback callback) {
+  return aurora::gx::fifo::set_breakpoint_callback(callback);
+}
+
+void GXEnableBreakPt(void* breakPt) {
+  std::lock_guard lock{sFifoMutex};
+  const auto cursor = aurora::gx::fifo::cursor_snapshot();
+  AURORA_ASSERT(ready(sGPFifo, cursor), "GXEnableBreakPt requires an attached GP FIFO");
+  const auto& record = sGPFifo.record;
+  const auto address = reinterpret_cast<uintptr_t>(breakPt);
+  AURORA_ASSERT(address >= record.base && address - record.base < record.size,
+                "GXEnableBreakPt requires an address within the attached GP FIFO");
+  aurora::gx::fifo::enable_breakpoint(cursor.generation, sGPFifo.consumedOrigin,
+                                     static_cast<u32>(record.read - record.base), record.size,
+                                     static_cast<u32>(address - record.base));
+}
+
+void GXDisableBreakPt() { aurora::gx::fifo::disable_breakpoint(); }
+
+// Importing prefilled FIFOs and independent CPU/GP routing remain unsupported.
 }

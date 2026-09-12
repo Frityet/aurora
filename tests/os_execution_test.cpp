@@ -1,5 +1,7 @@
 #include <dolphin/os.h>
 #include <dolphin/os/OSThread.h>
+#include <aurora/allocation.hpp>
+#include <aurora/guest_thread.hpp>
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -12,6 +14,75 @@
 namespace {
 
 using namespace std::chrono_literals;
+
+TEST(OSExecutionTest, HostWaitReleasesNestedGuestExecutionAndRestoresOwnership) {
+  int protectedValue = 0;
+  std::future<void> afterWait;
+  {
+    const aurora::os::GuestThreadExecutionScope outer;
+    {
+      const aurora::os::GuestThreadExecutionScope inner;
+      const BOOL interrupts = OSDisableInterrupts();
+      std::promise<void> attempting;
+      auto started = attempting.get_future();
+      auto callback = std::async(std::launch::async, [&] {
+        attempting.set_value();
+        const aurora::os::GuestThreadExecutionScope execution;
+        protectedValue = 41;
+      });
+      started.wait();
+      EXPECT_EQ(callback.wait_for(20ms), std::future_status::timeout);
+      {
+        const aurora::os::GuestThreadWaitScope wait;
+        const aurora::os::GuestThreadWaitScope nestedWait;
+        callback.get();
+      }
+      EXPECT_EQ(protectedValue, 41);
+      EXPECT_EQ(OSDisableInterrupts(), FALSE);
+      OSRestoreInterrupts(interrupts);
+    }
+    std::promise<void> attempting;
+    auto started = attempting.get_future();
+    afterWait = std::async(std::launch::async, [&] {
+      attempting.set_value();
+      const aurora::os::GuestThreadExecutionScope execution;
+      ++protectedValue;
+    });
+    started.wait();
+    EXPECT_EQ(afterWait.wait_for(20ms), std::future_status::timeout);
+    EXPECT_EQ(protectedValue, 41);
+  }
+  afterWait.get();
+  EXPECT_EQ(protectedValue, 42);
+}
+
+TEST(OSExecutionTest, HostWaitWithoutCpuOwnershipDoesNotAcquireItOnExit) {
+  {
+    const aurora::os::GuestThreadWaitScope wait;
+    const aurora::os::GuestThreadWaitScope nested;
+  }
+  auto callback = std::async(std::launch::async, [] {
+    const aurora::os::GuestThreadExecutionScope execution;
+    return 17;
+  });
+  EXPECT_EQ(callback.get(), 17);
+}
+
+TEST(OSExecutionTest, DeferredCallbackRoutingIsCapturedAndRestoredOnTheWorker) {
+  const aurora::allocation::RoutingState captured{false, true};
+  auto callback = std::async(std::launch::async, [captured] {
+    const auto before = aurora::allocation::routing_state;
+    bool selected = false;
+    {
+      const aurora::os::GuestThreadExecutionScope execution;
+      const aurora::allocation::ClientAllocationScope allocations{captured};
+      selected = aurora::allocation::routing_state.guest && aurora::allocation::routing_state.callbackGuest;
+    }
+    return selected && aurora::allocation::routing_state.guest == before.guest &&
+           aurora::allocation::routing_state.callbackGuest == before.callbackGuest;
+  });
+  EXPECT_TRUE(callback.get());
+}
 
 TEST(OSExecutionTest, InterruptNestingReturnsAndRestoresSavedBits) {
   const BOOL outer = OSDisableInterrupts();

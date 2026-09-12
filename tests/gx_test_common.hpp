@@ -19,6 +19,7 @@ extern "C" void __GXSetDirtyState();
 class GXFifoTest : public ::testing::Test {
 protected:
   void SetUp() override {
+    aurora::gx::fifo::init();
     GXInit(nullptr, 0);
     aurora::gx::fifo::clear_buffer();
     aurora::gx::fifo::clear_draw_cache();

@@ -14,20 +14,20 @@ namespace aurora::webgpu {
 
 // WaitAny completes the callback as well as the GPU map. Slot state written
 // inside a callback alone does not prove that callback has finished returning.
-inline bool complete_map_future(wgpu::Future& future, bool wait) noexcept {
+inline bool complete_future(wgpu::Future& future, bool wait) noexcept {
   if (future.id == 0) {
     return true;
   }
   const allocation::HostAllocationScope hostAllocations;
   static constexpr Module Log{"aurora::webgpu::map_future"};
-  AURORA_ASSERT(g_instance, "Map callback retirement requires a live WebGPU instance");
+  AURORA_ASSERT(g_instance, "GPU callback retirement requires a live WebGPU instance");
   const auto status = g_instance.WaitAny(future, wait ? std::numeric_limits<uint64_t>::max() : 0);
-  AURORA_ASSERT(status != wgpu::WaitStatus::Error, "Failed to retire WebGPU map callback");
+  AURORA_ASSERT(status != wgpu::WaitStatus::Error, "Failed to retire WebGPU callback");
   if (status == wgpu::WaitStatus::Success) {
     future = {};
     return true;
   }
-  AURORA_ASSERT(!wait, "Blocking WebGPU map callback retirement timed out");
+  AURORA_ASSERT(!wait, "Blocking WebGPU callback retirement timed out");
   return false;
 }
 
@@ -54,7 +54,7 @@ private:
       pending.swap(futures_);
     }
     for (auto& future : pending) {
-      complete_map_future(future, wait);
+      complete_future(future, wait);
     }
     std::erase_if(pending, [](const wgpu::Future& future) { return future.id == 0; });
     if (!pending.empty()) {

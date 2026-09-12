@@ -48,7 +48,6 @@ struct FrameRecorder {
   uint32_t drawCallCount = 0;
   uint32_t mergedDrawCallCount = 0;
   bool inOffscreen = false;
-  std::optional<RenderPass> suspendedEfbPass;
   Viewport suspendedEfbViewport;
   ClipRect suspendedEfbScissor;
   webgpu::TextureWithSampler offscreenColor;
@@ -399,9 +398,9 @@ OffscreenCacheEntry get_offscreen_textures(uint32_t width, uint32_t height) {
 
 void enqueue_pass(FramePacket& frame, uint32_t passIndex);
 
-void resume_efb_pass_loading(const RenderPass& prevPass) {
+void resume_pass_loading(const RenderPass& prevPass) {
   RenderPass newPass{
-      .label = pass_label("EFB"),
+      .label = prevPass.label,
       .colorAttachments = prevPass.colorAttachments,
       .colorAttachmentCount = prevPass.colorAttachmentCount,
       .depthStencilView = prevPass.depthStencilView,
@@ -410,12 +409,16 @@ void resume_efb_pass_loading(const RenderPass& prevPass) {
       .copySourceView = prevPass.copySourceView,
       .copySourceDepthView = prevPass.copySourceDepthView,
       .msaaSamples = prevPass.msaaSamples,
+      .depthLoadOp = prevPass.hasDepth ? wgpu::LoadOp::Load : wgpu::LoadOp::Undefined,
+      .depthStoreOp = prevPass.depthStoreOp,
+      .stencilLoadOp = prevPass.hasStencil ? wgpu::LoadOp::Load : wgpu::LoadOp::Undefined,
+      .stencilStoreOp = prevPass.stencilStoreOp,
       .clearDepth = false,
       .hasDepth = prevPass.hasDepth,
       .hasStencil = prevPass.hasStencil,
   };
   for (uint32_t i = 0; i < newPass.colorAttachmentCount; ++i) {
-    newPass.colorAttachments[i].loadOp = wgpu::LoadOp::Undefined;
+    newPass.colorAttachments[i].loadOp = wgpu::LoadOp::Load;
     newPass.colorAttachments[i].clear = false;
   }
   newPass.commands.reserve(2048);
@@ -429,16 +432,8 @@ void suspend_efb() {
   AURORA_ASSERT(g_recorder.active() && g_recorder.currentRenderPass != UINT32_MAX,
                 "suspend_efb called outside of an active recording frame");
   AURORA_ASSERT(!g_recorder.inOffscreen, "suspend_efb called while offscreen rendering is active");
-  AURORA_ASSERT(!g_recorder.suspendedEfbPass, "suspend_efb called with an EFB pass already suspended");
 
-  auto& currentPass = current_render_passes()[g_recorder.currentRenderPass];
-  if (!currentPass.has_consumer()) {
-    g_recorder.suspendedEfbPass = std::move(currentPass);
-    current_render_passes().pop_back();
-    --g_recorder.currentRenderPass;
-  } else {
-    enqueue_pass(current_frame_packet(), g_recorder.currentRenderPass);
-  }
+  enqueue_pass(current_frame_packet(), g_recorder.currentRenderPass);
   g_recorder.suspendedEfbViewport = g_recorder.cachedViewport;
   g_recorder.suspendedEfbScissor = g_recorder.cachedScissor;
 }
@@ -494,19 +489,14 @@ void restore_efb() {
   AURORA_ASSERT(g_recorder.inOffscreen, "restore_efb called without a suspended EFB pass");
 
   g_recorder.inOffscreen = false;
-  if (g_recorder.suspendedEfbPass) {
-    current_render_passes().emplace_back(std::move(*g_recorder.suspendedEfbPass));
-    g_recorder.suspendedEfbPass.reset();
-  } else {
-    auto& pass = current_render_passes().emplace_back();
-    pass.label = pass_label("EFB");
-    set_efb_targets(pass);
-    for (uint32_t i = 0; i < pass.colorAttachmentCount; ++i) {
-      pass.colorAttachments[i].clear = false;
-      pass.colorAttachments[i].loadOp = wgpu::LoadOp::Undefined;
-    }
-    pass.clearDepth = false;
+  auto& pass = current_render_passes().emplace_back();
+  pass.label = pass_label("EFB");
+  set_efb_targets(pass);
+  for (uint32_t i = 0; i < pass.colorAttachmentCount; ++i) {
+    pass.colorAttachments[i].clear = false;
+    pass.colorAttachments[i].loadOp = wgpu::LoadOp::Load;
   }
+  pass.clearDepth = false;
   ++g_recorder.currentRenderPass;
   set_efb_targets(current_render_passes()[g_recorder.currentRenderPass]);
 
@@ -549,7 +539,6 @@ void begin_recording(FramePacket& packet, size_t frameSlot) {
   g_passSnapshotPools[frameSlot].used = 0;
   g_recorder.drawCallCount = 0;
   g_recorder.mergedDrawCallCount = 0;
-  g_recorder.suspendedEfbPass.reset();
 
   current_render_passes().emplace_back();
   auto& pass = current_render_passes()[0];
@@ -609,7 +598,6 @@ void shutdown_recording() {
   g_offscreenCache.clear();
   g_recorder.offscreenColor = {};
   g_recorder.offscreenDepth = {};
-  g_recorder.suspendedEfbPass.reset();
   g_recorder.inOffscreen = false;
   g_recorder.packet = nullptr;
   g_recorder.frameSlot = 0;
@@ -1072,8 +1060,31 @@ bool resolve_pass(const ResolveDesc& desc, ResolvedTargets& out) {
   // without a consumer.
   prevPass.discardable = !prevPass.has_consumer() && !prevPass.has_content();
   enqueue_pass(current_frame_packet(), g_recorder.currentRenderPass);
-  resume_efb_pass_loading(prevPass);
+  resume_pass_loading(prevPass);
   return true;
+}
+
+void complete_draw() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  if (!g_recorder.active()) {
+    gpu_synchronize();
+    return;
+  }
+  auto& frame = current_frame_packet();
+  if (g_recorder.currentRenderPass != UINT32_MAX) {
+    const auto passIndex = g_recorder.currentRenderPass;
+    auto& pass = current_render_passes()[passIndex];
+    // Preserve the requested final stores on the continuation, but retain the
+    // prefix attachments so subsequent draws can load their contents.
+    resume_pass_loading(pass);
+    for (uint32_t i = 0; i < pass.colorAttachmentCount; ++i) {
+      pass.colorAttachments[i].storeOp = wgpu::StoreOp::Store;
+    }
+    if (pass.hasDepth) pass.depthStoreOp = wgpu::StoreOp::Store;
+    if (pass.hasStencil) pass.stencilStoreOp = wgpu::StoreOp::Store;
+    enqueue_pass(frame, passIndex);
+  }
+  submit_frame_prefix(frame);
 }
 
 void request_depth_snapshot(uint64_t rawId) noexcept {
@@ -1115,7 +1126,7 @@ void request_depth_snapshot(uint64_t rawId) noexcept {
   prevPass.taggedDepthSnapshot = capture;
   prevPass.discardable = false;
   enqueue_pass(frame, g_recorder.currentRenderPass);
-  resume_efb_pass_loading(prevPass);
+  resume_pass_loading(prevPass);
 }
 
 bool push_encoder_task(EncoderTaskId type, const void* payload, size_t payloadSize) {
@@ -1166,7 +1177,7 @@ bool push_encoder_task(EncoderTaskId type, const void* payload, size_t payloadSi
   frame.ops.emplace_back(capture_frame_op(frame, FrameOpType::EncoderTask, taskIndex));
   enqueue_op(frame, opIndex);
 
-  resume_efb_pass_loading(prevPass);
+  resume_pass_loading(prevPass);
   return true;
 }
 

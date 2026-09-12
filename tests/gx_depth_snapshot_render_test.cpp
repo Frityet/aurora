@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <stdexcept>
@@ -18,6 +19,20 @@
 namespace {
 constexpr auto Width = std::uint16_t{256};
 constexpr auto Height = std::uint16_t{192};
+std::array<u32, 16> tokenDepth{};
+std::array<u16, 16> observedTokens{};
+size_t tokenCount = 0;
+bool tokenRegisterMatched = true;
+
+void draw_sync_callback(u16 token) {
+  tokenRegisterMatched = tokenRegisterMatched && GXReadDrawSync() == token;
+  if (tokenCount < tokenDepth.size()) {
+    observedTokens[tokenCount] = token;
+    GXPeekZ(Width / 2, Height / 2, &tokenDepth[tokenCount]);
+    ++tokenCount;
+  }
+  if (token == 0x7777) GXSetDrawSyncCallback(nullptr);
+}
 
 void require(bool condition, std::string_view message) {
   if (!condition) {
@@ -134,6 +149,7 @@ void synchronize_display_copy() {
 void prove_tagged_depth_boundaries() {
   AuroraConfig config{};
   config.appName = "Aurora tagged depth snapshot render proof";
+  config.cachePath = std::getenv("AURORA_TEST_CACHE_PATH");
 #if defined(__APPLE__)
   config.desiredBackend = BACKEND_METAL;
 #else
@@ -173,9 +189,39 @@ void prove_tagged_depth_boundaries() {
   configure_draw_state();
 
   draw_fullscreen(-0.75F, GXColor{232, 24, 24, 255});
+  GXSetDrawSyncCallback(draw_sync_callback);
+  GXSetDrawSync(0xa001);
   const auto farId = GXAuroraRequestDepthSnapshot();
   draw_fullscreen(-0.25F, GXColor{24, 232, 24, 255});
+  GXSetDrawSync(0xa002);
   const auto nearId = GXAuroraRequestDepthSnapshot();
+  GXDrawDone();
+  require(tokenCount == 2 && tokenRegisterMatched && observedTokens[0] == 0xa001 && observedTokens[1] == 0xa002,
+          "GXDrawDone must finish preceding GPU tokens and callbacks before frame end");
+  require(tokenDepth[1] < tokenDepth[0], "GXPeekZ callbacks must observe their exact command-stream depth");
+  // More tokens than the readback slot pool, without ending the frame.
+  for (u16 token = 0; token < 8; ++token) GXSetDrawSync(token);
+  GXDrawDone();
+  require(tokenCount == 10 && tokenRegisterMatched, "mid-frame tokens must not be dropped under readback pressure");
+  for (size_t i = 2; i < tokenCount; ++i) {
+    require(observedTokens[i] == i - 2 && tokenDepth[i] == tokenDepth[1],
+            "token ordering or EFB preservation changed across submissions");
+  }
+  alignas(32) std::array<u8, 256> displayList{};
+  GXBeginDisplayList(displayList.data(), displayList.size());
+  GXSetDrawSync(0x1234);
+  const auto displayListSize = GXEndDisplayList();
+  GXDrawDone();
+  require(tokenCount == 10, "recording a draw-sync display list must not invoke its callback");
+  GXCallDisplayList(displayList.data(), displayListSize);
+  GXDrawDone();
+  require(tokenCount == 11 && observedTokens[10] == 0x1234 && tokenDepth[10] == tokenDepth[1],
+          "display-list tokens must use the same GPU completion and EFB path");
+  GXSetDrawSyncCallback(nullptr);
+  GXSetDrawSync(0xffff);
+  GXDrawDone();
+  require(tokenCount == 11 && GXReadDrawSync() == 0xffff,
+          "unregistered callbacks must stay retired while hardware token writes continue");
 
   // GXCopyDisp drains both tagged commands, then resolves and clears the EFB.
   // A third capture observes that post-copy clear without changing either
@@ -209,11 +255,32 @@ void prove_tagged_depth_boundaries() {
   require(GXAuroraReadDepthSnapshotZ(clearedId, Width / 2, Height / 2, &clearedZ) == TRUE,
           "post-copy clear boundary must be readable");
   require(nearZ < farZ, "the later near draw must not alter the earlier far snapshot");
+  require(farZ == tokenDepth[0] && nearZ == tokenDepth[1], "callbacks and independently tagged snapshots disagree");
   require(clearedZ >= 0x00ffff00U, "the copy-clear continuation must contain GX far depth");
 
   GXAuroraReleaseDepthSnapshot(farId);
   GXAuroraReleaseDepthSnapshot(nearId);
   GXAuroraReleaseDepthSnapshot(clearedId);
+
+  require(aurora_begin_frame(), "a second frame must reuse upload storage after mid-frame submissions");
+  configure_draw_state();
+  draw_fullscreen(-0.5F, GXColor{24, 24, 232, 255});
+  GXSetDrawSyncCallback(draw_sync_callback);
+  GXSetDrawSync(0x2000);
+  GXDrawDone();
+  require(tokenCount == 12 && observedTokens[11] == 0x2000 && nearZ < tokenDepth[11] && tokenDepth[11] < farZ,
+          "the next frame must retain correct GPU completion and depth after recycling upload storage");
+  GXSetDrawSyncCallback(nullptr);
+  GXCopyDisp(nullptr, GX_TRUE);
+  aurora_end_frame();
+  synchronize_display_copy();
+  GXSetDrawSyncCallback(draw_sync_callback);
+  GXSetDrawSync(0x7777);
+  GXSetDrawSync(0x8888);
+  GXDrawDone();
+  require(tokenCount == 13 && observedTokens[12] == 0x7777 && tokenDepth[12] >= 0x00ffff00U &&
+              GXReadDrawSync() == 0x8888,
+          "callbacks outside frame recording must read the EFB and may unregister themselves");
 }
 } // namespace
 
@@ -221,6 +288,7 @@ int main() {
   try {
     prove_tagged_depth_boundaries();
     std::cout << "[ok] tagged depth snapshots preserve exact draw and copy-clear boundaries\n";
+    std::cout << "[ok] GPU draw-sync preserves 13 ordered callbacks, display-list replay, retirement and frame reuse\n";
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << "[fail] tagged depth snapshot render proof: " << exception.what() << '\n';

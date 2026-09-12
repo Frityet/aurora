@@ -334,7 +334,7 @@ void shutdown() {
   // The render worker has stopped before WebGPU teardown. Finish callbacks
   // while their buffers and the WebGPU instance still belong to this run.
   for (auto& slot : g_slots) {
-    complete_map_future(slot.mapFuture, true);
+    complete_future(slot.mapFuture, true);
   }
   g_querySet = {};
   g_resolveBuffer = {};
@@ -418,7 +418,7 @@ void after_submit() {
     }
     // A callback can publish its result before returning. Keep its future
     // until completion so the next map cannot overwrite a live callback.
-    if (!complete_map_future(slot.mapFuture, false)) {
+    if (!complete_future(slot.mapFuture, false)) {
       break;
     }
     if (state == SlotState::Mapped) {

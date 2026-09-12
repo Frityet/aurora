@@ -2,6 +2,7 @@
 #include "__gx.h"
 
 #include "../../gfx/depth_peek.hpp"
+#include "../../gx/fifo.hpp"
 
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/gx/GXCpu2Efb.h>
@@ -17,6 +18,7 @@ void GXPeekZ(u16 x, u16 y, u32* z) {
     return;
   }
   if (z != nullptr) {
+    if (aurora::gx::fifo::peek_draw_sync_z(x, y, *z)) return;
     u32 value = 0;
     if (aurora::gfx::depth_peek::read_latest(x, y, value)) {
       *z = value;

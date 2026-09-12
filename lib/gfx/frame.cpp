@@ -160,6 +160,16 @@ void process_events() {
   }
 }
 
+void wait_for_submitted_work() {
+  if (!g_queue) return;
+  auto future = g_queue.OnSubmittedWorkDone(
+      wgpu::CallbackMode::WaitAnyOnly, [](wgpu::QueueWorkDoneStatus status, wgpu::StringView message) {
+        AURORA_ASSERT(status == wgpu::QueueWorkDoneStatus::Success, "GX GPU completion failed: {}", message);
+      });
+  webgpu::complete_future(future, true);
+  depth_peek::wait_for_readbacks();
+}
+
 void enqueue_process_events() {
   if (render_worker::is_worker_thread()) {
     process_events();
@@ -672,6 +682,47 @@ bool begin_frame() {
   return true;
 }
 
+void detail::submit_frame_prefix(FramePacket& frame) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  // The FIFO producer is paused here. Finish encoding before replacing any
+  // mapped ranges the render worker may still reference.
+  render_worker::synchronize();
+  const auto nextSlot = acquire_mapped_staging_buffer();
+  AURORA_ASSERT(nextSlot, "Cannot acquire upload storage for GX synchronization");
+  const size_t previousSlot = frame.stagingBuffer;
+  const auto& nextBuffer = g_stagingBuffers[*nextSlot];
+  size_t offset = 0;
+  const auto transfer = [&](ByteBuffer& bytes, size_t capacity) {
+    ByteBuffer replacement{static_cast<u8*>(nextBuffer.GetMappedRange(offset, capacity)), capacity};
+    replacement.append(bytes.data(), bytes.size());
+    bytes = std::move(replacement);
+    offset += capacity;
+  };
+  transfer(frame.verts, VertexBufferSize);
+  transfer(frame.uniforms, UniformBufferSize);
+  transfer(frame.indices, IndexBufferSize);
+  transfer(frame.storage, StorageBufferSize);
+  if constexpr (UseTextureBuffer) transfer(frame.textureUpload, TextureUploadSize);
+
+  render_worker::enqueue_work([&frame, previousSlot] {
+    g_stagingBuffers[previousSlot].Unmap();
+    g_mappingStates[previousSlot].store(BufferMapState::Unmapped, std::memory_order_release);
+    const auto commands = frame.encoder.Finish();
+    g_queue.Submit(1, &commands);
+    auto callbacks = std::exchange(frame.afterSubmitCallbacks, {});
+    for (auto& callback : callbacks) {
+      if (callback) callback();
+    }
+    after_submit();
+    wait_for_submitted_work();
+    constexpr wgpu::CommandEncoderDescriptor descriptor{.label = "GX continuation encoder"};
+    frame.encoder = g_device.CreateCommandEncoder(&descriptor);
+    map_staging_buffer(previousSlot, true);
+  });
+  render_worker::synchronize();
+  frame.stagingBuffer = *nextSlot;
+}
+
 void end_frame(const EndFrameCallback& callback) {
   const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
@@ -721,7 +772,15 @@ uint32_t current_frame() noexcept { return g_frameIndex; }
 
 void after_submit() noexcept { depth_peek::after_submit(); }
 
-void gpu_synchronize() { render_worker::synchronize(); }
+void gpu_synchronize() {
+  if (!g_queue) return;
+  if (render_worker::is_worker_thread()) {
+    wait_for_submitted_work();
+  } else {
+    render_worker::enqueue_work(wait_for_submitted_work);
+    render_worker::synchronize();
+  }
+}
 
 void synchronize() { render_worker::synchronize(); }
 

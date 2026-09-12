@@ -291,6 +291,20 @@ void GXDrawDone() {
   aurora::gx::fifo::drain();
 }
 
+void GXSetDrawSync(u16 token) {
+  GX_WRITE_RAS_REG(static_cast<u32>(GX_BP_REG_PETOKENINT) << 24 | token);
+  GX_WRITE_RAS_REG(static_cast<u32>(GX_BP_REG_PETOKEN) << 24 | token);
+  GXFlush();
+  __gx->bpSent = 1;
+  aurora::gx::fifo::publish();
+}
+
+u16 GXReadDrawSync() { return aurora::gx::fifo::read_draw_sync(); }
+
+GXDrawSyncCallback GXSetDrawSyncCallback(GXDrawSyncCallback callback) {
+  return aurora::gx::fifo::set_draw_sync_callback(callback);
+}
+
 void GXSetDrawDone() {
   GXFlush();
   GX_WRITE_RAS_REG(kDrawDoneCommand);

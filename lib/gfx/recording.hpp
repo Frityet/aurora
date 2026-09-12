@@ -51,6 +51,8 @@ struct ColorPassDescriptor {
 };
 
 void finish();
+// Submit and wait for commands recorded so far, preserving the active targets.
+void complete_draw();
 void request_depth_snapshot(uint64_t id) noexcept;
 bool is_frame_active() noexcept;
 void invalidate_surface_resources() noexcept;

@@ -12,6 +12,8 @@ typedef void (*GXDrawDoneCallback)(void);
 
 GXFifoObj* GXInit(void* base, u32 size);
 GXDrawSyncCallback GXSetDrawSyncCallback(GXDrawSyncCallback cb);
+void GXSetDrawSync(u16 token);
+u16 GXReadDrawSync(void);
 GXDrawDoneCallback GXSetDrawDoneCallback(GXDrawDoneCallback cb);
 void GXDrawDone(void);
 void GXSetDrawDone(void);

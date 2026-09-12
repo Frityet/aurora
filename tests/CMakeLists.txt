@@ -199,6 +199,9 @@ if (AURORA_ENABLE_GX)
     gx_depth_snapshot_render_test.cpp
     ../lib/compat.cpp
   )
+  add_executable(gx_draw_sync_pass_render_test gx_draw_sync_pass_render_test.cpp ../lib/compat.cpp)
+  target_link_libraries(gx_draw_sync_pass_render_test PRIVATE aurora::core)
+  target_include_directories(gx_draw_sync_pass_render_test PRIVATE ../lib)
   target_link_libraries(gx_depth_snapshot_render_test PRIVATE aurora::core)
 
   set(AURORA_GX_DEPTH_SNAPSHOT_RUNTIME_DIR "${CMAKE_CURRENT_BINARY_DIR}/gx_depth_snapshot_runtime")
@@ -213,24 +216,26 @@ if (AURORA_ENABLE_GX)
     PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
   )
 
-  if (AURORA_XVFB_RUN_EXECUTABLE)
-    add_test(NAME gx_depth_snapshot_render
-      COMMAND "${CMAKE_COMMAND}" -E env
-        "XDG_RUNTIME_DIR=${AURORA_GX_DEPTH_SNAPSHOT_RUNTIME_DIR}"
-        "XDG_CONFIG_HOME=${AURORA_GX_DEPTH_SNAPSHOT_CONFIG_DIR}"
-        "XDG_CACHE_HOME=${AURORA_GX_DEPTH_SNAPSHOT_CACHE_DIR}"
-        "${AURORA_XVFB_RUN_EXECUTABLE}" -a $<TARGET_FILE:gx_depth_snapshot_render_test>
-    )
-  else ()
-    add_test(NAME gx_depth_snapshot_render
-      COMMAND "${CMAKE_COMMAND}" -E env
-        "XDG_RUNTIME_DIR=${AURORA_GX_DEPTH_SNAPSHOT_RUNTIME_DIR}"
-        "XDG_CONFIG_HOME=${AURORA_GX_DEPTH_SNAPSHOT_CONFIG_DIR}"
-        "XDG_CACHE_HOME=${AURORA_GX_DEPTH_SNAPSHOT_CACHE_DIR}"
-        $<TARGET_FILE:gx_depth_snapshot_render_test>
-    )
-  endif ()
-  set_tests_properties(gx_depth_snapshot_render PROPERTIES LABELS gpu RUN_SERIAL TRUE)
+  foreach(gx_completion_test IN ITEMS gx_depth_snapshot_render gx_draw_sync_pass_render)
+    if (AURORA_XVFB_RUN_EXECUTABLE)
+      add_test(NAME ${gx_completion_test}
+        COMMAND "${CMAKE_COMMAND}" -E env
+          "XDG_RUNTIME_DIR=${AURORA_GX_DEPTH_SNAPSHOT_RUNTIME_DIR}"
+          "XDG_CONFIG_HOME=${AURORA_GX_DEPTH_SNAPSHOT_CONFIG_DIR}"
+          "XDG_CACHE_HOME=${AURORA_GX_DEPTH_SNAPSHOT_CACHE_DIR}"
+          "${AURORA_XVFB_RUN_EXECUTABLE}" -a $<TARGET_FILE:${gx_completion_test}_test>
+      )
+    else ()
+      add_test(NAME ${gx_completion_test}
+        COMMAND "${CMAKE_COMMAND}" -E env
+          "XDG_RUNTIME_DIR=${AURORA_GX_DEPTH_SNAPSHOT_RUNTIME_DIR}"
+          "XDG_CONFIG_HOME=${AURORA_GX_DEPTH_SNAPSHOT_CONFIG_DIR}"
+          "XDG_CACHE_HOME=${AURORA_GX_DEPTH_SNAPSHOT_CACHE_DIR}"
+          $<TARGET_FILE:${gx_completion_test}_test>
+      )
+    endif ()
+    set_tests_properties(${gx_completion_test} PROPERTIES LABELS gpu RUN_SERIAL TRUE)
+  endforeach ()
 
   add_executable(gx_copy_filter_render_test
     gx_copy_filter_render_test.cpp

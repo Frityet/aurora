@@ -4,6 +4,8 @@
 
 #include "../thread.hpp"
 #include "command_processor.hpp"
+#include "../gfx/recording.hpp"
+#include "../gfx/depth_peek.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -39,10 +41,21 @@ uint64_t sStreamBase = 0;
 std::mutex sBufferMutex;
 std::atomic<uint32_t> sWorkerWake{0};
 thread::Thread sWorkerThread;
-std::atomic<DrawDoneCallback> sDrawDoneCallback{nullptr};
+std::recursive_mutex sCallbackMutex;
+DrawDoneCallback sDrawDoneCallback = nullptr;
+DrawSyncCallback sDrawSyncCallback = nullptr;
+std::atomic<uint16_t> sDrawSyncToken{0};
+struct CallbackEfbRead {
+  AuroraDepthSnapshotId snapshot = AURORA_INVALID_DEPTH_SNAPSHOT_ID;
+  ~CallbackEfbRead() {
+    if (snapshot != AURORA_INVALID_DEPTH_SNAPSHOT_ID) gfx::depth_peek::release_snapshot(snapshot);
+  }
+};
+thread_local CallbackEfbRead* sCallbackEfbRead = nullptr;
 
 void dispatch_draw_done() noexcept {
-  if (const auto callback = sDrawDoneCallback.load(std::memory_order_acquire); callback != nullptr) {
+  std::lock_guard lock{sCallbackMutex};
+  if (const auto callback = sDrawDoneCallback; callback != nullptr) {
     {
       const aurora::allocation::ClientAllocationScope clientAllocations;
       callback();
@@ -53,6 +66,22 @@ void dispatch_draw_done() noexcept {
 void wake_worker() noexcept {
   sWorkerWake.fetch_add(1, std::memory_order_release);
   sWorkerWake.notify_all();
+}
+
+void dispatch_draw_sync(uint16_t token, bool interrupt) noexcept {
+  gfx::complete_draw();
+  sDrawSyncToken.store(token, std::memory_order_release);
+  if (!interrupt) return;
+  // Unregistering waits for any in-flight callback, including its EFB reads.
+  std::lock_guard lock{sCallbackMutex};
+  if (sDrawSyncCallback == nullptr) return;
+  CallbackEfbRead read;
+  auto* previousRead = std::exchange(sCallbackEfbRead, &read);
+  {
+    const aurora::allocation::ClientAllocationScope clientAllocations;
+    sDrawSyncCallback(token);
+  }
+  sCallbackEfbRead = previousRead;
 }
 
 void process_to(uint64_t target, std::memory_order order) noexcept {
@@ -72,8 +101,10 @@ void process_to(uint64_t target, std::memory_order order) noexcept {
                   "FIFO processor made invalid progress: processed {} of {} remaining bytes", result.bytesProcessed,
                   target - processed);
     if (result.drawDone) {
+      gfx::complete_draw();
       dispatch_draw_done();
     }
+    if (result.tokenWrite) dispatch_draw_sync(result.token, result.tokenInterrupt);
     processed += result.bytesProcessed;
     sProcessed.store(processed, order);
     sProcessed.notify_all();
@@ -205,7 +236,26 @@ void publish() noexcept {
 }
 
 DrawDoneCallback set_draw_done_callback(DrawDoneCallback callback) noexcept {
-  return sDrawDoneCallback.exchange(callback, std::memory_order_acq_rel);
+  std::lock_guard lock{sCallbackMutex};
+  return std::exchange(sDrawDoneCallback, callback);
+}
+
+DrawSyncCallback set_draw_sync_callback(DrawSyncCallback callback) noexcept {
+  std::lock_guard lock{sCallbackMutex};
+  return std::exchange(sDrawSyncCallback, callback);
+}
+
+uint16_t read_draw_sync() noexcept { return sDrawSyncToken.load(std::memory_order_acquire); }
+
+bool peek_draw_sync_z(uint16_t x, uint16_t y, uint32_t& z) {
+  if (sCallbackEfbRead == nullptr) return false;
+  auto& snapshot = sCallbackEfbRead->snapshot;
+  if (snapshot == AURORA_INVALID_DEPTH_SNAPSHOT_ID) {
+    snapshot = gfx::depth_peek::capture_efb();
+  }
+  AURORA_ASSERT(gfx::depth_peek::read_snapshot(snapshot, x, y, z),
+                "GX draw-sync EFB readback is unavailable or coordinates are outside the EFB");
+  return true;
 }
 
 void finish_draw() noexcept {

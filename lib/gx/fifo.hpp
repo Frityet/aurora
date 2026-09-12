@@ -98,6 +98,11 @@ void publish() noexcept;
 
 using DrawDoneCallback = void (*)();
 DrawDoneCallback set_draw_done_callback(DrawDoneCallback callback) noexcept;
+using DrawSyncCallback = void (*)(uint16_t);
+DrawSyncCallback set_draw_sync_callback(DrawSyncCallback callback) noexcept;
+uint16_t read_draw_sync() noexcept;
+// True only inside a draw-sync callback; reads its point-in-stream EFB.
+bool peek_draw_sync_z(uint16_t x, uint16_t y, uint32_t& z);
 
 // Display list recording
 void begin_display_list(uint8_t* buf, uint32_t size);

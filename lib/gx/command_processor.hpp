@@ -13,6 +13,9 @@ bool checked_array_span_end(uint64_t offset, uint64_t length, uint32_t* end) noe
 struct ProcessResult {
   uint32_t bytesProcessed;
   bool drawDone;
+  bool tokenWrite = false;
+  bool tokenInterrupt = false;
+  uint16_t token = 0;
 };
 
 // Process GX FIFO commands until the next draw done event or end of buffer

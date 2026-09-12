@@ -13,6 +13,7 @@ inline constexpr uint64_t StagingBufferSize = UniformBufferSize + VertexBufferSi
                                               StorageBufferSize + (UseTextureBuffer ? TextureUploadSize : 0);
 
 const wgpu::Buffer& staging_buffer(size_t slot);
+void submit_frame_prefix(FramePacket& frame);
 
 struct RegisteredDrawType {
   DrawCallback draw = nullptr;

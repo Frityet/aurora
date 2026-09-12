@@ -582,6 +582,43 @@ void after_submit() noexcept {
   }
 }
 
+void wait_for_readbacks() noexcept { g_mapFutures.drain(); }
+
+AuroraDepthSnapshotId capture_efb() noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  const auto id = create_snapshot();
+  const auto policy = gx::g_gxState.viewportPolicy;
+  auto size = vi::configured_fb_size();
+  if (policy == AURORA_VIEWPORT_NATIVE) size = {webgpu::g_depthBuffer.size.width, webgpu::g_depthBuffer.size.height};
+  const SnapshotCapture capture{
+      .info = {.id = id, .width = size.x, .height = size.y,
+               .viewportNear = gx::g_gxState.logicalViewport.znear,
+               .viewportFar = gx::g_gxState.logicalViewport.zfar},
+      .viewportPolicy = policy,
+  };
+  if (!set_snapshot_info(id, capture.info)) return id;
+  const auto read = [capture] {
+    if (!g_device || !webgpu::g_depthBuffer.view) {
+      drop_snapshot(capture.info.id);
+      return;
+    }
+    const auto encoder = g_device.CreateCommandEncoder();
+    encode_tagged_snapshot(encoder, webgpu::g_depthBuffer.view, webgpu::g_depthBuffer.size,
+                           webgpu::g_graphicsConfig.msaaSamples, capture);
+    const auto commands = encoder.Finish();
+    g_queue.Submit(1, &commands);
+    after_submit();
+    wait_for_readbacks();
+  };
+  if (render_worker::is_worker_thread()) {
+    read();
+  } else {
+    render_worker::enqueue_work(read);
+    render_worker::synchronize();
+  }
+  return id;
+}
+
 namespace testing {
 void reset() noexcept {
   // The caller must stop map producers first. Callback completion takes g_mutex,

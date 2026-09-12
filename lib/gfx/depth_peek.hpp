@@ -34,6 +34,11 @@ void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureV
 void encode_tagged_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
                             wgpu::Extent3D sourceSize, uint32_t msaaSamples, const SnapshotCapture& capture) noexcept;
 void after_submit() noexcept;
+// Call after the render worker has submitted all encoded readback copies.
+void wait_for_readbacks() noexcept;
+// The caller has completed earlier GX work and pauses command decoding until
+// this returns. Captures the physical EFB even outside frame recording.
+AuroraDepthSnapshotId capture_efb() noexcept;
 
 namespace testing {
 void reset() noexcept;

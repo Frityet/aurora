@@ -438,7 +438,8 @@ bool bind_pipeline(PipelineRef ref, const wgpu::RenderPassEncoder& pass) {
   }
   wgpu::RenderPipeline pipeline;
   if (!get_pipeline(ref, pipeline)) {
-    return false;
+    AURORA_ASSERT(wait_for_pipeline(ref) && get_pipeline(ref, pipeline),
+                  "Draw pipeline {:016x} is neither cached nor pending", ref);
   }
   pass.SetPipeline(pipeline);
   g_currentPipeline = ref;

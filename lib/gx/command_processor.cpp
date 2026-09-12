@@ -292,6 +292,10 @@ ProcessResult process(const u8* data, u32 size) noexcept {
       if (reg_get(value, 8, 24) == GX_BP_REG_DRAWDONE) {
         return {static_cast<u32>(reader.offset()), true};
       }
+      if (reg_get(value, 8, 24) == GX_BP_REG_PETOKEN || reg_get(value, 8, 24) == GX_BP_REG_PETOKENINT) {
+        return {static_cast<u32>(reader.offset()), false, true,
+                reg_get(value, 8, 24) == GX_BP_REG_PETOKENINT, static_cast<u16>(value)};
+      }
       break;
     }
 

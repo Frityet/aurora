@@ -49,6 +49,7 @@ auto fmt::formatter<AuroraLogLevel>::format(AuroraLogLevel level, format_context
 namespace aurora::gfx {
 bool is_frame_active() noexcept { return false; }
 void gpu_synchronize() {}
+void complete_draw() {}
 void request_depth_snapshot(uint64_t id) noexcept { depth_peek::drop_snapshot(id); }
 } // namespace aurora::gfx
 
@@ -281,6 +282,7 @@ detail::SnapshotStore s_snapshots;
 void initialize() {}
 void shutdown() {}
 AuroraDepthSnapshotId create_snapshot() noexcept { return s_snapshots.create(); }
+AuroraDepthSnapshotId capture_efb() noexcept { return AURORA_INVALID_DEPTH_SNAPSHOT_ID; }
 bool set_snapshot_info(AuroraDepthSnapshotId id, const AuroraDepthSnapshotInfo& info) noexcept {
   return s_snapshots.set_info(id, info);
 }

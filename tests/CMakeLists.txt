@@ -8,6 +8,10 @@ add_executable(functional_test functional_test.cpp)
 target_include_directories(functional_test PRIVATE ../include)
 add_test(NAME functional COMMAND functional_test)
 
+add_executable(endian_test endian_test.cpp)
+target_include_directories(endian_test PRIVATE ../include)
+add_test(NAME endian COMMAND endian_test)
+
 add_executable(sysconf_test sysconf_test.cpp ../lib/sysconf.cpp)
 target_include_directories(sysconf_test PRIVATE ../include)
 add_test(NAME sysconf COMMAND sysconf_test)

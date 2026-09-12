@@ -17,6 +17,7 @@ void* MEM1End = nullptr;
 namespace {
 uint64_t s_textureAllocations = 0;
 uint64_t s_paletteConversions = 0;
+std::shared_ptr<aurora::gfx::SubmissionState> s_submission;
 aurora::gfx::TextureHandle s_replacement;
 std::optional<aurora::texture::TextureSourceKey> s_sourceKey;
 aurora::gfx::TextureHandle s_sourceReplacement;
@@ -50,6 +51,7 @@ gfx::TextureHandle make_texture_handle(uint32_t width, uint32_t height, u32 form
 void reset_texture_stubs() {
   s_textureAllocations = 0;
   s_paletteConversions = 0;
+  s_submission.reset();
   s_replacement.reset();
   s_sourceKey.reset();
   s_sourceReplacement.reset();
@@ -59,6 +61,7 @@ void reset_texture_stubs() {
 
 uint64_t texture_allocations() { return s_textureAllocations; }
 uint64_t palette_conversions() { return s_paletteConversions; }
+void set_submission(std::shared_ptr<gfx::SubmissionState> submission) { s_submission = std::move(submission); }
 void set_replacement(gfx::TextureHandle handle, uint64_t id) {
   s_replacement = std::move(handle);
   s_replacementId = id;
@@ -72,6 +75,7 @@ void set_source_replacement(aurora::texture::TextureSourceKey key, gfx::TextureH
 } // namespace aurora::gx
 
 namespace aurora::gfx {
+std::shared_ptr<SubmissionState> current_submission() { return s_submission; }
 uint64_t calc_texture_size(wgpu::TextureFormat format, uint32_t width, uint32_t height, uint32_t mips) noexcept {
   uint64_t total = 0;
   for (uint32_t mip = 0; mip < mips; ++mip) {

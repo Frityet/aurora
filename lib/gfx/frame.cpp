@@ -160,14 +160,20 @@ void process_events() {
   }
 }
 
-void wait_for_submitted_work() {
+webgpu::MapFutureTracker g_completionFutures;
+
+void wait_for_submitted_work(CommandEpoch epoch = {}) {
   if (!g_queue) return;
   auto future = g_queue.OnSubmittedWorkDone(
       wgpu::CallbackMode::WaitAnyOnly, [](wgpu::QueueWorkDoneStatus status, wgpu::StringView message) {
         AURORA_ASSERT(status == wgpu::QueueWorkDoneStatus::Success, "GX GPU completion failed: {}", message);
       });
-  webgpu::complete_future(future, true);
-  depth_peek::wait_for_readbacks();
+  while (epoch.current() && !webgpu::complete_future(future, false)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+  if (future.id != 0) g_completionFutures.add(future);
+  g_completionFutures.retire_ready();
+  if (epoch.current()) depth_peek::wait_for_readbacks(epoch);
 }
 
 void enqueue_process_events() {
@@ -547,6 +553,7 @@ void shutdown() {
   // The worker has stopped publishing maps. Complete callbacks while buffers,
   // slot pools and the WebGPU instance are all still alive.
   g_stagingMapFutures.drain();
+  g_completionFutures.drain();
   g_processEventsQueued.store(false, std::memory_order_release);
   g_lastPresentNs.store(0, std::memory_order_release);
   g_presentPeriodNs.store(0, std::memory_order_release);
@@ -595,10 +602,11 @@ void shutdown() {
   }
 }
 
-bool wait_for_staging_buffer(size_t slot) {
+bool wait_for_staging_buffer(size_t slot, CommandEpoch epoch) {
   ZoneScopedN("Wait for buffer map");
   map_staging_buffer(slot);
   while (true) {
+    if (!epoch.current()) return false;
     const auto mappingState = g_mappingStates[slot].load(std::memory_order_acquire);
     if (mappingState == BufferMapState::Mapped) {
       return true;
@@ -624,11 +632,12 @@ size_t acquire_frame_slot() {
   }
 }
 
-std::optional<size_t> acquire_mapped_staging_buffer() {
+std::optional<size_t> acquire_mapped_staging_buffer(CommandEpoch epoch = {}) {
   ZoneScopedN("Acquire mapped staging buffer");
   while (true) {
+    if (!epoch.current()) return std::nullopt;
     if (auto slot = g_stagingSlots.try_acquire()) {
-      if (wait_for_staging_buffer(*slot)) {
+      if (wait_for_staging_buffer(*slot, epoch)) {
         return *slot;
       }
       g_stagingSlots.release(*slot);
@@ -651,6 +660,7 @@ bool begin_frame() {
 
   auto& frame = g_framePackets[frameSlot];
   frame = {};
+  frame.submission = std::make_shared<SubmissionState>();
   frame.frameId = g_nextFrameId++;
   frame.frameIndex = g_frameIndex;
   frame.stagingBuffer = *stagingSlot;
@@ -673,7 +683,8 @@ bool begin_frame() {
 
   begin_recording(frame, frameSlot);
   begin_pipeline_frame();
-  render_worker::enqueue_begin_frame(frame.frameId, [frameSlot] {
+  render_worker::enqueue_begin_frame(frame.frameId, [frameSlot, epoch = frame.epoch] {
+    if (!epoch.current()) return;
     constexpr wgpu::CommandEncoderDescriptor EncoderDescriptor{.label = "Redraw encoder"};
     g_framePackets[frameSlot].encoder = g_device.CreateCommandEncoder(&EncoderDescriptor);
     webgpu::gpu_prof::frame_begin(g_framePackets[frameSlot].encoder);
@@ -686,8 +697,14 @@ void detail::submit_frame_prefix(FramePacket& frame) {
   const aurora::allocation::HostAllocationScope hostAllocations;
   // The FIFO producer is paused here. Finish encoding before replacing any
   // mapped ranges the render worker may still reference.
+  const auto epoch = frame.epoch;
   render_worker::synchronize();
-  const auto nextSlot = acquire_mapped_staging_buffer();
+  if (!epoch.current()) return;
+  const auto nextSlot = acquire_mapped_staging_buffer(epoch);
+  if (!epoch.current()) {
+    if (nextSlot) g_stagingSlots.release(*nextSlot);
+    return;
+  }
   AURORA_ASSERT(nextSlot, "Cannot acquire upload storage for GX synchronization");
   const size_t previousSlot = frame.stagingBuffer;
   const auto& nextBuffer = g_stagingBuffers[*nextSlot];
@@ -704,23 +721,76 @@ void detail::submit_frame_prefix(FramePacket& frame) {
   transfer(frame.storage, StorageBufferSize);
   if constexpr (UseTextureBuffer) transfer(frame.textureUpload, TextureUploadSize);
 
-  render_worker::enqueue_work([&frame, previousSlot] {
+  frame.stagingBuffer = *nextSlot;
+  const auto submission = frame.submission;
+  render_worker::enqueue_work([&frame, previousSlot, epoch, submission] {
+    if (!epoch.current()) {
+      frame.encoder = {};
+      frame.afterSubmitCallbacks.clear();
+      submission->retire();
+      depth_peek::abandon_unsubmitted();
+      g_stagingSlots.release(previousSlot);
+      return;
+    }
     g_stagingBuffers[previousSlot].Unmap();
     g_mappingStates[previousSlot].store(BufferMapState::Unmapped, std::memory_order_release);
     const auto commands = frame.encoder.Finish();
+    if (!submission->commit()) {
+      frame.encoder = {};
+      frame.afterSubmitCallbacks.clear();
+      submission->retire();
+      depth_peek::abandon_unsubmitted();
+      map_staging_buffer(previousSlot, true);
+      return;
+    }
     g_queue.Submit(1, &commands);
     auto callbacks = std::exchange(frame.afterSubmitCallbacks, {});
     for (auto& callback : callbacks) {
       if (callback) callback();
     }
     after_submit();
-    wait_for_submitted_work();
-    constexpr wgpu::CommandEncoderDescriptor descriptor{.label = "GX continuation encoder"};
-    frame.encoder = g_device.CreateCommandEncoder(&descriptor);
+    wait_for_submitted_work(epoch);
+    if (epoch.current()) {
+      constexpr wgpu::CommandEncoderDescriptor descriptor{.label = "GX continuation encoder"};
+      frame.encoder = g_device.CreateCommandEncoder(&descriptor);
+      frame.submission = std::make_shared<SubmissionState>();
+    }
     map_staging_buffer(previousSlot, true);
   });
   render_worker::synchronize();
-  frame.stagingBuffer = *nextSlot;
+}
+
+void detail::abandon_frame_packet(FramePacket& frame) {
+  render_worker::enqueue_work([&frame] {
+    frame.encoder = {};
+    frame.afterSubmitCallbacks.clear();
+    if (frame.submission) frame.submission->retire();
+    depth_peek::abandon_unsubmitted();
+  });
+  render_worker::synchronize();
+  for (const auto& pass : frame.renderPasses) {
+    if (pass.taggedDepthSnapshot && (!pass.submission || !pass.submission->is_submitted())) {
+      depth_peek::drop_snapshot(pass.taggedDepthSnapshot->info.id);
+    }
+  }
+  frame.renderPasses.clear();
+  frame.textureCopies.clear();
+  frame.encoderTasks.clear();
+  frame.ops.clear();
+  frame.textureUploads.clear();
+  frame.verts.clear();
+  frame.uniforms.clear();
+  frame.indices.clear();
+  frame.storage.clear();
+  frame.textureUpload.clear();
+  frame.copied = {};
+  frame.epoch = {};
+  frame.submission = std::make_shared<SubmissionState>();
+  render_worker::enqueue_begin_frame(frame.frameId, [packet = &frame, epoch = frame.epoch] {
+    if (!epoch.current()) return;
+    constexpr wgpu::CommandEncoderDescriptor descriptor{.label = "GX reset encoder"};
+    packet->encoder = g_device.CreateCommandEncoder(&descriptor);
+  });
 }
 
 void end_frame(const EndFrameCallback& callback) {
@@ -744,9 +814,18 @@ void end_frame(const EndFrameCallback& callback) {
     auto& packet = g_framePackets[frameSlot];
     g_stagingBuffers[stagingSlot].Unmap();
     g_mappingStates[stagingSlot].store(BufferMapState::Unmapped, std::memory_order_release);
+    const auto epoch = packet.epoch;
+    const auto submission = packet.submission;
     auto encoder = std::move(packet.encoder);
     const auto stats = packet.stats;
     auto afterSubmitCallbacks = std::move(packet.afterSubmitCallbacks);
+    if (!epoch.current()) {
+      for (const auto& pass : packet.renderPasses) {
+        if (pass.taggedDepthSnapshot && (!pass.submission || !pass.submission->is_submitted())) {
+          depth_peek::drop_snapshot(pass.taggedDepthSnapshot->info.id);
+        }
+      }
+    }
     packet = {};
     g_resources.stats.drawCallCount = stats.drawCallCount;
     g_resources.stats.mergedDrawCallCount = stats.mergedDrawCallCount;
@@ -755,11 +834,14 @@ void end_frame(const EndFrameCallback& callback) {
     g_resources.stats.lastIndexSize = stats.lastIndexSize;
     g_resources.stats.lastStorageSize = stats.lastStorageSize;
     g_resources.stats.lastTextureUploadSize = stats.lastTextureUploadSize;
-    if (callback) {
-      {
-        const aurora::allocation::ClientAllocationScope clientAllocations;
-        callback(encoder, std::move(afterSubmitCallbacks));
-      }
+    bool submitted = false;
+    if (callback && epoch.current()) {
+      const aurora::allocation::ClientAllocationScope clientAllocations;
+      submitted = callback(encoder, std::move(afterSubmitCallbacks), submission);
+    }
+    if (!submitted) {
+      if (submission) submission->retire();
+      depth_peek::abandon_unsubmitted();
     }
     g_frameSlots.release(frameSlot);
     expire_cached_bind_groups();
@@ -777,7 +859,8 @@ void gpu_synchronize() {
   if (render_worker::is_worker_thread()) {
     wait_for_submitted_work();
   } else {
-    render_worker::enqueue_work(wait_for_submitted_work);
+    const CommandEpoch epoch;
+    render_worker::enqueue_work([epoch] { wait_for_submitted_work(epoch); });
     render_worker::synchronize();
   }
 }

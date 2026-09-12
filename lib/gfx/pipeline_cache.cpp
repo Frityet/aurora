@@ -1184,7 +1184,7 @@ bool get_pipeline(PipelineRef ref, wgpu::RenderPipeline& pipeline) {
   return true;
 }
 
-bool wait_for_pipeline(PipelineRef ref) {
+bool wait_for_pipeline(PipelineRef ref, CommandEpoch epoch) {
   std::optional<PendingPipeline> pending;
   {
     std::unique_lock lock{g_pipelineMutex};
@@ -1198,9 +1198,9 @@ bool wait_for_pipeline(PipelineRef ref) {
     if (g_hasPipelineThread) {
       touch_pending_pipeline(ref, PipelinePriority::Blocking);
       g_pipelineQueueCv.notify_one();
-      g_pipelineReadyCv.wait(lock, [ref] {
-        return g_pipelines.contains(ref) || !g_pendingPipelines.contains(ref) || g_pipelineThreadEnd;
-      });
+      while (epoch.current() && !g_pipelines.contains(ref) && g_pendingPipelines.contains(ref) && !g_pipelineThreadEnd) {
+        g_pipelineReadyCv.wait_for(lock, std::chrono::milliseconds{1});
+      }
       return g_pipelines.contains(ref);
     }
 

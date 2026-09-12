@@ -513,7 +513,9 @@ void enqueue_op(FramePacket& frame, uint32_t opIndex) {
     return;
   }
   auto op = frame.ops[opIndex];
-  render_worker::enqueue_encode_pass(frame.frameId, opIndex, [packet = &frame, op = std::move(op)] {
+  if (op.renderPass) op.renderPass->submission = frame.submission;
+  render_worker::enqueue_encode_pass(frame.frameId, opIndex, [packet = &frame, epoch = frame.epoch, op = std::move(op)] {
+    if (!epoch.current()) return;
     if (op.renderPass == nullptr && op.textureCopy == nullptr && op.encoderTask == nullptr) {
       return;
     }
@@ -1062,6 +1064,38 @@ bool resolve_pass(const ResolveDesc& desc, ResolvedTargets& out) {
   enqueue_pass(current_frame_packet(), g_recorder.currentRenderPass);
   resume_pass_loading(prevPass);
   return true;
+}
+
+std::shared_ptr<SubmissionState> current_submission() {
+  return g_recorder.active() ? current_frame_packet().submission : nullptr;
+}
+
+void abandon_recording() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  if (g_recorder.active()) {
+    auto& frame = current_frame_packet();
+    std::optional<RenderPass> continuation;
+    if (g_recorder.currentRenderPass != UINT32_MAX) {
+      resume_pass_loading(current_render_passes()[g_recorder.currentRenderPass]);
+      continuation = std::move(current_render_passes().back());
+    }
+    abandon_frame_packet(frame);
+    g_recorder.drawCallCount = 0;
+    g_recorder.mergedDrawCallCount = 0;
+    g_recorder.currentRenderPass = UINT32_MAX;
+    if (continuation) {
+      frame.renderPasses.emplace_back(std::move(*continuation));
+      g_recorder.currentRenderPass = 0;
+    }
+  } else {
+    // Previously ended packets may still be queued on the renderer. Their
+    // epoch checks retire them before the decoder resumes new commands.
+    render_worker::enqueue_work([] { depth_peek::abandon_unsubmitted(); });
+    render_worker::synchronize();
+  }
+  gx::abandon_copy_textures();
+  for (auto& array : gx::g_gxState.arrays) array.cachedRange = {};
+  gx::g_gxState.dirty |= gx::DirtyImmediates | gx::DirtyUniform;
 }
 
 void complete_draw() {

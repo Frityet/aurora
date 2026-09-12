@@ -35,6 +35,7 @@ using webgpu::g_queue;
 namespace {
 constexpr Module Log{"aurora::gfx"};
 PipelineRef g_currentPipeline;
+thread_local std::optional<CommandEpoch> g_encodingEpoch;
 
 void apply_viewport(const wgpu::RenderPassEncoder& pass, const Viewport& vp) {
   // GX scale/offset lives in the vertex uniform, outside WebGPU's bounded viewport range.
@@ -131,6 +132,7 @@ void render_pass(const wgpu::RenderPassEncoder& pass, FramePacket& frame, Render
   pass.SetBindGroup(2, gx::g_emptyTextureBindGroup);
 
   for (auto& cmd : passInfo.commands) {
+    if (!frame.epoch.current()) break;
 #ifdef AURORA_GFX_DEBUG_GROUPS
     {
       size_t firstDiff = lastDebugGroupStack.size();
@@ -213,7 +215,8 @@ void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& passInfo,
   // GX copies observe every earlier draw, including a source with a cold pipeline.
   if (passInfo.has_consumer()) {
     for (const auto& command : passInfo.commands) {
-      if (command.type == CommandType::Draw && !wait_for_pipeline(command.data.draw.pipeline)) {
+      if (command.type == CommandType::Draw && !wait_for_pipeline(command.data.draw.pipeline, frame.epoch)) {
+        if (!frame.epoch.current()) return;
         Log.fatal("GX copy source pipeline {:016x} was neither cached nor pending", command.data.draw.pipeline);
       }
     }
@@ -410,6 +413,12 @@ void copy_staging_to_high_water(wgpu::CommandEncoder& cmd, FramePacket& frame, c
 
 namespace detail {
 void encode_op(wgpu::CommandEncoder& cmd, FramePacket& frame, const FrameOp& op) {
+  struct EncodingScope {
+    std::optional<CommandEpoch> previous;
+    explicit EncodingScope(CommandEpoch epoch) : previous(std::exchange(g_encodingEpoch, epoch)) {}
+    ~EncodingScope() { g_encodingEpoch = previous; }
+  } scope{frame.epoch};
+  if (!frame.epoch.current()) return;
   copy_staging_to_high_water(cmd, frame, op);
   switch (op.type) {
   case FrameOpType::RenderPass:
@@ -438,7 +447,10 @@ bool bind_pipeline(PipelineRef ref, const wgpu::RenderPassEncoder& pass) {
   }
   wgpu::RenderPipeline pipeline;
   if (!get_pipeline(ref, pipeline)) {
-    AURORA_ASSERT(wait_for_pipeline(ref) && get_pipeline(ref, pipeline),
+    const auto epoch = g_encodingEpoch.value_or(CommandEpoch{});
+    const bool available = wait_for_pipeline(ref, epoch) && get_pipeline(ref, pipeline);
+    if (!epoch.current()) return false;
+    AURORA_ASSERT(available,
                   "Draw pipeline {:016x} is neither cached nor pending", ref);
   }
   pass.SetPipeline(pipeline);

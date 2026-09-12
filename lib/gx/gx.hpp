@@ -314,8 +314,23 @@ struct GXState {
   struct CopyTextureRef {
     gfx::TextureHandle handle;
     u32 revision = 0;
+    std::shared_ptr<gfx::SubmissionState> submission;
+    std::shared_ptr<const CopyTextureRef> previous;
 
-    operator bool() const noexcept { return handle.operator bool(); }
+    const CopyTextureRef* live() const noexcept {
+      const auto* value = this;
+      while (value && value->submission && value->submission->abandoned()) value = value->previous.get();
+      return value && value->handle ? value : nullptr;
+    }
+    std::shared_ptr<const CopyTextureRef> retain_previous(const std::shared_ptr<gfx::SubmissionState>& next) const {
+      const auto* prior = live();
+      if (!prior || prior->revision == 0) return {};
+      if (prior->submission == next) return prior->previous;
+      auto retained = std::make_shared<CopyTextureRef>(*prior);
+      if (!retained->submission || retained->submission->is_submitted()) retained->previous.reset();
+      return retained;
+    }
+    operator bool() const noexcept { return live() != nullptr; }
   };
   struct CopyTextureKey {
     const void* dest = nullptr;
@@ -477,6 +492,7 @@ bool has_copy_texture(const void* dest) noexcept;
 void evict_copy_texture(const void* dest) noexcept;
 void evict_texture_object(u32 texObjId) noexcept;
 void evict_tlut_object(u32 tlutObjId) noexcept;
+void abandon_copy_textures();
 const GXState::CopyTextureRef* latest_display_copy() noexcept;
 const GXState::CopyTextureRef* display_copy_for_frame_buffer(const void*) noexcept;
 struct DisplayCopySelection {

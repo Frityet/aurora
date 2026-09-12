@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../internal.hpp"
+#include "../gfx/command_epoch.hpp"
 
 #include <cstdint>
 
@@ -19,7 +20,7 @@ struct ProcessResult {
 };
 
 // Process GX FIFO commands until the next draw done event or end of buffer
-ProcessResult process(const uint8_t* data, uint32_t size) noexcept;
+ProcessResult process(const uint8_t* data, uint32_t size, gfx::CommandEpoch epoch = {}) noexcept;
 void clear_draw_cache() noexcept;
 
 } // namespace aurora::gx::fifo

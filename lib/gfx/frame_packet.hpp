@@ -5,6 +5,7 @@
 #include "types.hpp"
 #include "tex_palette_conv.hpp"
 #include "texture.hpp"
+#include "command_epoch.hpp"
 
 #include <array>
 #include <cstddef>
@@ -65,6 +66,7 @@ struct Command {
 using CommandList = std::vector<Command>;
 
 struct RenderPass {
+  std::shared_ptr<SubmissionState> submission;
   struct ColorAttachment {
     ColorAttachmentSemantic semantic = ColorAttachmentSemantic::Auxiliary;
     wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
@@ -190,6 +192,8 @@ struct FrameOp {
 using RenderPassList = std::deque<RenderPass>;
 
 struct FramePacket {
+  CommandEpoch epoch;
+  std::shared_ptr<SubmissionState> submission;
   RenderPassList renderPasses;
   std::deque<TextureCopy> textureCopies;
   std::deque<EncoderTask> encoderTasks;

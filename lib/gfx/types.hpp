@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hash.hpp"
+#include "command_epoch.hpp"
 #include "../internal.hpp"
 #include "../webgpu/gpu.hpp"
 
@@ -46,5 +47,5 @@ using webgpu::Viewport;
 struct TextureRef;
 using TextureHandle = std::shared_ptr<TextureRef>;
 using AfterSubmitCallback = std::function<void()>;
-using EndFrameCallback = std::function<void(wgpu::CommandEncoder&, std::vector<AfterSubmitCallback>)>;
+using EndFrameCallback = std::function<bool(wgpu::CommandEncoder&, std::vector<AfterSubmitCallback>, const std::shared_ptr<SubmissionState>&)>;
 } // namespace aurora::gfx

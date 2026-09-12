@@ -6,6 +6,7 @@
 #include "gx/gx.hpp"
 #include "gfx/texture.hpp"
 #include "gfx/frame.hpp"
+#include "gx/fifo.hpp"
 #include "webgpu/gpu.hpp"
 #include <array>
 #include <atomic>
@@ -206,6 +207,35 @@ void prove_scanout() {
   VIWaitForRetrace();
   empty_frame();
   expect_color(green);
+
+  // Replace a submitted XFB in an unsubmitted encoder, then abandon it. A
+  // retained native texture alone cannot establish the correct pixel owner.
+  require(aurora_begin_frame(), "abort proof frame must begin");
+  copy(b.data(), blue);
+  const auto pending = aurora::gx::display_copy_for_frame_buffer(b.data())->submission;
+  require(pending && !pending->is_submitted(), "replacement must still be pending");
+  const auto snapshot = GXAuroraRequestDepthSnapshot();
+  aurora::gx::fifo::drain();
+  GXAbortFrame();
+  GXDrawDone();
+  require(pending->abandoned(), "aborted replacement must lose submission ownership");
+  AuroraDepthSnapshotInfo snapshotInfo{};
+  require(GXAuroraGetDepthSnapshotInfo(snapshot, &snapshotInfo) == AURORA_DEPTH_SNAPSHOT_DROPPED,
+          "aborted depth request must not report completion");
+  GXAuroraReleaseDepthSnapshot(snapshot);
+  expect_color(green);
+
+  // The preceding submitted prefix survives another abort of its replacement.
+  copy(b.data(), blue);
+  GXDrawDone();
+  const auto submitted = aurora::gx::display_copy_for_frame_buffer(b.data())->submission;
+  require(submitted && submitted->is_submitted(), "draw-done must commit the original prefix");
+  copy(b.data(), red);
+  GXAbortFrame();
+  GXDrawDone();
+  require(submitted->is_submitted() && !submitted->abandoned(), "abort must preserve submitted ownership");
+  expect_color(blue);
+  aurora_end_frame();
 
   VISetBlack(TRUE);
   VIFlush();

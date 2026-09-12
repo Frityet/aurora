@@ -1,3 +1,4 @@
+#include <thread>
 #include <aurora/allocation.hpp>
 
 #include "depth_peek.hpp"
@@ -582,7 +583,23 @@ void after_submit() noexcept {
   }
 }
 
-void wait_for_readbacks() noexcept { g_mapFutures.drain(); }
+void abandon_unsubmitted() noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  std::lock_guard lock{g_mutex};
+  for (auto& slot : g_slots) {
+    if (slot.state != SlotState::CopySubmitted) continue;
+    if (slot.snapshotId != AURORA_INVALID_DEPTH_SNAPSHOT_ID) g_snapshots.drop(slot.snapshotId);
+    slot.snapshotId = AURORA_INVALID_DEPTH_SNAPSHOT_ID;
+    slot.legacySequence = 0;
+    slot.state = SlotState::Available;
+  }
+}
+
+void wait_for_readbacks(CommandEpoch epoch) noexcept {
+  while (epoch.current() && !g_mapFutures.retire_ready()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+}
 
 AuroraDepthSnapshotId capture_efb() noexcept {
   const aurora::allocation::HostAllocationScope hostAllocations;

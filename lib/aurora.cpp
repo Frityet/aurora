@@ -326,7 +326,9 @@ void end_frame() noexcept {
 
   gfx::end_frame([presentSource = std::move(presentSource), rmlBindGroup = std::move(rmlBindGroup), rmlOverlay, viewport, drawVideo,
                   imguiDrawData = std::move(imguiDrawData)](
-                     wgpu::CommandEncoder& encoder, std::vector<gfx::AfterSubmitCallback> afterSubmitCallbacks) {
+                     wgpu::CommandEncoder& encoder, std::vector<gfx::AfterSubmitCallback> afterSubmitCallbacks,
+                     const std::shared_ptr<gfx::SubmissionState>& submission) {
+    if (!submission->epoch.current()) return false;
     wgpu::Texture currentTexture;
     wgpu::TextureView currentView;
     auto surfaceStatus = wgpu::SurfaceGetCurrentTextureStatus::Error;
@@ -410,6 +412,7 @@ void end_frame() noexcept {
     const auto buffer = encoder.Finish(&cmdBufDescriptor);
     {
       ZoneScopedN("Queue Submit");
+      if (!submission->commit()) return false;
       g_queue.Submit(1, &buffer);
     }
     webgpu::gpu_prof::after_submit();
@@ -478,6 +481,7 @@ void end_frame() noexcept {
     TracyPlot("aurora: lastIndexSize", static_cast<int64_t>(stats.lastIndexSize));
     TracyPlot("aurora: lastStorageSize", static_cast<int64_t>(stats.lastStorageSize));
     TracyPlot("aurora: lastTextureUploadSize", static_cast<int64_t>(stats.lastTextureUploadSize));
+    return true;
   });
 
 #endif

@@ -285,6 +285,14 @@ void GXSetMisc(GXMiscToken token, u32 val) {
   }
 }
 
+void GXAbortFrame() {
+  // The native queue cannot revoke submitted GPU commands. Pending FIFO and
+  // encoder work is abandoned asynchronously; the next command waits for its
+  // retirement. This entry point is valid in the original alarm interrupt.
+  aurora::gx::fifo::abort_frame();
+  __gx->dirtyState = 0;
+}
+
 void GXDrawDone() {
   GXFlush();
   GX_WRITE_RAS_REG(kDrawDoneCommand);

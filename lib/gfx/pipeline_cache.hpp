@@ -35,6 +35,6 @@ template <typename Config>
 PipelineRef find_pipeline(ShaderType type, const Config& config, NewPipelineCallback&& cb);
 
 bool get_pipeline(PipelineRef ref, wgpu::RenderPipeline& pipeline);
-bool wait_for_pipeline(PipelineRef ref);
+bool wait_for_pipeline(PipelineRef ref, CommandEpoch epoch = {});
 
 } // namespace aurora::gfx

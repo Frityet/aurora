@@ -98,12 +98,12 @@ const GXState::CopyTextureRef* latest_display_copy() noexcept {
   if (it == g_gxState.copyTextureCache.end() || !it->second.handle) {
     return nullptr;
   }
-  return &it->second;
+  return it->second.live();
 }
 
 const GXState::CopyTextureRef* display_copy_for_frame_buffer(const void* frameBuffer) noexcept {
   const auto it = g_gxState.displayCopies.find(frameBuffer);
-  return it != g_gxState.displayCopies.end() && it->second.handle ? &it->second : nullptr;
+  return it != g_gxState.displayCopies.end() ? it->second.live() : nullptr;
 }
 
 DisplayCopySelection select_display_copy(bool viInitialized, bool black, const void* frameBuffer) noexcept {
@@ -113,6 +113,25 @@ DisplayCopySelection select_display_copy(bool viInitialized, bool black, const v
   const auto* copy = viInitialized ? display_copy_for_frame_buffer(frameBuffer) : latest_display_copy();
   return {.drawVideo = true, .supported = !viInitialized || copy != nullptr,
           .copy = copy != nullptr ? *copy : GXState::CopyTextureRef{}};
+}
+
+void abandon_copy_textures() {
+  const auto retire = [](auto& map) {
+    for (auto it = map.begin(); it != map.end();) {
+      const auto* live = it->second.live();
+      if (!live) { map.erase(it++); continue; }
+      auto retained = *live;
+      // A submitted version supersedes its history. Pending versions retain
+      // the prior contents until a later submission commits or is abandoned.
+      if (retained.submission && retained.submission->is_submitted()) retained.previous.reset();
+      it->second = std::move(retained);
+      ++it;
+    }
+  };
+  retire(g_gxState.copyTextures);
+  retire(g_gxState.displayCopies);
+  retire(g_gxState.copyTextureCache);
+  texture::invalidate_bindings();
 }
 
 void clear_frame_display_copy() noexcept {
@@ -306,8 +325,16 @@ void copy_tex(const void* dest, GXBool clear) noexcept {
   const auto clearDepth = clear && g_gxState.depthUpdate;
   gfx::resolve_pass_into(handle.handle, rect, clearColor, clearAlpha, clearDepth, g_gxState.clearColor,
                          clear_depth_value(), texCopyFmt, current_copy_filter());
+  const auto submission = gfx::current_submission();
+  const auto previous = g_gxState.copyTextures.find(dest);
+  auto previousDestination = previous != g_gxState.copyTextures.end()
+      ? previous->second.retain_previous(submission) : nullptr;
+  handle.previous = handle.retain_previous(submission);
+  handle.submission = submission;
   ++handle.revision;
-  g_gxState.copyTextures[dest] = handle;
+  auto destination = handle;
+  destination.previous = std::move(previousDestination);
+  g_gxState.copyTextures[dest] = std::move(destination);
   texture::invalidate_bindings();
 }
 } // namespace aurora::gx
@@ -518,8 +545,16 @@ void GXCopyDisp(void* dest, GXBool clear) {
   const auto clearDepth = clear && g_gxState.depthUpdate;
   aurora::gfx::resolve_pass_into(handle.handle, rect, clearColor, clearAlpha, clearDepth, g_gxState.clearColor,
                                  aurora::gx::clear_depth_value(), GX_TF_RGBA8, current_copy_filter());
+  const auto submission = aurora::gfx::current_submission();
+  const auto previous = g_gxState.displayCopies.find(dest);
+  auto previousDestination = previous != g_gxState.displayCopies.end()
+      ? previous->second.retain_previous(submission) : nullptr;
+  handle.previous = handle.retain_previous(submission);
+  handle.submission = submission;
   ++handle.revision;
-  g_gxState.displayCopies[dest] = handle;
+  auto destination = handle;
+  destination.previous = std::move(previousDestination);
+  g_gxState.displayCopies[dest] = std::move(destination);
   g_gxState.frameDisplayCopyKey = key;
   g_gxState.frameDisplayCopyValid = true;
 }

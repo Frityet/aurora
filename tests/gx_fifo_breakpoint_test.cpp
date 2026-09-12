@@ -453,4 +453,97 @@ TEST_F(GXFifoBreakpointTest, AllCallbacksEnterWithInterruptsDisabledAndRestoreWo
   EXPECT_FALSE(sCallbackSawEnabledInterrupts.load());
   EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
 }
+
+TEST_F(GXFifoBreakpointTest, AlarmAbortDiscardsStoppedCommandsAndPreservesRingAddresses) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  GXSetBreakPtCallback(breakpoint_callback);
+  GXSetDrawSyncCallback(interrupt_token_callback);
+  GXSetDrawDoneCallback(interrupt_callback);
+  write_bp(0x40000011);
+  GXEnableBreakPt(write_pointer());
+  write_bp(0x40000017);
+  write_bp(0x48000007);
+  write_bp(0x45000002);
+  fifo::begin_frame();
+  fifo::publish();
+  ASSERT_TRUE(wait_until([] { return fifo::cursor_snapshot().breakpoint; }));
+  const auto before = fifo::cursor_snapshot();
+  void* savedWrite = write_pointer();
+  {
+    // The real watchdog is a scheduler-disabled alarm callback. None of these
+    // control operations may yield the guest or wait for pending callbacks.
+    const aurora::os::GuestInterruptExecutionScope interrupt;
+    GXBool over, under, readIdle, commandIdle, breakpoint;
+    GXGetGPStatus(&over, &under, &readIdle, &commandIdle, &breakpoint);
+    EXPECT_TRUE(breakpoint);
+    GXDisableBreakPt();
+    GXAbortFrame();
+  }
+  write_bp(0x40000015);
+  write_bp(0x48000009);
+  write_bp(0x45000002);
+  fifo::drain();
+  const auto after = fifo::cursor_snapshot();
+  EXPECT_EQ(after.generation, before.generation);
+  EXPECT_EQ(after.addressBase, before.addressBase);
+  EXPECT_GE(after.consumed, before.written);
+  EXPECT_EQ(after.written, after.completed);
+  EXPECT_EQ(write_pointer(), static_cast<u8*>(savedWrite) + 15);
+  EXPECT_EQ(sBreakCount.load(), 0u);
+  EXPECT_EQ(sInterruptCallbacks.load(), 2u);
+  EXPECT_EQ(GXReadDrawSync(), 9u);
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000015u);
+}
+
+TEST_F(GXFifoBreakpointTest, AbortRevokesDrawCallbacksWaitingForGuestCpu) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  GXSetDrawDoneCallback(interrupt_callback);
+  write_bp(0x45000002);
+  fifo::begin_frame();
+  fifo::publish();
+  ASSERT_TRUE(wait_until([] { return fifo::cursor_snapshot().consumed == 5; }));
+  EXPECT_EQ(sInterruptCallbacks.load(), 0u);
+  GXAbortFrame();
+  write_bp(0x48000006);
+  GXAbortFrame();
+  write_bp(0x45000002);
+  fifo::drain();
+  EXPECT_EQ(sInterruptCallbacks.load(), 1u);
+  EXPECT_EQ(fifo::cursor_snapshot().written, fifo::cursor_snapshot().completed);
+}
+
+TEST(GXSubmissionOwnership, AbortWinsBeforeCommitAndCommittedSubmissionSurvivesAbort) {
+  using namespace aurora::gfx;
+  auto pending = std::make_shared<SubmissionState>();
+  std::promise<void> checked;
+  std::promise<void> release;
+  auto proceed = release.get_future();
+  auto submit = std::async(std::launch::async, [&] {
+    // Pause the submitting caller after its initial epoch check. The decision
+    // itself must still compete atomically with abort at the native boundary.
+    EXPECT_TRUE(pending->epoch.current());
+    checked.set_value();
+    proceed.wait();
+    return pending->commit();
+  });
+  checked.get_future().wait();
+  abandon_command_epoch();
+  EXPECT_TRUE(pending->abandoned());
+  release.set_value();
+  EXPECT_FALSE(submit.get());
+  pending->retire();
+
+  auto committed = std::make_shared<SubmissionState>();
+  ASSERT_TRUE(committed->commit());
+  // This is the interval between the submission decision and the native
+  // queue call. Abort must never transiently classify that owner as discarded.
+  abandon_command_epoch();
+  EXPECT_TRUE(committed->is_submitted());
+  EXPECT_FALSE(committed->abandoned());
+  for (unsigned i = 0; i != 64; ++i) {
+    auto next = std::make_shared<SubmissionState>();
+    ASSERT_TRUE(next->commit());
+  }
+  EXPECT_TRUE(committed->is_submitted());
+}
 } // namespace

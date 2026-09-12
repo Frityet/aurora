@@ -239,14 +239,19 @@ GXBreakPtCallback GXSetBreakPtCallback(GXBreakPtCallback callback) {
 }
 
 void GXEnableBreakPt(void* breakPt) {
-  std::lock_guard lock{sFifoMutex};
-  const auto cursor = aurora::gx::fifo::cursor_snapshot();
-  AURORA_ASSERT(ready(sGPFifo, cursor), "GXEnableBreakPt requires an attached GP FIFO");
-  const auto& record = sGPFifo.record;
+  FifoBinding binding;
+  CursorSnapshot cursor;
+  {
+    std::lock_guard lock{sFifoMutex};
+    cursor = aurora::gx::fifo::cursor_snapshot();
+    AURORA_ASSERT(ready(sGPFifo, cursor), "GXEnableBreakPt requires an attached GP FIFO");
+    binding = sGPFifo;
+  }
+  const auto& record = binding.record;
   const auto address = reinterpret_cast<uintptr_t>(breakPt);
   AURORA_ASSERT(address >= record.base && address - record.base < record.size,
                 "GXEnableBreakPt requires an address within the attached GP FIFO");
-  aurora::gx::fifo::enable_breakpoint(cursor.generation, sGPFifo.consumedOrigin,
+  aurora::gx::fifo::enable_breakpoint(cursor.generation, binding.consumedOrigin,
                                      static_cast<u32>(record.read - record.base), record.size,
                                      static_cast<u32>(address - record.base));
 }

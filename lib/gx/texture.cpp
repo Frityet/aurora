@@ -42,6 +42,7 @@ struct DynamicPaletteKey {
 
 struct DynamicPaletteEntry {
   gfx::TextureHandle handle;
+  std::shared_ptr<gfx::SubmissionState> submission;
   u32 sourceRevision = 0;
   u32 tlutDataVersion = 0;
   uint64_t lastUsedFrame = 0;
@@ -432,7 +433,8 @@ gfx::TextureHandle resolve_dynamic_palette_texture(const GXTexObj_& obj, const G
     entry.handle = gfx::new_conv_texture(source.handle->size.width, source.handle->size.height, GX_TF_RGBA8,
                                          "GX Dynamic Palette Texture");
   }
-  if (entry.sourceRevision != source.revision || entry.tlutDataVersion != tlut.tlutDataVersion) {
+  if (entry.sourceRevision != source.revision || entry.tlutDataVersion != tlut.tlutDataVersion ||
+      (entry.submission && entry.submission->abandoned())) {
     gfx::queue_palette_conv({
         .variant = obj.format() == GX_TF_C4 ? gfx::tex_palette_conv::Variant::FromFloat4
                                             : gfx::tex_palette_conv::Variant::FromFloat8,
@@ -442,6 +444,7 @@ gfx::TextureHandle resolve_dynamic_palette_texture(const GXTexObj_& obj, const G
     });
     entry.sourceRevision = source.revision;
     entry.tlutDataVersion = tlut.tlutDataVersion;
+    entry.submission = gfx::current_submission();
   }
   return entry.handle;
 }

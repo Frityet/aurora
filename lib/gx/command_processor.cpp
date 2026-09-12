@@ -1,3 +1,4 @@
+#include "../gfx/command_epoch.hpp"
 #include <aurora/allocation.hpp>
 #include <aurora/gx_array.hpp>
 
@@ -273,12 +274,12 @@ static void require_array_span(AttrArray& array, u64 offset, u64 length, const c
 static void handle_draw(u8 cmd, ByteReader& reader) noexcept;
 static void handle_aurora(ByteReader& reader) noexcept;
 
-ProcessResult process(const u8* data, u32 size) noexcept {
+ProcessResult process(const u8* data, u32 size, gfx::CommandEpoch epoch) noexcept {
   const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
   ByteReader reader{{data, size}};
 
-  while (!reader.empty()) {
+  while (!reader.empty() && epoch.current()) {
     const u8 cmd = reader.read<u8>();
     u8 opcode = cmd & CP_OPCODE_MASK;
 

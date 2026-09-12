@@ -13,6 +13,7 @@ namespace aurora::gx::testing {
 void reset_texture_stubs();
 uint64_t texture_allocations();
 uint64_t palette_conversions();
+void set_submission(std::shared_ptr<gfx::SubmissionState> submission);
 gfx::TextureHandle make_texture_handle(uint32_t width, uint32_t height, u32 format = GX_TF_RGBA8_PC);
 void set_replacement(gfx::TextureHandle handle, uint64_t id = 1);
 void set_source_replacement(aurora::texture::TextureSourceKey key, gfx::TextureHandle handle);
@@ -50,7 +51,10 @@ protected:
     texture::end_frame();
   }
 
-  void TearDown() override { texture::shutdown(); }
+  void TearDown() override {
+    texture::shutdown();
+    testing::set_submission(nullptr);
+  }
 };
 
 TEST_F(GxTextureCacheTest, CalculatesTiledAndLinearMipSourceSizes) {
@@ -271,6 +275,39 @@ TEST_F(GxTextureCacheTest, CopyRevisionRequeuesDynamicPaletteConversion) {
   resolve_sampled_textures(info);
 
   EXPECT_EQ(testing::palette_conversions(), 2);
+}
+
+TEST_F(GxTextureCacheTest, AbandonedConversionRequeuesEvenWhenCopyAndPaletteVersionsAreReused) {
+  std::array<uint8_t, 32> palette{};
+  const auto copy = testing::make_texture_handle(4, 4, GX_TF_C8);
+  g_gxState.loadedTextures[0] = make_texture(palette.data(), 1, GX_TF_C8, 4, 4);
+  g_gxState.loadedTextures[0].tlut = GX_TLUT0;
+  g_gxState.loadedTluts[0] = make_tlut(palette.data(), 1, 256);
+  g_gxState.copyTextures[palette.data()] = {.handle = copy, .revision = 2};
+  ShaderInfo info{};
+  info.sampledTextures.set(0);
+  auto abandoned = std::make_shared<gfx::SubmissionState>();
+  testing::set_submission(abandoned);
+  resolve_sampled_textures(info);
+  ASSERT_EQ(testing::palette_conversions(), 1u);
+  gfx::abandon_command_epoch();
+  abandoned->retire();
+
+  // Copy rollback followed by another write can reuse revision 2. Both source
+  // identities and the TLUT version are unchanged, but its conversion never ran.
+  auto replacement = std::make_shared<gfx::SubmissionState>();
+  testing::set_submission(replacement);
+  texture::invalidate_bindings();
+  resolve_sampled_textures(info);
+  EXPECT_EQ(testing::palette_conversions(), 2u);
+  ASSERT_TRUE(replacement->commit());
+
+  // A committed conversion survives a subsequent abort and remains reusable.
+  gfx::abandon_command_epoch();
+  testing::set_submission(std::make_shared<gfx::SubmissionState>());
+  texture::invalidate_bindings();
+  resolve_sampled_textures(info);
+  EXPECT_EQ(testing::palette_conversions(), 2u);
 }
 
 TEST_F(GxTextureCacheTest, RawTmemContentChangesProduceDistinctStaticTextureResults) {

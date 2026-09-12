@@ -117,6 +117,9 @@ BreakPointCallback set_breakpoint_callback(BreakPointCallback callback) noexcept
 void enable_breakpoint(uint64_t generation, uint64_t readOrigin, uint32_t initialReadOffset,
                        uint32_t ringSize, uint32_t breakOffset) noexcept;
 void disable_breakpoint() noexcept;
+// Interrupt-safe request: abandon pending commands without waiting for guest,
+// decoder or GPU execution. drain() acknowledges retirement before returning.
+void abort_frame() noexcept;
 
 // Display list recording
 void begin_display_list(uint8_t* buf, uint32_t size);

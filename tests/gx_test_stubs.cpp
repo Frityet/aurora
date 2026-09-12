@@ -50,6 +50,8 @@ namespace aurora::gfx {
 bool is_frame_active() noexcept { return false; }
 void gpu_synchronize() {}
 void complete_draw() {}
+void abandon_recording() { aurora::gx::abandon_copy_textures(); }
+std::shared_ptr<SubmissionState> current_submission() { return nullptr; }
 void request_depth_snapshot(uint64_t id) noexcept { depth_peek::drop_snapshot(id); }
 } // namespace aurora::gfx
 

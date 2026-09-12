@@ -42,11 +42,11 @@ public:
     futures_.push_back(future);
   }
 
-  void retire_ready() { retire(false); }
+  bool retire_ready() { return retire(false); }
   void drain() { retire(true); }
 
 private:
-  void retire(bool wait) {
+  bool retire(bool wait) {
     const allocation::HostAllocationScope hostAllocations;
     std::vector<wgpu::Future> pending;
     {
@@ -61,6 +61,7 @@ private:
       std::lock_guard lock{mutex_};
       futures_.insert(futures_.end(), pending.begin(), pending.end());
     }
+    return pending.empty();
   }
 
   std::mutex mutex_;

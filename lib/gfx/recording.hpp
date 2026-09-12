@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types.hpp"
+#include "command_epoch.hpp"
 
 #include <cstddef>
 #include <string_view>
@@ -53,6 +54,10 @@ struct ColorPassDescriptor {
 void finish();
 // Submit and wait for commands recorded so far, preserving the active targets.
 void complete_draw();
+// Called by the decoder after an interrupt abandons its command epoch. This
+// retires unsubmitted work before subsequent commands begin recording.
+void abandon_recording();
+std::shared_ptr<SubmissionState> current_submission();
 void request_depth_snapshot(uint64_t id) noexcept;
 bool is_frame_active() noexcept;
 void invalidate_surface_resources() noexcept;

@@ -37,9 +37,9 @@ constexpr auto kProcessingMode = ProcessingMode::Thread;
 constexpr uint32_t kDrawBatchSize = 1;
 
 bool sFrameActive = false;
-bool sActive = false;
-uint64_t sGeneration = 0;
-uint8_t* sAddressBuffer = nullptr;
+std::atomic<bool> sActive{false};
+std::atomic<uint64_t> sGeneration{0};
+std::atomic<uint8_t*> sAddressBuffer{nullptr};
 constexpr uint32_t kAddressBufferSize = 64 * 1024;
 uint32_t sPendingDraws = 0;
 std::atomic<uint64_t> sPublished{0};
@@ -57,7 +57,10 @@ struct BreakPoint {
   bool hit = false;
   bool notified = false;
 } sBreakPoint;
-uint64_t sBreakPointRevision = 0;
+std::atomic<uint64_t> sBreakPointRevision{1};
+std::atomic<uint64_t> sBreakPointHitRevision{0};
+std::atomic<uint64_t> sAbortFloor{0};
+std::atomic<uint64_t> sAcknowledgedEpoch{1};
 std::atomic<uint32_t> sWorkerWake{0};
 thread::Thread sWorkerThread;
 // A callback may sleep in an original SDK queue while keeping this recursive
@@ -96,9 +99,10 @@ struct CallbackEfbRead {
 };
 thread_local CallbackEfbRead* sCallbackEfbRead = nullptr;
 
-void dispatch_draw_done() noexcept {
+void dispatch_draw_done(gfx::CommandEpoch epoch) noexcept {
   const aurora::os::GuestThreadExecutionScope execution;
   const CallbackLock lock;
+  if (!epoch.current()) return;
   if (const auto callback = sDrawDoneCallback; callback != nullptr) {
     {
       const CallbackInterruptScope interrupt;
@@ -113,8 +117,10 @@ void wake_worker() noexcept {
   sWorkerWake.notify_all();
 }
 
-void dispatch_draw_sync(uint16_t token, bool interrupt) noexcept {
+void dispatch_draw_sync(uint16_t token, bool interrupt, gfx::CommandEpoch epoch) noexcept {
+  if (!epoch.current()) return;
   gfx::complete_draw();
+  if (!epoch.current()) return;
   sDrawSyncToken.store(token, std::memory_order_release);
   if (!interrupt) return;
   // Unregistering waits for any in-flight callback, including its EFB reads.
@@ -122,7 +128,7 @@ void dispatch_draw_sync(uint16_t token, bool interrupt) noexcept {
   // the CPU, and must never wait for a callback holding this mutex to enter it.
   const aurora::os::GuestThreadExecutionScope execution;
   const CallbackLock lock;
-  if (sDrawSyncCallback == nullptr) return;
+  if (!epoch.current() || sDrawSyncCallback == nullptr) return;
   CallbackEfbRead read;
   auto* previousRead = std::exchange(sCallbackEfbRead, &read);
   {
@@ -136,12 +142,10 @@ void dispatch_draw_sync(uint16_t token, bool interrupt) noexcept {
 void dispatch_breakpoint(uint64_t revision) noexcept {
   const aurora::os::GuestThreadExecutionScope execution;
   const CallbackLock lock;
-  {
-    std::lock_guard state{sExecutionMutex};
-    // Disabling or rearming while this interrupt waits for CPU ownership
-    // invalidates it, as clearing the CP interrupt-enable register does.
-    if (sBreakPoint.revision != revision || !sBreakPoint.enabled || !sBreakPoint.hit) return;
-  }
+  // This check follows CPU acquisition: an interrupt can disable or abort a
+  // pending breakpoint while its dispatcher is waiting for the guest.
+  if (sBreakPointRevision.load(std::memory_order_acquire) != revision ||
+      sBreakPointHitRevision.load(std::memory_order_acquire) != revision) return;
   if (sBreakPointCallback != nullptr) {
     const CallbackInterruptScope interrupt;
     const aurora::allocation::ClientAllocationScope clientAllocations{sBreakPointRouting};
@@ -151,6 +155,22 @@ void dispatch_breakpoint(uint64_t revision) noexcept {
 
 void process_to(uint64_t target, std::memory_order order) noexcept {
   while (true) {
+    const gfx::CommandEpoch epoch;
+    if (sAcknowledgedEpoch.load(std::memory_order_acquire) != epoch.value) {
+      // No decoder/control mutex and no guest CPU ownership across retirement.
+      // Subsequent commands cannot run until old renderer pointers are retired.
+      gfx::abandon_recording();
+      clear_draw_cache();
+      if (!epoch.current()) continue;
+      const auto floor = sAbortFloor.load(std::memory_order_acquire);
+      if (!epoch.current()) continue;
+      sDecoded.store(std::max(floor, sDecoded.load(std::memory_order_acquire)), std::memory_order_release);
+      sProcessed.store(std::max(floor, sProcessed.load(std::memory_order_acquire)), std::memory_order_release);
+      sAcknowledgedEpoch.store(epoch.value, std::memory_order_release);
+      sAcknowledgedEpoch.notify_all();
+      sProcessed.notify_all();
+      continue;
+    }
     ProcessResult result{};
     bool notifyBreakPoint = false;
     uint64_t breakPointRevision = 0;
@@ -158,15 +178,18 @@ void process_to(uint64_t target, std::memory_order order) noexcept {
     {
       std::lock_guard execution{sExecutionMutex};
       decoded = sDecoded.load(std::memory_order_relaxed);
-      if (sBreakPoint.enabled && decoded == sBreakPoint.cursor) {
+      const bool breakpointEnabled = sBreakPoint.enabled &&
+          sBreakPoint.revision == sBreakPointRevision.load(std::memory_order_acquire);
+      if (breakpointEnabled && decoded == sBreakPoint.cursor) {
+        sBreakPointHitRevision.store(sBreakPoint.revision, std::memory_order_release);
         sBreakPoint.hit = true;
         if (sBreakPoint.notified) return;
         sBreakPoint.notified = true;
         notifyBreakPoint = true;
         breakPointRevision = sBreakPoint.revision;
       } else {
-        if (decoded == target) return;
-        const uint64_t end = sBreakPoint.enabled ? std::min(target, sBreakPoint.cursor) : target;
+        if (decoded >= target) return;
+        const uint64_t end = breakpointEnabled ? std::min(target, sBreakPoint.cursor) : target;
         AURORA_ASSERT(end > decoded, "FIFO breakpoint is behind its decoder cursor");
         std::lock_guard buffer{sBufferMutex};
         AURORA_ASSERT(decoded >= sStreamBase && end <= detail::sWritten.load(std::memory_order_acquire),
@@ -174,7 +197,8 @@ void process_to(uint64_t target, std::memory_order order) noexcept {
                       sStreamBase, detail::sWritten.load(std::memory_order_relaxed));
         const auto start = static_cast<uint32_t>(decoded - sStreamBase);
         const auto size = static_cast<uint32_t>(end - decoded);
-        result = process(detail::sBufferData + start, size);
+        result = process(detail::sBufferData + start, size, epoch);
+        if (!epoch.current()) continue;
         AURORA_ASSERT(result.bytesProcessed > 0 && result.bytesProcessed <= size,
                       "FIFO processor made invalid progress: processed {} of {} remaining bytes", result.bytesProcessed,
                       size);
@@ -187,10 +211,11 @@ void process_to(uint64_t target, std::memory_order order) noexcept {
       continue;
     }
     if (result.drawDone) {
-      gfx::complete_draw();
-      dispatch_draw_done();
+      if (epoch.current()) gfx::complete_draw();
+      dispatch_draw_done(epoch);
     }
-    if (result.tokenWrite) dispatch_draw_sync(result.token, result.tokenInterrupt);
+    if (result.tokenWrite) dispatch_draw_sync(result.token, result.tokenInterrupt, epoch);
+    if (!epoch.current()) continue;
     sProcessed.store(decoded, order);
     sProcessed.notify_all();
   }
@@ -245,7 +270,7 @@ void init() {
   {
     std::lock_guard execution{sExecutionMutex};
     constexpr uint32_t initialCapacity = 64 * 1024;
-    free(sAddressBuffer);
+    free(sAddressBuffer.load(std::memory_order_acquire));
     sAddressBuffer = static_cast<uint8_t*>(malloc(kAddressBufferSize));
     AURORA_ASSERT(sAddressBuffer != nullptr, "fifo::init: failed to allocate FIFO address space");
     free(detail::sBufferData);
@@ -266,6 +291,8 @@ void init() {
     sDecoded.store(0, std::memory_order_relaxed);
     sProcessed.store(0, std::memory_order_relaxed);
     sWorkerWake.store(0, std::memory_order_relaxed);
+    sAbortFloor.store(0, std::memory_order_relaxed);
+    sAcknowledgedEpoch.store(gfx::CommandEpoch{}.value, std::memory_order_relaxed);
     ++sGeneration;
     sActive = true;
     sBreakPoint = {};
@@ -280,7 +307,7 @@ void shutdown() {
   {
     std::lock_guard execution{sExecutionMutex};
     sActive = false;
-    free(sAddressBuffer);
+    free(sAddressBuffer.load(std::memory_order_acquire));
     sAddressBuffer = nullptr;
   }
   clear_draw_cache();
@@ -358,7 +385,12 @@ BreakPointCallback set_breakpoint_callback(BreakPointCallback callback) noexcept
 void enable_breakpoint(uint64_t generation, uint64_t readOrigin, uint32_t initialReadOffset,
                        uint32_t ringSize, uint32_t breakOffset) noexcept {
   {
-    std::lock_guard execution{sExecutionMutex};
+    std::unique_lock execution{sExecutionMutex, std::defer_lock};
+    while (!execution.try_lock()) {
+      // Do not restore CPU ownership while holding the decoder lock.
+      const aurora::os::GuestThreadWaitScope wait;
+      std::this_thread::yield();
+    }
     AURORA_ASSERT(sActive && sGeneration == generation, "GX breakpoint refers to a retired FIFO");
     AURORA_ASSERT(ringSize != 0 && initialReadOffset < ringSize && breakOffset < ringSize,
                   "GX breakpoint is outside its GP FIFO");
@@ -372,10 +404,19 @@ void enable_breakpoint(uint64_t generation, uint64_t readOrigin, uint32_t initia
 }
 
 void disable_breakpoint() noexcept {
-  {
-    std::lock_guard execution{sExecutionMutex};
-    sBreakPoint = {.revision = ++sBreakPointRevision};
-  }
+  // The alarm watchdog runs with scheduling disabled. Invalidating delivery
+  // must never wait for the decoder or a callback that needs the guest CPU.
+  sBreakPointRevision.fetch_add(1, std::memory_order_acq_rel);
+  wake_worker();
+}
+
+void abort_frame() noexcept {
+  const auto floor = detail::sWritten.load(std::memory_order_acquire);
+  sAbortFloor.store(floor, std::memory_order_release);
+  disable_breakpoint();
+  gfx::abandon_command_epoch();
+  auto published = sPublished.load(std::memory_order_relaxed);
+  while (published < floor && !sPublished.compare_exchange_weak(published, floor, std::memory_order_release)) {}
   wake_worker();
 }
 
@@ -435,9 +476,8 @@ bool in_display_list() { return detail::sInDisplayList; }
 
 void drain() {
   const aurora::allocation::HostAllocationScope hostAllocations;
-  if (detail::sBufferSize == 0) {
-    return;
-  }
+  if (detail::sBufferSize == 0 &&
+      sAcknowledgedEpoch.load(std::memory_order_acquire) == gfx::CommandEpoch{}.value) return;
 
   ZoneScoped;
   const uint64_t target = sStreamBase + detail::sBufferSize;
@@ -452,6 +492,14 @@ void drain() {
     sPublished.store(target, std::memory_order_release);
     wake_worker();
 
+    auto acknowledged = sAcknowledgedEpoch.load(std::memory_order_acquire);
+    if (acknowledged != gfx::CommandEpoch{}.value) {
+      const aurora::os::GuestThreadWaitScope wait;
+      do {
+        sAcknowledgedEpoch.wait(acknowledged, std::memory_order_acquire);
+        acknowledged = sAcknowledgedEpoch.load(std::memory_order_acquire);
+      } while (acknowledged != gfx::CommandEpoch{}.value);
+    }
     uint64_t processed = sProcessed.load(std::memory_order_acquire);
     if (processed < target) {
       const aurora::os::GuestThreadWaitScope wait;
@@ -476,10 +524,14 @@ const uint8_t* get_buffer_data() { return detail::sBufferData; }
 uint32_t get_buffer_size() { return detail::sBufferSize; }
 
 CursorSnapshot cursor_snapshot() {
-  std::lock_guard execution{sExecutionMutex};
-  return {sAddressBuffer, kAddressBufferSize, detail::sWritten.load(std::memory_order_acquire),
-          sPublished.load(std::memory_order_acquire), sDecoded.load(std::memory_order_acquire),
-          sProcessed.load(std::memory_order_acquire), sGeneration, sActive, sBreakPoint.hit};
+  const auto completed = sProcessed.load(std::memory_order_acquire);
+  const auto consumed = sDecoded.load(std::memory_order_acquire);
+  const auto published = sPublished.load(std::memory_order_acquire);
+  const auto written = detail::sWritten.load(std::memory_order_acquire);
+  return {sAddressBuffer.load(std::memory_order_acquire), kAddressBufferSize, written,
+          published, consumed, completed,
+          sGeneration.load(std::memory_order_acquire), sActive.load(std::memory_order_acquire),
+          sBreakPointHitRevision.load(std::memory_order_acquire) == sBreakPointRevision.load(std::memory_order_acquire)};
 }
 
 void clear_buffer() {

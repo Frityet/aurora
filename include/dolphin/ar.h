@@ -7,6 +7,7 @@
 extern "C" {
 #endif
 
+typedef void (*ARCallback)(void);
 typedef void (*ARQCallback)(uintptr_t pointerToARQRequest);
 
 struct ARQRequest {
@@ -14,8 +15,8 @@ struct ARQRequest {
     /* 0x04 */ u32 owner;
     /* 0x08 */ u32 type;
     /* 0x0C */ u32 priority;
-    /* 0x10 */ u32 source;
-    /* 0x14 */ u32 dest;
+    /* 0x10 */ uintptr_t source;
+    /* 0x14 */ uintptr_t dest;
     /* 0x18 */ u32 length;
     /* 0x1C */ ARQCallback callback;
 };
@@ -26,9 +27,9 @@ struct ARQRequest {
 #define ARAM_DIR_ARAM_TO_MRAM 0x01
 
 #define ARStartDMARead(mmem, aram, len) \
-    ARStartDMA(ARAM_DIR_ARAM_TO_MRAM, mmem, aram, len)
+    ARStartDMA(ARAM_DIR_ARAM_TO_MRAM, (uintptr_t)(aram), (uintptr_t)(mmem), len)
 #define ARStartDMAWrite(mmem, aram, len) \
-    ARStartDMA(ARAM_DIR_MRAM_TO_ARAM, mmem, aram, len)
+    ARStartDMA(ARAM_DIR_MRAM_TO_ARAM, (uintptr_t)(mmem), (uintptr_t)(aram), len)
 
 typedef struct ARQRequest ARQRequest;
 
@@ -39,9 +40,9 @@ typedef struct ARQRequest ARQRequest;
 #define ARQ_PRIORITY_HIGH 1
 
 // AR
-ARQCallback ARRegisterDMACallback(ARQCallback callback);
+ARCallback ARRegisterDMACallback(ARCallback callback);
 u32 ARGetDMAStatus(void);
-void ARStartDMA(u32 type, u32 mainmem_addr, u32 aram_addr, u32 length);
+void ARStartDMA(u32 type, uintptr_t source, uintptr_t destination, u32 length);
 u32 ARAlloc(u32 length);
 u32 ARFree(u32* length);
 BOOL ARCheckInit(void);

@@ -12,6 +12,10 @@ void OSReport(const char* msg, ...) {
   va_end(args);
 }
 
+void OSRegisterVersion(const char* id) {
+  OSReport("%s\n", id);
+}
+
 void OSVReport(const char* msg, va_list list) {
   // The SDK serial report channel maps to host stderr. Keep reporting usable
   // during heap exhaustion: no Game allocation or formatted-string owner is

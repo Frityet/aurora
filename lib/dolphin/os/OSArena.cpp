@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <aurora/exception.hpp>
 #include <aurora/mem2_arena.hpp>
+#include <aurora/guest_thread.hpp>
+#include "../AR.hpp"
 #include <dolphin/os/OSArena.h>
 
 #include "internal.hpp"
@@ -35,10 +37,19 @@ void aurora::bind_mem2_arena(void* memory, std::size_t size) {
 }
 
 void aurora::unbind_mem2_arena(void* memory) {
-  const std::lock_guard lock(mem2_mutex);
-  if (reinterpret_cast<std::uintptr_t>(memory) != mem2_begin) {
-    aurora::throw_host_exception<std::logic_error>("MEM2 arena release does not match its owner");
+  const os::GuestThreadExecutionScope execution;
+  std::size_t size;
+  {
+    const std::lock_guard lock(mem2_mutex);
+    if (reinterpret_cast<std::uintptr_t>(memory) != mem2_begin) {
+      aurora::throw_host_exception<std::logic_error>("MEM2 arena release does not match its owner");
+    }
+    size = mem2_end - mem2_begin;
   }
+  // A callback may wait in an SDK queue and query these watermarks. Do not
+  // keep the native arena mutex locked while waiting for callback retirement.
+  release_aram_mem2_owner(memory, size);
+  const std::lock_guard lock(mem2_mutex);
   mem2_begin = mem2_end = mem2_low = mem2_high = 0;
 }
 

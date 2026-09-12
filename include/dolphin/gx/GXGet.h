@@ -26,6 +26,10 @@ void GXGetLightPos(GXLightObj* lt_obj, f32* x, f32* y, f32* z);
 void GXGetLightColor(GXLightObj* lt_obj, GXColor* color);
 void GXGetVtxAttrFmt(GXVtxFmt idx, GXAttr attr, GXCompCnt* compCnt, GXCompType* compType, u8* shift);
 u32 GXGetTexObjTlut(const GXTexObj* tex_obj);
+void GXGetTexObjAll(const GXTexObj* obj, void** data, u16* width, u16* height, GXTexFmt* format,
+                    GXTexWrapMode* wrapS, GXTexWrapMode* wrapT, GXBool* mipmap);
+void GXGetTexObjLODAll(const GXTexObj* obj, GXTexFilter* minFilter, GXTexFilter* magFilter, f32* minLod,
+                       f32* maxLod, f32* lodBias, GXBool* biasClamp, GXBool* edgeLod, GXAnisotropy* maxAniso);
 
 void GXGetViewportv(f32* vp);
 void GXGetScissor(u32* left, u32* top, u32* wd, u32* ht);

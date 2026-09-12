@@ -191,6 +191,10 @@ if (AURORA_ENABLE_GX)
   endif ()
   set_tests_properties(gx_z_texture_render PROPERTIES LABELS gpu RUN_SERIAL TRUE)
 
+  add_executable(gx_texture_object_test gx_texture_object_test.cpp ../lib/compat.cpp)
+  target_link_libraries(gx_texture_object_test PRIVATE aurora::core)
+  add_test(NAME gx_texture_object COMMAND gx_texture_object_test)
+
   add_executable(gx_depth_snapshot_render_test
     gx_depth_snapshot_render_test.cpp
     ../lib/compat.cpp

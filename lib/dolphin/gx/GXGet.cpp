@@ -316,7 +316,17 @@ GXTexWrapMode GXGetTexObjWrapT(GXTexObj* tex_obj) { return reinterpret_cast<cons
 
 GXBool GXGetTexObjMipMap(GXTexObj* tex_obj) { return reinterpret_cast<const GXTexObj_*>(tex_obj)->has_mips(); }
 
-// TODO GXGetTexObjAll
+void GXGetTexObjAll(const GXTexObj* obj, void** data, u16* width, u16* height, GXTexFmt* format,
+                    GXTexWrapMode* wrapS, GXTexWrapMode* wrapT, GXBool* mipmap) {
+  const auto& texture = *reinterpret_cast<const GXTexObj_*>(obj);
+  *data = const_cast<void*>(texture.data);
+  *width = static_cast<u16>(texture.width());
+  *height = static_cast<u16>(texture.height());
+  *format = static_cast<GXTexFmt>(texture.format());
+  *wrapS = texture.wrap_s();
+  *wrapT = texture.wrap_t();
+  *mipmap = texture.has_mips();
+}
 // TODO GXGetTexObjMinFilt
 // TODO GXGetTexObjMagFilt
 // TODO GXGetTexObjMinLOD
@@ -325,7 +335,18 @@ GXBool GXGetTexObjMipMap(GXTexObj* tex_obj) { return reinterpret_cast<const GXTe
 // TODO GXGetTexObjBiasClamp
 // TODO GXGetTexObjEdgeLOD
 // TODO GXGetTexObjMaxAniso
-// TODO GXGetTexObjLODAll
+void GXGetTexObjLODAll(const GXTexObj* obj, GXTexFilter* minFilter, GXTexFilter* magFilter, f32* minLod,
+                       f32* maxLod, f32* lodBias, GXBool* biasClamp, GXBool* edgeLod, GXAnisotropy* maxAniso) {
+  const auto& texture = *reinterpret_cast<const GXTexObj_*>(obj);
+  *minFilter = texture.min_filter();
+  *magFilter = texture.mag_filter();
+  *minLod = texture.min_lod();
+  *maxLod = texture.max_lod();
+  *lodBias = texture.lod_bias();
+  *biasClamp = texture.bias_clamp();
+  *edgeLod = texture.do_edge_lod();
+  *maxAniso = texture.max_aniso();
+}
 u32 GXGetTexObjTlut(const GXTexObj* tex_obj) { return reinterpret_cast<const GXTexObj_*>(tex_obj)->tlut; }
 // TODO GXGetTlutObjData
 // TODO GXGetTlutObjFmt

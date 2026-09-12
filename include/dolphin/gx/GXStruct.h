@@ -78,6 +78,9 @@ typedef struct {
 #endif
 } GXTlutObj;
 
+typedef GXTexObj _GXTexObj;
+typedef GXTlutObj _GXTlutObj;
+
 typedef struct {
   u32 dummy[16];
 } GXLightObj;

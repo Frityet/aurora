@@ -84,6 +84,9 @@ public:
   JAudioSoundArchive(JAudioSoundArchive&&) noexcept;
   JAudioSoundArchive& operator=(JAudioSoundArchive&&) noexcept;
 
+  // Validated native-endian BSTN words; offsets and string bytes remain resource-relative.
+  // The returned owner must outlive SDK tables borrowing its data. No playback device is opened.
+  [[nodiscard]] std::vector<std::uint8_t> native_sound_name_table() const;
   [[nodiscard]] std::optional<std::uint32_t> find_sound_id(std::string_view name) const;
   [[nodiscard]] std::optional<JAudioSoundMetadata> resolve_sound(std::string_view name) const;
   [[nodiscard]] JAudioSoundMetadata resolve_sound(std::uint32_t sound_id) const;

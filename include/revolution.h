@@ -55,6 +55,11 @@ constexpr s32 WPAD_ERR_TRANSFER = -3;
 constexpr s32 WPAD_ERR_INVALID = -4;
 constexpr u8 WPAD_SENSOR_BAR_POS_BOTTOM = 0;
 constexpr u8 WPAD_SENSOR_BAR_POS_TOP = 1;
+constexpr s32 WPAD_BATTERY_LEVEL_CRITICAL = 0;
+constexpr s32 WPAD_BATTERY_LEVEL_LOW = 1;
+constexpr s32 WPAD_BATTERY_LEVEL_MEDIUM = 2;
+constexpr s32 WPAD_BATTERY_LEVEL_HIGH = 3;
+constexpr s32 WPAD_BATTERY_LEVEL_MAX = 4;
 
 constexpr u32 WPAD_MOTOR_STOP = 0;
 constexpr u32 WPAD_MOTOR_RUMBLE = 1;

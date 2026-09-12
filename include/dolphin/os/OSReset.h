@@ -34,6 +34,10 @@ struct OSResetFunctionInfo {
 void OSRegisterResetFunction(OSResetFunctionInfo* info);
 void OSUnregisterResetFunction(OSResetFunctionInfo* info);
 void OSResetSystem(int reset, u32 resetCode, BOOL forceMenu);
+void OSRebootSystem(void);
+void OSShutdownSystem(void);
+void OSRestart(u32 resetCode);
+void OSReturnToMenu(void);
 u32 OSGetResetCode();
 u32 OSSetBootDol(u32 dolOffset);
 

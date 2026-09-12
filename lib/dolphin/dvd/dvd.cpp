@@ -365,6 +365,10 @@ void beginCommand(DVDCommandBlock* block, u32 command, void* addr, u32 length, u
 }
 
 void finishCommand(DVDCommandBlock* block, s32 result, u32 transferred) {
+  if (block->command == DVD_COMMAND_CHECK_DISK) {
+    atomic_store_release(block->state, stateForResult(result));
+    return;
+  }
   setCommandResult(block, stateForResult(result), transferred);
 }
 
@@ -551,11 +555,6 @@ public:
     m_cv.notify_one();
   }
 
-  bool pausing() {
-    std::lock_guard lock(m_mutex);
-    return m_paused && m_activeBlock == nullptr;
-  }
-
   void drain_command(DVDCommandBlock* block) {
     if (block == nullptr) {
       return;
@@ -590,6 +589,12 @@ public:
       const s32 state = atomic_load_acquire(block->state);
       return !m_running || (m_activeBlock != block && state != DVD_STATE_BUSY && state != DVD_STATE_WAITING);
     });
+  }
+
+  s32 drive_status() {
+    std::lock_guard lock(m_mutex);
+    if (m_activeBlock != nullptr && !m_completing) return atomic_load_acquire(m_activeBlock->state);
+    return m_paused ? DVD_STATE_PAUSING : DVD_STATE_END;
   }
 
 private:
@@ -650,6 +655,7 @@ private:
     CommandDataBase* handle;
     {
       std::lock_guard lock(s_fstLock);
+      if (block->command == DVD_COMMAND_CHECK_DISK) return {s_initialized ? TRUE : FALSE, 0};
       if (!s_initialized || block->nativeGeneration != s_generation)
         return {DVD_RESULT_FATAL_ERROR, 0};
       if (block->nativeFileEntry == k_invalidFstEntry) {
@@ -1113,7 +1119,10 @@ s32 DVDGetCommandBlockStatus(const DVDCommandBlock* block) {
   return atomic_load_acquire(block->state);
 }
 
-s32 DVDGetDriveStatus(void) { return !s_initialized ? DVD_STATE_NO_DISK : s_worker.pausing() ? DVD_STATE_PAUSING : DVD_STATE_END; }
+s32 DVDGetDriveStatus(void) {
+  std::lock_guard lock(s_fstLock);
+  return !s_initialized ? DVD_STATE_NO_DISK : s_worker.drive_status();
+}
 
 BOOL DVDSetAutoInvalidation(BOOL autoInval) {
   BOOL prev = s_autoInvalidation;
@@ -1144,7 +1153,30 @@ s32 DVDCancelAll(void) {
 
 DVDDiskID* DVDGetCurrentDiskID(void) { return &s_diskID; }
 
-BOOL DVDCheckDisk(void) { return s_initialized ? TRUE : FALSE; }
+BOOL DVDCheckDisk(void) {
+  std::lock_guard lock(s_fstLock);
+  return s_initialized ? TRUE : FALSE;
+}
+
+BOOL DVDCheckDiskAsync(DVDCommandBlock* block, DVDCBCallback callback) {
+  ASSERTMSGLINE(0, block != nullptr, "DVDCheckDiskAsync(): NULL command block was specified");
+  const InlineCallbackScope execution;
+  const s32 state = DVDGetDriveStatus();
+  if (state == DVD_STATE_END || state == DVD_STATE_PAUSING) {
+    // The original API leaves unrelated descriptor fields untouched. A cover
+    // query has no byte buffer, offset or transfer size to initialize or read.
+    block->command = DVD_COMMAND_CHECK_DISK;
+    block->callback = callback;
+    block->nativeCallbackGuest = aurora::allocation::routing_state.callbackGuest;
+    s_worker.enqueue(block);
+  } else {
+    const BOOL present = state == DVD_STATE_BUSY || state == DVD_STATE_WAITING ||
+                         state == DVD_STATE_CANCELED || state == DVD_STATE_IGNORED;
+    atomic_store_release(block->state, DVD_STATE_END);
+    invokeCallback(callback, present, block, aurora::allocation::routing_state.callbackGuest);
+  }
+  return TRUE;
+}
 
 int DVDSetAutoFatalMessaging(BOOL enable) {
   const BOOL prev = s_autoFatalMessaging;

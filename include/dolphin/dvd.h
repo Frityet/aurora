@@ -64,6 +64,7 @@ extern "C" {
 #define DVD_COMMAND_INQUIRY 14
 #define DVD_COMMAND_BS_CHANGE_DISK 15
 #define DVD_COMMAND_UNK_16 16
+#define DVD_COMMAND_CHECK_DISK 36
 
 typedef struct DVDDiskID {
     char gameName[4];
@@ -182,6 +183,7 @@ int DVDCancelAllAsync(DVDCBCallback callback);
 s32 DVDCancelAll(void);
 DVDDiskID* DVDGetCurrentDiskID(void);
 BOOL DVDCheckDisk(void);
+BOOL DVDCheckDiskAsync(DVDCommandBlock* block, DVDCBCallback callback);
 
 // DVD FATAL
 int DVDSetAutoFatalMessaging(BOOL enable);

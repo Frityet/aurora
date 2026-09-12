@@ -299,6 +299,54 @@ struct JAudioSoundArchive::Impl {
     }
   }
 
+  [[nodiscard]] std::vector<std::uint8_t> native_sound_name_table() const {
+    const auto reader = Reader{baa, bstn.offset, bstn.size};
+    const auto base = bstn.offset;
+    if (reader.u32(base, "truncated BSTN") != fourcc('B', 'S', 'T', 'N')) {
+      malformed("invalid BSTN header");
+    }
+    const auto bytes = reader.slice(base, bstn.size, "truncated BSTN resource");
+    auto result = std::vector<std::uint8_t>(bytes.begin(), bytes.end());
+    const auto word = [&](std::size_t offset) {
+      if ((offset - base) % alignof(std::uint32_t) != 0U) malformed("unaligned BSTN table word");
+      const auto value = reader.u32(offset, "truncated BSTN table word");
+      std::memcpy(result.data() + offset - base, &value, sizeof(value));
+      return value;
+    };
+    const auto name = [&](std::uint32_t offset) {
+      if (offset == 0U) return;
+      const auto data = relative(base, offset, reader, "invalid BSTN name offset");
+      (void)reader.string(data, base + bstn.size - data, "unterminated BSTN name");
+    };
+    word(base);
+    word(base + 4U);
+    word(base + 8U);
+    const auto root = relative(base, word(base + 12U), reader, "invalid BSTN root");
+    const auto section_count = word(root);
+    if (section_count > 256U) malformed("BSTN section count exceeds JAISoundID fields");
+    require_table(reader, root + 4U, section_count, 4U, "truncated BSTN section table");
+    for (std::size_t section = 0; section < section_count; ++section) {
+      const auto offset = word(root + 4U + section * 4U);
+      if (offset == 0U) continue;
+      const auto data = relative(base, offset, reader, "invalid BSTN section offset");
+      const auto group_count = word(data);
+      word(data + 4U);
+      if (group_count > 256U) malformed("BSTN group count exceeds JAISoundID fields");
+      require_table(reader, data + 8U, group_count, 4U, "truncated BSTN group table");
+      for (std::size_t group = 0; group < group_count; ++group) {
+        const auto group_offset = word(data + 8U + group * 4U);
+        if (group_offset == 0U) continue;
+        const auto group_data = relative(base, group_offset, reader, "invalid BSTN group offset");
+        const auto count = word(group_data);
+        name(word(group_data + 4U));
+        if (count > 65536U) malformed("BSTN item count exceeds JAISoundID fields");
+        require_table(reader, group_data + 8U, count, 4U, "truncated BSTN item table");
+        for (std::size_t item = 0; item < count; ++item) name(word(group_data + 8U + item * 4U));
+      }
+    }
+    return result;
+  }
+
   [[nodiscard]] std::optional<std::uint32_t> find_sound_id(std::string_view wanted) const {
     const auto reader = Reader{baa, bstn.offset, bstn.size};
     const auto base = bstn.offset;
@@ -1590,6 +1638,10 @@ JAudioSoundArchive::JAudioSoundArchive(std::span<const std::uint8_t> decompresse
 JAudioSoundArchive::~JAudioSoundArchive() = default;
 JAudioSoundArchive::JAudioSoundArchive(JAudioSoundArchive&&) noexcept = default;
 JAudioSoundArchive& JAudioSoundArchive::operator=(JAudioSoundArchive&&) noexcept = default;
+
+std::vector<std::uint8_t> JAudioSoundArchive::native_sound_name_table() const {
+  return _impl->native_sound_name_table();
+}
 
 std::optional<std::uint32_t> JAudioSoundArchive::find_sound_id(std::string_view name) const {
   return _impl->find_sound_id(name);

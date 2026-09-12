@@ -8,8 +8,10 @@ extern "C" {
 #endif
 
 typedef void (*OSResetCallback)(void);
+typedef void (*OSPowerCallback)(void);
 
 OSResetCallback OSSetResetCallback(OSResetCallback callback);
+OSPowerCallback OSSetPowerCallback(OSPowerCallback callback);
 BOOL OSGetResetSwitchState(void);
 BOOL OSGetResetButtonState(void);
 

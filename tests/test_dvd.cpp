@@ -47,6 +47,31 @@ TEST(DVDStubs, InitWithoutDisc) { DVDInit(); }
 
 TEST(DVDStubs, GetDriveStatus) { EXPECT_EQ(DVDGetDriveStatus(), DVD_STATE_NO_DISK); }
 
+TEST(DVDNoDisc, CheckDiskCompletesInlineWithoutChangingUnrelatedFields) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  struct State { OSContext* context; unsigned calls = 0; } state{OSGetCurrentContext()};
+  DVDCommandBlock block{};
+  block.command = 123;
+  block.offset = 456;
+  block.transferredSize = 789;
+  block.userData = &state;
+  ASSERT_TRUE(DVDCheckDiskAsync(&block, [](s32 result, DVDCommandBlock* block) {
+    auto& state = *static_cast<State*>(block->userData);
+    EXPECT_EQ(result, FALSE);
+    EXPECT_EQ(block->state, DVD_STATE_END);
+    EXPECT_EQ(OSGetCurrentContext(), state.context);
+    EXPECT_EQ(OSDisableInterrupts(), FALSE);
+    EXPECT_EQ(OSDisableScheduler(), 0);
+    EXPECT_EQ(OSEnableScheduler(), 1);
+    ++state.calls;
+  }));
+  EXPECT_EQ(state.calls, 1U);
+  EXPECT_EQ(block.command, 123U);
+  EXPECT_EQ(block.offset, 456U);
+  EXPECT_EQ(block.transferredSize, 789U);
+  EXPECT_EQ(block.callback, nullptr);
+}
+
 TEST(DVDStubs, Reset) { DVDReset(); }
 
 TEST(DVDStubs, ResetRequired) { EXPECT_EQ(DVDResetRequired(), FALSE); }
@@ -746,6 +771,90 @@ TEST_F(DVDDescriptorTest, CompletionWakesGuestAfterInterruptReturnsAndRestoresRo
     EXPECT_EQ(OSDisableInterrupts(), TRUE);
     OSRestoreInterrupts(TRUE);
   }
+}
+
+TEST_F(DVDDescriptorTest, CheckDiskQueuesIdleAndPausedQueriesWithCapturedCallbackRouting) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  for (bool paused : {false, true}) {
+    for (bool guest : {false, true}) {
+      struct State { OSMessageQueue queue{}; OSMessage message{}; OSContext* caller; bool guest; unsigned calls = 0; }
+          state{{}, {}, OSGetCurrentContext(), guest};
+      OSInitMessageQueue(&state.queue, &state.message, 1);
+      DVDCommandBlock block{};
+      block.addr = &state;
+      block.offset = 123;
+      block.length = 456;
+      block.transferredSize = 789;
+      block.userData = &state;
+      if (paused) DVDPause();
+      {
+        const aurora::allocation::ClientAllocationScope policy({guest, guest});
+        const aurora::allocation::HostAllocationScope native;
+        ASSERT_TRUE(DVDCheckDiskAsync(&block, [](s32 result, DVDCommandBlock* block) {
+          auto& state = *static_cast<State*>(block->userData);
+          EXPECT_EQ(result, TRUE);
+          EXPECT_EQ(block->state, DVD_STATE_END);
+          EXPECT_EQ(DVDGetDriveStatus(), DVD_STATE_END);
+          EXPECT_NE(OSGetCurrentContext(), state.caller);
+          EXPECT_EQ(OSDisableInterrupts(), FALSE);
+          EXPECT_EQ(OSDisableScheduler(), 1);
+          EXPECT_EQ(OSEnableScheduler(), 2);
+          EXPECT_EQ(aurora::allocation::routing_state.guest, state.guest);
+          EXPECT_EQ(aurora::allocation::routing_state.callbackGuest, state.guest);
+          ++state.calls;
+          EXPECT_TRUE(OSSendMessage(&state.queue, nullptr, OS_MESSAGE_NOBLOCK));
+        }));
+      }
+      EXPECT_EQ(state.calls, 0U);
+      if (paused) {
+        EXPECT_EQ(DVDGetCommandBlockStatus(&block), DVD_STATE_WAITING);
+        EXPECT_EQ(DVDGetDriveStatus(), DVD_STATE_PAUSING);
+        DVDResume();
+      }
+      EXPECT_TRUE(OSReceiveMessage(&state.queue, nullptr, OS_MESSAGE_BLOCK));
+      EXPECT_EQ(DVDCancel(&block), DVD_RESULT_GOOD);
+      EXPECT_EQ(state.calls, 1U);
+      EXPECT_EQ(block.command, DVD_COMMAND_CHECK_DISK);
+      EXPECT_EQ(block.addr, &state);
+      EXPECT_EQ(block.offset, 123U);
+      EXPECT_EQ(block.length, 456U);
+      EXPECT_EQ(block.transferredSize, 789U);
+      EXPECT_EQ(block.userData, &state);
+    }
+  }
+}
+
+TEST_F(DVDDescriptorTest, CheckDiskDuringActiveReadCompletesInTheCallerContext) {
+  first.blocked = true;
+  PendingDescriptorScope cleanup{first};
+  const aurora::os::GuestThreadExecutionScope execution;
+  DVDFileInfo file{};
+  alignas(32) std::array<u8, 32> bytes{};
+  ASSERT_TRUE(DVDOpen(firstPath, &file));
+  ASSERT_TRUE(DVDReadAsyncPrio(&file, bytes.data(), bytes.size(), 0, nullptr, 2));
+  ASSERT_TRUE(first.await_entry());
+  DVDPause();
+  EXPECT_EQ(DVDGetDriveStatus(), DVD_STATE_BUSY);
+  struct State { OSContext* caller; unsigned calls = 0; } state{OSGetCurrentContext()};
+  DVDCommandBlock block{};
+  block.command = 123;
+  block.userData = &state;
+  ASSERT_TRUE(DVDCheckDiskAsync(&block, [](s32 result, DVDCommandBlock* block) {
+    auto& state = *static_cast<State*>(block->userData);
+    EXPECT_EQ(result, TRUE);
+    EXPECT_EQ(block->state, DVD_STATE_END);
+    EXPECT_EQ(OSGetCurrentContext(), state.caller);
+    EXPECT_EQ(OSDisableInterrupts(), FALSE);
+    EXPECT_EQ(OSDisableScheduler(), 0);
+    EXPECT_EQ(OSEnableScheduler(), 1);
+    ++state.calls;
+  }));
+  EXPECT_EQ(state.calls, 1U);
+  EXPECT_EQ(block.command, 123U);
+  EXPECT_EQ(block.callback, nullptr);
+  DVDResume();
+  first.release();
+  EXPECT_TRUE(DVDClose(&file));
 }
 
 TEST_F(DVDDescriptorTest, QueuedCancellationPreservesCallerContextAndBothRoutingPolicies) {

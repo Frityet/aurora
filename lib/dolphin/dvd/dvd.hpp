@@ -63,7 +63,6 @@ extern std::string s_currentPath;
 extern BOOL s_autoInvalidation;
 extern BOOL s_autoFatalMessaging;
 extern DVDDiskID s_diskID;
-extern DVDLowCallback s_resetCoverCallback;
 extern bool s_initialized;
 extern bool s_overlayCallbacksSet;
 extern AuroraOverlayCallbacks s_overlayCallbacks;

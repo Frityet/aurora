@@ -1,5 +1,7 @@
 #include <dolphin/dvd.h>
 #include <aurora/dvd.h>
+#include <aurora/allocation.hpp>
+#include <dolphin/os.h>
 #include <aurora/guest_thread.hpp>
 
 #include <gtest/gtest.h>
@@ -15,6 +17,7 @@
 #include <cstring>
 #include <future>
 #include <mutex>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -28,7 +31,7 @@ TEST(DVDStubs, Constants) {
   EXPECT_EQ(DVD_STATE_CANCELED, 10);
   EXPECT_EQ(DVD_RESULT_GOOD, 0);
   EXPECT_EQ(DVD_RESULT_FATAL_ERROR, -1);
-  EXPECT_EQ(DVD_RESULT_CANCELED, -6);
+  EXPECT_EQ(DVD_RESULT_CANCELED, -3);
 }
 
 TEST(DVDStubs, StructSizes) {
@@ -509,6 +512,7 @@ protected:
 };
 
 TEST_F(DVDDescriptorTest, StackReuseWithoutCloseAndCallerData) {
+  const aurora::os::GuestThreadExecutionScope execution;
   DVDFileInfo file{};
   int caller = 17;
   file.cb.userData = &caller;
@@ -685,4 +689,477 @@ TEST_F(DVDDescriptorTest, CatalogReplacementDrainsOpenAndReadBeforePayloadRetire
     EXPECT_EQ(DVDReadPrio(&file, bytes.data(), bytes.size(), 0, 2), bytes.size());
     EXPECT_TRUE(std::equal(bytes.begin(), bytes.end(), second.bytes.begin()));
   }
+}
+
+TEST_F(DVDDescriptorTest, CompletionWakesGuestAfterInterruptReturnsAndRestoresRouting) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  for (bool guest : {true, false}) {
+    struct State {
+      OSMessageQueue queue{};
+      OSMessage storage{};
+      OSContext* callerContext;
+      bool guest;
+      bool callbackReturned = false;
+      bool observedReturn = false;
+    } state{{}, {}, OSGetCurrentContext(), guest};
+    OSInitMessageQueue(&state.queue, &state.storage, 1);
+    OSThread waiter{};
+    std::array<u8, 16384> stack{};
+    ASSERT_TRUE(OSCreateThread(&waiter, [](void* data) -> void* {
+      auto& state = *static_cast<State*>(data);
+      EXPECT_TRUE(OSReceiveMessage(&state.queue, nullptr, OS_MESSAGE_BLOCK));
+      state.observedReturn = state.callbackReturned;
+      return nullptr;
+    }, &state, stack.data() + stack.size(), stack.size(), 5, 0));
+    OSResumeThread(&waiter);
+    DVDFileInfo file{};
+    alignas(32) std::array<u8, 32> bytes{};
+    file.cb.userData = &state;
+    ASSERT_TRUE(DVDOpen(firstPath, &file));
+    {
+      const aurora::allocation::ClientAllocationScope allocations({guest, guest});
+      const aurora::allocation::HostAllocationScope native;
+      ASSERT_TRUE(DVDReadAsyncPrio(&file, bytes.data(), bytes.size(), 0, [](s32 result, DVDFileInfo* file) {
+        auto& state = *static_cast<State*>(file->cb.userData);
+        EXPECT_EQ(result, 32);
+        EXPECT_EQ(DVDGetFileInfoStatus(file), DVD_STATE_END);
+        EXPECT_NE(OSGetCurrentContext(), state.callerContext);
+        EXPECT_EQ(OSDisableInterrupts(), FALSE);
+        EXPECT_EQ(OSDisableScheduler(), 1);
+        EXPECT_EQ(OSEnableScheduler(), 2);
+        EXPECT_EQ(aurora::allocation::routing_state.guest, state.guest);
+        EXPECT_EQ(aurora::allocation::routing_state.callbackGuest, state.guest);
+        EXPECT_TRUE(OSSendMessage(&state.queue, nullptr, OS_MESSAGE_NOBLOCK));
+        EXPECT_FALSE(state.observedReturn);
+        state.callbackReturned = true;
+      }, 2));
+      EXPECT_FALSE(aurora::allocation::routing_state.guest);
+      EXPECT_EQ(aurora::allocation::routing_state.callbackGuest, guest);
+    }
+    EXPECT_TRUE(OSJoinThread(&waiter, nullptr));
+    EXPECT_TRUE(DVDClose(&file));
+    EXPECT_TRUE(state.observedReturn);
+    EXPECT_EQ(file.cb.userData, &state);
+    EXPECT_EQ(OSGetCurrentContext(), state.callerContext);
+    EXPECT_EQ(OSDisableScheduler(), 0);
+    EXPECT_EQ(OSEnableScheduler(), 1);
+    EXPECT_EQ(OSDisableInterrupts(), TRUE);
+    OSRestoreInterrupts(TRUE);
+  }
+}
+
+TEST_F(DVDDescriptorTest, QueuedCancellationPreservesCallerContextAndBothRoutingPolicies) {
+  first.blocked = true;
+  PendingDescriptorScope cleanup{first};
+  const aurora::os::GuestThreadExecutionScope execution;
+  struct State { OSContext* context; unsigned calls = 0; } state{OSGetCurrentContext()};
+  DVDFileInfo active{}, queued{};
+  alignas(32) std::array<u8, 32> activeBytes{}, queuedBytes{};
+  ASSERT_TRUE(DVDOpen(firstPath, &active));
+  ASSERT_TRUE(DVDOpen(secondPath, &queued));
+  ASSERT_TRUE(DVDReadAsyncPrio(&active, activeBytes.data(), activeBytes.size(), 0, nullptr, 2));
+  ASSERT_TRUE(first.await_entry());
+  queued.cb.userData = &state;
+  {
+    const aurora::allocation::ClientAllocationScope allocations({true, true});
+    ASSERT_TRUE(DVDReadAsyncPrio(&queued, queuedBytes.data(), queuedBytes.size(), 0, [](s32 result, DVDFileInfo* file) {
+      auto& state = *static_cast<State*>(file->cb.userData);
+      EXPECT_EQ(result, DVD_RESULT_CANCELED);
+      EXPECT_EQ(OSGetCurrentContext(), state.context);
+      EXPECT_EQ(OSDisableInterrupts(), FALSE);
+      EXPECT_EQ(OSDisableScheduler(), 0);
+      EXPECT_EQ(OSEnableScheduler(), 1);
+      EXPECT_TRUE(aurora::allocation::routing_state.guest);
+      EXPECT_TRUE(aurora::allocation::routing_state.callbackGuest);
+      EXPECT_EQ(state.calls++, 0U);
+    }, 2));
+  }
+  {
+    const aurora::allocation::ClientAllocationScope allocations({false, false});
+    EXPECT_TRUE(DVDCancelAsync(&queued.cb, [](s32 result, DVDCommandBlock* block) {
+      auto& state = *static_cast<State*>(block->userData);
+      EXPECT_EQ(result, DVD_RESULT_GOOD);
+      EXPECT_EQ(OSGetCurrentContext(), state.context);
+      EXPECT_EQ(OSDisableInterrupts(), FALSE);
+      EXPECT_EQ(OSDisableScheduler(), 0);
+      EXPECT_EQ(OSEnableScheduler(), 1);
+      EXPECT_FALSE(aurora::allocation::routing_state.guest);
+      EXPECT_FALSE(aurora::allocation::routing_state.callbackGuest);
+      EXPECT_EQ(state.calls++, 1U);
+    }));
+  }
+  EXPECT_EQ(state.calls, 2U);
+  EXPECT_EQ(second.opens.load(), 0U);
+  EXPECT_EQ(OSDisableInterrupts(), TRUE);
+  OSRestoreInterrupts(TRUE);
+  first.release();
+  EXPECT_TRUE(DVDClose(&active));
+  EXPECT_TRUE(DVDClose(&queued));
+}
+
+TEST_F(DVDDescriptorTest, NativeRetirementWaitsReleaseGuestCpuForCompletion) {
+  enum class Boundary { Close, Cancel, CancelAll, Stop };
+  for (auto boundary : {Boundary::Close, Boundary::Cancel, Boundary::CancelAll, Boundary::Stop}) {
+    first.blocked = true;
+    first.released = false;
+    first.entered = false;
+    PendingDescriptorScope cleanup{first};
+    DVDFileInfo file{};
+    alignas(32) std::array<u8, 32> bytes{};
+    std::atomic<unsigned> callbacks = 0;
+    file.cb.userData = &callbacks;
+    ASSERT_TRUE(DVDOpen(firstPath, &file));
+    {
+      const aurora::allocation::ClientAllocationScope allocations({true, true});
+      ASSERT_TRUE(DVDReadAsyncPrio(&file, bytes.data(), bytes.size(), 0, [](s32 result, DVDFileInfo* file) {
+        EXPECT_EQ(result, DVD_RESULT_CANCELED);
+        EXPECT_EQ(OSDisableInterrupts(), FALSE);
+        EXPECT_EQ(OSDisableScheduler(), 1);
+        EXPECT_EQ(OSEnableScheduler(), 2);
+        EXPECT_TRUE(aurora::allocation::routing_state.guest);
+        ++*static_cast<std::atomic<unsigned>*>(file->cb.userData);
+      }, 2));
+    }
+    ASSERT_TRUE(first.await_entry());
+    std::promise<void> retiring;
+    auto started = retiring.get_future();
+    auto retired = std::async(std::launch::async, [&] {
+      const aurora::os::GuestThreadExecutionScope execution;
+      const aurora::allocation::ClientAllocationScope allocations({false, false});
+      retiring.set_value();
+      switch (boundary) {
+      case Boundary::Close: EXPECT_TRUE(DVDClose(&file)); break;
+      case Boundary::Cancel: EXPECT_EQ(DVDCancel(&file.cb), DVD_RESULT_GOOD); break;
+      case Boundary::CancelAll: EXPECT_EQ(DVDCancelAll(), DVD_RESULT_GOOD); break;
+      case Boundary::Stop: aurora_dvd_close(); break;
+      }
+      EXPECT_FALSE(aurora::allocation::routing_state.guest);
+      EXPECT_FALSE(aurora::allocation::routing_state.callbackGuest);
+    });
+    ASSERT_EQ(started.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    EXPECT_EQ(retired.wait_for(std::chrono::milliseconds(30)), std::future_status::timeout);
+    first.release();
+    ASSERT_EQ(retired.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    retired.get();
+    EXPECT_EQ(callbacks.load(), 1U);
+    EXPECT_EQ(first.active.load(), 0U);
+    EXPECT_EQ(file.cb.userData, &callbacks);
+    if (boundary == Boundary::Stop) ASSERT_TRUE(aurora_dvd_open(image()));
+  }
+}
+
+TEST_F(DVDDescriptorTest, StaleCatalogReadStillDeliversCapturedInterruptCallback) {
+  DVDFileInfo file{};
+  alignas(32) std::array<u8, 32> bytes{};
+  ASSERT_TRUE(DVDOpen(firstPath, &file));
+  const AuroraOverlayFile replacement{firstPath, &second, second.bytes.size()};
+  aurora_dvd_overlay_files(&replacement, 1, nullptr);
+  const aurora::os::GuestThreadExecutionScope execution;
+  struct State { OSMessageQueue queue{}; OSMessage storage{}; } state;
+  OSInitMessageQueue(&state.queue, &state.storage, 1);
+  file.cb.userData = &state;
+  {
+    const aurora::allocation::ClientAllocationScope allocations({true, true});
+    ASSERT_TRUE(DVDReadAsyncPrio(&file, bytes.data(), bytes.size(), 0, [](s32 result, DVDFileInfo* file) {
+      auto& state = *static_cast<State*>(file->cb.userData);
+      EXPECT_EQ(result, DVD_RESULT_FATAL_ERROR);
+      EXPECT_EQ(DVDGetFileInfoStatus(file), DVD_STATE_FATAL_ERROR);
+      EXPECT_EQ(OSDisableInterrupts(), FALSE);
+      EXPECT_EQ(OSDisableScheduler(), 1);
+      EXPECT_EQ(OSEnableScheduler(), 2);
+      EXPECT_TRUE(aurora::allocation::routing_state.guest);
+      EXPECT_TRUE(OSSendMessage(&state.queue, nullptr, OS_MESSAGE_NOBLOCK));
+    }, 2));
+  }
+  EXPECT_TRUE(OSReceiveMessage(&state.queue, nullptr, OS_MESSAGE_BLOCK));
+  EXPECT_TRUE(DVDClose(&file));
+  EXPECT_EQ(first.opens.load(), 0U);
+  EXPECT_EQ(second.opens.load(), 0U);
+  EXPECT_EQ(bytes, (std::array<u8, 32>{}));
+}
+
+TEST(DVDCallbacks, LowRegistrationRetainsPolicyAndRestoresCallerState) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  struct State { OSContext* context; unsigned calls = 0; } state{OSGetCurrentContext()};
+  static State* active;
+  active = &state;
+  const auto callback = +[](u32 result) {
+    EXPECT_EQ(result, 0U);
+    EXPECT_NE(OSGetCurrentContext(), active->context);
+    EXPECT_EQ(OSDisableInterrupts(), FALSE);
+    EXPECT_EQ(OSDisableScheduler(), 1);
+    EXPECT_EQ(OSEnableScheduler(), 2);
+    EXPECT_TRUE(aurora::allocation::routing_state.guest);
+    ++active->calls;
+    EXPECT_NE(DVDLowClearCallback(), nullptr);
+  };
+  {
+    const aurora::allocation::ClientAllocationScope allocations({true, true});
+    EXPECT_EQ(DVDLowSetResetCoverCallback(callback), nullptr);
+  }
+  {
+    const aurora::allocation::ClientAllocationScope allocations({false, false});
+    DVDLowReset();
+    DVDLowReset();
+    EXPECT_FALSE(aurora::allocation::routing_state.guest);
+    EXPECT_FALSE(aurora::allocation::routing_state.callbackGuest);
+  }
+  EXPECT_EQ(state.calls, 1U);
+  EXPECT_EQ(OSGetCurrentContext(), state.context);
+  EXPECT_EQ(OSDisableInterrupts(), TRUE);
+  OSRestoreInterrupts(TRUE);
+  EXPECT_EQ(OSDisableScheduler(), 0);
+  EXPECT_EQ(OSEnableScheduler(), 1);
+  active = nullptr;
+}
+
+TEST_F(DVDDescriptorTest, ActiveAsyncCancellationDefersBothCallbacksToOneInterrupt) {
+  for (bool all : {false, true}) {
+    first.blocked = true;
+    first.released = false;
+    first.entered = false;
+    PendingDescriptorScope cleanup{first};
+    const aurora::os::GuestThreadExecutionScope execution;
+    struct State {
+      OSMessageQueue queue{};
+      OSMessage storage{};
+      OSContext* interrupt = nullptr;
+      unsigned calls = 0;
+    } state;
+    OSInitMessageQueue(&state.queue, &state.storage, 1);
+    DVDFileInfo file{};
+    alignas(32) std::array<u8, 32> bytes{};
+    file.cb.userData = &state;
+    ASSERT_TRUE(DVDOpen(firstPath, &file));
+    {
+      const aurora::allocation::ClientAllocationScope allocations({true, true});
+      ASSERT_TRUE(DVDReadAsyncPrio(&file, bytes.data(), bytes.size(), 0, [](s32 result, DVDFileInfo* file) {
+        auto& state = *static_cast<State*>(file->cb.userData);
+        EXPECT_EQ(result, -3);
+        EXPECT_EQ(DVDGetFileInfoStatus(file), DVD_STATE_CANCELED);
+        EXPECT_EQ(OSDisableInterrupts(), FALSE);
+        EXPECT_EQ(OSDisableScheduler(), 1);
+        EXPECT_EQ(OSEnableScheduler(), 2);
+        EXPECT_TRUE(aurora::allocation::routing_state.guest);
+        state.interrupt = OSGetCurrentContext();
+        EXPECT_EQ(state.calls++, 0U);
+      }, 2));
+    }
+    ASSERT_TRUE(first.await_entry());
+    const auto canceled = +[](s32 result, DVDCommandBlock* block) {
+      ASSERT_NE(block, nullptr);
+      auto& state = *static_cast<State*>(block->userData);
+      EXPECT_EQ(result, 0);
+      EXPECT_EQ(OSGetCurrentContext(), state.interrupt);
+      EXPECT_EQ(OSDisableInterrupts(), FALSE);
+      EXPECT_EQ(OSDisableScheduler(), 1);
+      EXPECT_EQ(OSEnableScheduler(), 2);
+      EXPECT_FALSE(aurora::allocation::routing_state.guest);
+      EXPECT_EQ(state.calls++, 1U);
+      EXPECT_TRUE(OSSendMessage(&state.queue, nullptr, OS_MESSAGE_NOBLOCK));
+    };
+    {
+      const aurora::allocation::ClientAllocationScope allocations({false, false});
+      EXPECT_TRUE(all ? DVDCancelAllAsync(canceled) : DVDCancelAsync(&file.cb, canceled));
+      EXPECT_FALSE(all ? DVDCancelAllAsync(canceled) : DVDCancelAsync(&file.cb, canceled));
+    }
+    EXPECT_EQ(state.calls, 0U);
+    EXPECT_EQ(DVDGetFileInfoStatus(&file), DVD_STATE_BUSY);
+    first.release();
+    EXPECT_TRUE(OSReceiveMessage(&state.queue, nullptr, OS_MESSAGE_BLOCK));
+    EXPECT_TRUE(DVDClose(&file));
+    EXPECT_EQ(state.calls, 2U);
+  }
+}
+
+TEST_F(DVDDescriptorTest, PauseRetainsQueuedCommandsAndCancellationResumesTheWorker) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  DVDFileInfo file{};
+  alignas(32) std::array<u8, 32> bytes{};
+  struct State { unsigned calls = 0; OSContext* context; } state{0, OSGetCurrentContext()};
+  file.cb.userData = &state;
+  ASSERT_TRUE(DVDOpen(firstPath, &file));
+  DVDPause();
+  EXPECT_EQ(DVDGetDriveStatus(), DVD_STATE_PAUSING);
+  ASSERT_TRUE(DVDReadAsyncPrio(&file, bytes.data(), bytes.size(), 0, [](s32 result, DVDFileInfo* file) {
+    auto& state = *static_cast<State*>(file->cb.userData);
+    EXPECT_EQ(result, -3);
+    EXPECT_EQ(OSGetCurrentContext(), state.context);
+    EXPECT_EQ(OSDisableInterrupts(), FALSE);
+    EXPECT_EQ(OSDisableScheduler(), 0);
+    EXPECT_EQ(OSEnableScheduler(), 1);
+    ++state.calls;
+  }, 2));
+  EXPECT_EQ(DVDGetFileInfoStatus(&file), DVD_STATE_WAITING);
+  EXPECT_EQ(first.opens.load(), 0U);
+  // The real cancellation-all contract resumes after draining queued work and
+  // delivers 0/nullptr when there was no executing command.
+  static State* active;
+  active = &state;
+  EXPECT_TRUE(DVDCancelAllAsync([](s32 result, DVDCommandBlock* block) {
+    EXPECT_EQ(result, 0);
+    EXPECT_EQ(block, nullptr);
+    EXPECT_EQ(OSGetCurrentContext(), active->context);
+    EXPECT_EQ(OSDisableInterrupts(), FALSE);
+    EXPECT_EQ(OSDisableScheduler(), 0);
+    EXPECT_EQ(OSEnableScheduler(), 1);
+    EXPECT_EQ(active->calls++, 1U);
+  }));
+  active = nullptr;
+  EXPECT_EQ(state.calls, 2U);
+  EXPECT_EQ(DVDGetDriveStatus(), DVD_STATE_END);
+  EXPECT_EQ(DVDGetFileInfoStatus(&file), DVD_STATE_CANCELED);
+  EXPECT_EQ(first.opens.load(), 0U);
+  // Reusing the same terminal command must work after cancellation resumed it.
+  EXPECT_EQ(DVDReadPrio(&file, bytes.data(), bytes.size(), 0, 2), 32);
+  EXPECT_TRUE(DVDClose(&file));
+  EXPECT_EQ(first.opens.load(), 1U);
+  DVDCommandBlock idle{};
+  EXPECT_TRUE(DVDCancelAsync(&idle, nullptr));
+  EXPECT_EQ(idle.state, DVD_STATE_END);
+}
+
+TEST_F(DVDDescriptorTest, CancelAllCallbackCanCancelAndReclaimAnotherQueuedDescriptor) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  for (bool close : {false, true}) {
+    struct State {
+      bool close;
+      std::unique_ptr<DVDFileInfo> middle = std::make_unique<DVDFileInfo>();
+      std::array<unsigned, 3> order{};
+      unsigned count = 0;
+    } state{close};
+    DVDFileInfo firstFile{}, lastFile{};
+    alignas(32) std::array<std::array<u8, 32>, 3> bytes{};
+    ASSERT_TRUE(DVDOpen(firstPath, &firstFile));
+    ASSERT_TRUE(DVDOpen(firstPath, state.middle.get()));
+    ASSERT_TRUE(DVDOpen(firstPath, &lastFile));
+    firstFile.cb.userData = state.middle->cb.userData = lastFile.cb.userData = &state;
+    DVDPause();
+    ASSERT_TRUE(DVDReadAsyncPrio(&firstFile, bytes[0].data(), bytes[0].size(), 0, [](s32 result, DVDFileInfo* file) {
+      auto& state = *static_cast<State*>(file->cb.userData);
+      EXPECT_EQ(result, -3);
+      state.order[state.count++] = 1;
+      if (state.close) EXPECT_TRUE(DVDClose(state.middle.get()));
+      else EXPECT_EQ(DVDCancel(&state.middle->cb), 0);
+      state.middle.reset();
+    }, 2));
+    ASSERT_TRUE(DVDReadAsyncPrio(state.middle.get(), bytes[1].data(), bytes[1].size(), 0, [](s32 result, DVDFileInfo* file) {
+      auto& state = *static_cast<State*>(file->cb.userData);
+      EXPECT_EQ(result, -3);
+      state.order[state.count++] = 2;
+    }, 2));
+    ASSERT_TRUE(DVDReadAsyncPrio(&lastFile, bytes[2].data(), bytes[2].size(), 0, [](s32 result, DVDFileInfo* file) {
+      auto& state = *static_cast<State*>(file->cb.userData);
+      EXPECT_EQ(result, -3);
+      state.order[state.count++] = 3;
+    }, 2));
+    EXPECT_TRUE(DVDCancelAllAsync(nullptr));
+    EXPECT_EQ(state.middle, nullptr);
+    EXPECT_EQ(state.count, 3U);
+    EXPECT_EQ(state.order, (std::array<unsigned, 3>{1, 2, 3}));
+    EXPECT_EQ(first.opens.load(), 0U);
+    EXPECT_TRUE(DVDClose(&firstFile));
+    EXPECT_TRUE(DVDClose(&lastFile));
+  }
+}
+
+TEST_F(DVDDescriptorTest, CompletedCallbackCanReclaimItsDescriptorBeforeCancelAll) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  struct State {
+    OSMessageQueue queue{};
+    OSMessage storage{};
+    bool reclaimed = false;
+  } state;
+  OSInitMessageQueue(&state.queue, &state.storage, 1);
+  auto* file = new DVDFileInfo{};
+  alignas(32) std::array<u8, 32> bytes{};
+  file->cb.userData = &state;
+  ASSERT_TRUE(DVDOpen(firstPath, file));
+  ASSERT_TRUE(DVDReadAsyncPrio(file, bytes.data(), bytes.size(), 0, [](s32 result, DVDFileInfo* file) {
+    auto& state = *static_cast<State*>(file->cb.userData);
+    EXPECT_EQ(result, 32);
+    delete file;
+    state.reclaimed = true;
+    EXPECT_TRUE(DVDCancelAllAsync([](s32 result, DVDCommandBlock* block) {
+      EXPECT_EQ(result, 0);
+      EXPECT_EQ(block, nullptr);
+      EXPECT_EQ(OSDisableScheduler(), 1);
+      EXPECT_EQ(OSEnableScheduler(), 2);
+    }));
+    EXPECT_TRUE(OSSendMessage(&state.queue, nullptr, OS_MESSAGE_NOBLOCK));
+  }, 2));
+  EXPECT_TRUE(OSReceiveMessage(&state.queue, nullptr, OS_MESSAGE_BLOCK));
+  EXPECT_TRUE(state.reclaimed);
+  EXPECT_EQ(first.active.load(), 0U);
+}
+
+TEST_F(DVDDescriptorTest, DiscServiceCloseFromItsWorkerCallbackIsRejected) {
+  const auto previous = ::testing::GTEST_FLAG(death_test_style);
+  ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
+  EXPECT_DEATH({
+    DVDFileInfo file{};
+    alignas(32) u8 bytes[32]{};
+    std::promise<void> returned;
+    auto done = returned.get_future();
+    file.cb.userData = &returned;
+    DVDOpen(firstPath, &file);
+    DVDReadAsyncPrio(&file, bytes, sizeof(bytes), 0, [](s32, DVDFileInfo* file) {
+      aurora_dvd_close();
+      static_cast<std::promise<void>*>(file->cb.userData)->set_value();
+    }, 2);
+    done.wait();
+  }, "DVD disc service cannot be stopped or replaced from its executing worker callback");
+  ::testing::GTEST_FLAG(death_test_style) = previous;
+}
+
+TEST_F(DVDDescriptorTest, IdleWorkerCanRetireAfterMainGuestThreadLocalTeardown) {
+  const auto previous = ::testing::GTEST_FLAG(death_test_style);
+  ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
+  EXPECT_EXIT({
+    { const aurora::os::GuestThreadExecutionScope execution; }
+    // Deliberately bypass fixture teardown. Standard process exit first retires
+    // the calling thread's TLS and then the idle DVD worker's static owner.
+    std::exit(0);
+  }, ::testing::ExitedWithCode(0), "");
+  ::testing::GTEST_FLAG(death_test_style) = previous;
+}
+
+TEST_F(DVDDescriptorTest, StoppingWorkerKeepsQueuedDescriptorDiscoverableUntilGuestDelivery) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  struct State { unsigned readCallbacks = 0; bool reclaimed = false; } state;
+  auto* file = new DVDFileInfo{};
+  alignas(32) std::array<u8, 32> bytes{};
+  file->cb.userData = &state;
+  ASSERT_TRUE(DVDOpen(firstPath, file));
+  DVDPause();
+  ASSERT_TRUE(DVDReadAsyncPrio(file, bytes.data(), bytes.size(), 0, [](s32 result, DVDFileInfo* file) {
+    EXPECT_EQ(result, -3);
+    ++static_cast<State*>(file->cb.userData)->readCallbacks;
+  }, 2));
+  std::promise<void> stopping;
+  auto started = stopping.get_future();
+  auto stopped = std::async(std::launch::async, [&] {
+    stopping.set_value();
+    aurora_dvd_close();
+  });
+  EXPECT_EQ(started.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_EQ(stopped.wait_for(std::chrono::milliseconds(30)), std::future_status::timeout);
+  // The stop caller needs this CPU to dispatch the queued callback. Until it
+  // acquires it, the real queue must still allow this guest to cancel/reclaim.
+  EXPECT_TRUE(DVDCancelAsync(&file->cb, [](s32 result, DVDCommandBlock* block) {
+    EXPECT_EQ(result, 0);
+    auto& state = *static_cast<State*>(block->userData);
+    EXPECT_EQ(state.readCallbacks, 1U);
+    delete reinterpret_cast<DVDFileInfo*>(block);
+    state.reclaimed = true;
+  }));
+  EXPECT_TRUE(state.reclaimed);
+  {
+    const aurora::os::GuestThreadWaitScope wait;
+    EXPECT_EQ(stopped.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    stopped.get();
+  }
+  EXPECT_EQ(state.readCallbacks, 1U);
+  EXPECT_EQ(first.opens.load(), 0U);
+  ASSERT_TRUE(aurora_dvd_open(image()));
 }

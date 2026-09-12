@@ -12,11 +12,14 @@ extern "C" {
  * Open a GC/Wii disc image for use by the DVD API.
  * Must be called before DVDInit().
  * Returns true on success, false on failure.
+ * Disc service replacement must be called outside its I/O and completion callbacks.
  */
 bool aurora_dvd_open(const char* disc_path);
 
 /**
  * Close the disc image and free all resources.
+ * Call outside its I/O and completion callbacks so the owning worker can be joined.
+ * This restriction does not apply to the SDK DVDClose(DVDFileInfo*) operation.
  */
 void aurora_dvd_close(void);
 

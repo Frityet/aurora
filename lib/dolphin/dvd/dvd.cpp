@@ -43,7 +43,6 @@ namespace aurora::dvd::impl {
   BOOL s_autoInvalidation = FALSE;
   BOOL s_autoFatalMessaging = FALSE;
   DVDDiskID s_diskID = {};
-  DVDLowCallback s_resetCoverCallback = nullptr;
   bool s_initialized = false;
   bool s_overlayCallbacksSet = false;
   AuroraOverlayCallbacks s_overlayCallbacks;
@@ -356,6 +355,7 @@ void beginCommand(DVDCommandBlock* block, u32 command, void* addr, u32 length, u
   block->offset = offset;
   atomic_store_relaxed(block->transferredSize, 0u);
   block->callback = callback;
+  block->nativeCallbackGuest = aurora::allocation::routing_state.callbackGuest;
   {
     std::lock_guard lock(s_fstLock);
     block->nativeGeneration = s_generation;
@@ -368,6 +368,56 @@ void finishCommand(DVDCommandBlock* block, s32 result, u32 transferred) {
   setCommandResult(block, stateForResult(result), transferred);
 }
 
+class InlineCallbackScope final {
+public:
+  InlineCallbackScope() : m_interrupts(OSDisableInterrupts()) {}
+  ~InlineCallbackScope() { OSRestoreInterrupts(m_interrupts); }
+private:
+  aurora::os::GuestThreadExecutionScope m_execution;
+  BOOL m_interrupts;
+};
+
+void invokeCallback(DVDCBCallback callback, s32 result, DVDCommandBlock* block, bool guest) {
+  if (callback == nullptr) return;
+  const aurora::allocation::ClientAllocationScope allocations({guest, guest});
+  callback(result, block);
+}
+
+// The caller owns the guest CPU through completion publication and delivery.
+void completeCommand(DVDCommandBlock* block, s32 result, u32 transferred) {
+  const auto callback = block->callback;
+  const bool guest = block->nativeCallbackGuest;
+  finishCommand(block, result, transferred);
+  invokeCallback(callback, result, block, guest);
+}
+
+void completeInlineCommand(DVDCommandBlock* block, s32 result, u32 transferred) {
+  const InlineCallbackScope inlineCallback;
+  completeCommand(block, result, transferred);
+}
+
+template <class Callback, class... Args>
+void invokeInlineCallback(bool guest, Callback callback, Args... args) {
+  if (callback == nullptr) return;
+  const InlineCallbackScope inlineCallback;
+  const aurora::allocation::ClientAllocationScope allocations({guest, guest});
+  callback(args...);
+}
+
+template <class Callback, class... Args>
+void invokeInterruptCallback(bool guest, Callback callback, Args... args) {
+  if (callback == nullptr) return;
+  const aurora::os::GuestInterruptExecutionScope interrupt;
+  const aurora::allocation::ClientAllocationScope allocations({guest, guest});
+  callback(args...);
+}
+
+struct LowCallbackRegistration {
+  DVDLowCallback callback = nullptr;
+  bool guest = false;
+};
+LowCallbackRegistration s_resetCoverCallback;
+
 class DvdWorker {
 public:
   ~DvdWorker() { stop(); }
@@ -379,36 +429,30 @@ public:
       return;
     }
     m_shutdown = false;
+    m_paused = false;
     m_thread = std::thread([this] { run(); });
     m_running = true;
   }
 
   void stop() {
-    std::vector<DVDCommandBlock*> canceledBlocks;
-    bool stoppedFromWorker = false;
     {
       const aurora::allocation::HostAllocationScope host;
       std::lock_guard lk{m_mutex};
       if (!m_running) {
         return;
       }
+      if (std::this_thread::get_id() == m_thread.get_id())
+        Log.fatal("DVD disc service cannot be stopped or replaced from its executing worker callback");
       m_shutdown = true;
-      canceledBlocks = discard_pending_commands_locked();
-      if (std::this_thread::get_id() == m_thread.get_id()) {
-        m_running = false;
-        m_thread.detach();
-        stoppedFromWorker = true;
-      } else if (m_activeBlock != nullptr) {
-        m_cancelActiveBlock = m_activeBlock;
-      }
+      if (m_activeBlock != nullptr && !m_completing) m_cancelActiveBlock = m_activeBlock;
     }
-    complete_canceled_commands(canceledBlocks);
+    complete_canceled_commands();
     m_doneCv.notify_all();
-    if (stoppedFromWorker) {
-      return;
-    }
     m_cv.notify_all();
-    m_thread.join();
+    {
+      const aurora::os::GuestThreadWaitScope wait;
+      m_thread.join();
+    }
     {
       std::lock_guard lk{m_mutex};
       m_running = false;
@@ -435,61 +479,88 @@ public:
     m_cv.notify_one();
   }
 
-  void retire_command(DVDCommandBlock* block) {
-    if (block == nullptr) {
-      return;
-    }
-
-    DVDCommandBlock* canceledBlock = nullptr;
-    std::unique_lock lk{m_mutex};
+  bool cancel_command(DVDCommandBlock* block, DVDCBCallback callback, bool synchronous) {
+    if (block == nullptr) return false;
+    const InlineCallbackScope execution;
+    const bool guest = aurora::allocation::routing_state.callbackGuest;
+    std::unique_lock lock(m_mutex);
     for (auto it = m_queue.begin(); it != m_queue.end(); ++it) {
-      if (*it == block) {
-        m_queue.erase(it);
-        canceledBlock = block;
-        lk.unlock();
-        complete_canceled_command(canceledBlock);
-        m_doneCv.notify_all();
-        return;
-      }
+      if (*it != block) continue;
+      m_queue.erase(it);
+      lock.unlock();
+      completeCommand(block, DVD_RESULT_CANCELED, 0);
+      invokeCallback(callback, DVD_RESULT_GOOD, block, guest);
+      m_doneCv.notify_all();
+      return true;
     }
 
-    if (m_activeBlock == block && std::this_thread::get_id() != m_thread.get_id()) {
+    const bool active = m_activeBlock == block && std::this_thread::get_id() != m_thread.get_id();
+    if (active && !isCommandBlockIdle(block)) {
+      if (m_cancelActiveBlock == block) return false;
       m_cancelActiveBlock = block;
-      m_doneCv.wait(lk, [&] { return !m_running || m_activeBlock != block; });
-    } else {
-      atomic_store_release(block->state, DVD_STATE_CANCELED);
-      lk.unlock();
-      m_doneCv.notify_all();
-      return;
+      m_cancelCallback = callback;
+      m_cancelCallbackGuest = guest;
+      if (synchronous) wait_for_completion(lock, [&] { return !m_running || m_activeBlock != block; });
+      return true;
     }
+    // Terminal commands complete cancellation immediately without changing
+    // their state. Retain the existing untracked-busy descriptor behavior.
+    if (!active && !isCommandBlockIdle(block)) atomic_store_release(block->state, DVD_STATE_CANCELED);
+    if (active && synchronous) wait_for_completion(lock, [&] { return !m_running || m_activeBlock != block; });
+    lock.unlock();
+    invokeCallback(callback, DVD_RESULT_GOOD, block, guest);
+    return true;
   }
 
-  void cancel_all() {
-    std::vector<DVDCommandBlock*> canceledBlocks;
-    bool waitForActive = false;
-    {
-      const aurora::allocation::HostAllocationScope host;
-      std::lock_guard lk{m_mutex};
-      canceledBlocks = discard_pending_commands_locked();
-      if (m_activeBlock != nullptr && std::this_thread::get_id() != m_thread.get_id()) {
-        m_cancelActiveBlock = m_activeBlock;
-        waitForActive = true;
-      }
-    }
-
-    complete_canceled_commands(canceledBlocks);
+  bool cancel_all(DVDCBCallback callback = nullptr, bool synchronous = true) {
+    const InlineCallbackScope execution;
+    pause();
+    complete_canceled_commands();
     m_doneCv.notify_all();
-
-    if (waitForActive) {
-      std::unique_lock lk{m_mutex};
-      m_doneCv.wait(lk, [&] { return !m_running || m_activeBlock == nullptr; });
+    DVDCommandBlock* active;
+    {
+      std::lock_guard lock(m_mutex);
+      // Keep the descriptor identity only for native retirement waits during
+      // callback delivery. The client may already have reclaimed its storage.
+      active = m_completing ? nullptr : m_activeBlock;
     }
+    bool result = true;
+    if (active != nullptr) {
+      result = cancel_command(active, callback, synchronous);
+      // The host's synchronous drain helper also waits for a cancellation that
+      // an earlier asynchronous caller already registered; it never replaces
+      // that caller's retained callback.
+      if (!result && synchronous) drain_command(active);
+    } else {
+      invokeCallback(callback, DVD_RESULT_GOOD, nullptr, aurora::allocation::routing_state.callbackGuest);
+    }
+    resume();
+    return result;
+  }
+
+  void pause() {
+    std::lock_guard lock(m_mutex);
+    m_paused = true;
+  }
+
+  void resume() {
+    {
+      std::lock_guard lock(m_mutex);
+      m_paused = false;
+    }
+    m_cv.notify_one();
+  }
+
+  bool pausing() {
+    std::lock_guard lock(m_mutex);
+    return m_paused && m_activeBlock == nullptr;
   }
 
   void drain_command(DVDCommandBlock* block) {
     if (block == nullptr) {
       return;
     }
+    const InlineCallbackScope execution;
 
     DVDCommandBlock* canceledBlock = nullptr;
     std::unique_lock lk{m_mutex};
@@ -506,7 +577,7 @@ public:
 
     if (m_activeBlock == block && std::this_thread::get_id() != m_thread.get_id()) {
       m_cancelActiveBlock = block;
-      m_doneCv.wait(lk, [&] { return !m_running || m_activeBlock != block; });
+      wait_for_completion(lk, [&] { return !m_running || m_activeBlock != block; });
     }
   }
 
@@ -515,13 +586,27 @@ public:
       return;
     }
     std::unique_lock lk{m_mutex};
-    m_doneCv.wait(lk, [&] {
+    wait_for_completion(lk, [&] {
       const s32 state = atomic_load_acquire(block->state);
       return !m_running || (m_activeBlock != block && state != DVD_STATE_BUSY && state != DVD_STATE_WAITING);
     });
   }
 
 private:
+  template <class Predicate>
+  void wait_for_completion(std::unique_lock<std::mutex>& lock, Predicate completed) {
+    while (!completed()) {
+      {
+        const aurora::os::GuestThreadWaitScope wait;
+        m_doneCv.wait(lock, completed);
+        // Never reacquire the guest CPU while retaining the native mutex: a
+        // callback may own that CPU and re-enter the DVD queue before returning.
+        lock.unlock();
+      }
+      lock.lock();
+    }
+  }
+
   void run() {
 #ifdef TRACY_ENABLE
     tracy::SetThreadName("Aurora DVD worker");
@@ -529,7 +614,7 @@ private:
 
     std::unique_lock lk{m_mutex};
     while (true) {
-      m_cv.wait(lk, [&] { return m_shutdown || !m_queue.empty(); });
+      m_cv.wait(lk, [&] { return m_shutdown || (!m_paused && !m_queue.empty()); });
       if (m_shutdown) {
         return;
       }
@@ -541,6 +626,7 @@ private:
       process_command(block);
       lk.lock();
       m_activeBlock = nullptr;
+      m_completing = false;
       if (m_cancelActiveBlock == block) {
         m_cancelActiveBlock = nullptr;
       }
@@ -606,14 +692,24 @@ private:
 
   void process_command(DVDCommandBlock* block) {
     auto [result, transferred] = perform_command(block);
-    if (consume_active_cancel(block)) {
-      result = DVD_RESULT_CANCELED;
-      transferred = 0;
+    // Acquire before observing cancellation and publishing the result. A Game
+    // caller may request cancellation while this completion waits for the CPU.
+    const aurora::os::GuestInterruptExecutionScope interrupt;
+    DVDCBCallback cancelCallback = nullptr;
+    bool cancelGuest = false;
+    {
+      std::lock_guard lock(m_mutex);
+      if (m_cancelActiveBlock == block) {
+        m_cancelActiveBlock = nullptr;
+        cancelCallback = std::exchange(m_cancelCallback, nullptr);
+        cancelGuest = m_cancelCallbackGuest;
+        result = DVD_RESULT_CANCELED;
+        transferred = 0;
+      }
+      m_completing = true;
     }
-    finishCommand(block, result, transferred);
-    if (block->callback != nullptr) {
-      block->callback(result, block);
-    }
+    completeCommand(block, result, transferred);
+    invokeCallback(cancelCallback, DVD_RESULT_GOOD, block, cancelGuest);
   }
 
   void execute(DVDCommandBlock* block) {
@@ -626,6 +722,7 @@ private:
     {
       std::lock_guard lk{m_mutex};
       m_activeBlock = nullptr;
+      m_completing = false;
       if (m_cancelActiveBlock == block) {
         m_cancelActiveBlock = nullptr;
       }
@@ -633,39 +730,34 @@ private:
     m_doneCv.notify_all();
   }
 
-  bool consume_active_cancel(DVDCommandBlock* block) {
-    std::lock_guard lk{m_mutex};
-    if (m_cancelActiveBlock != block) {
-      return false;
-    }
-    m_cancelActiveBlock = nullptr;
-    return true;
-  }
-
   static void complete_canceled_command(DVDCommandBlock* block) {
     if (block == nullptr) {
       return;
     }
-    finishCommand(block, DVD_RESULT_CANCELED, 0);
-    if (block->callback != nullptr) {
-      block->callback(DVD_RESULT_CANCELED, block);
-    }
+    completeInlineCommand(block, DVD_RESULT_CANCELED, 0);
   }
 
-  static void complete_canceled_commands(const std::vector<DVDCommandBlock*>& blocks) {
-    for (auto* block : blocks) {
-      complete_canceled_command(block);
+  void complete_canceled_commands() {
+    for (;;) {
+      {
+        std::lock_guard lock(m_mutex);
+        if (m_queue.empty()) break;
+      }
+      // Do not enter guest TLS for an empty static-owner shutdown, but acquire
+      // the CPU before removing a live descriptor from the discoverable queue.
+      // Another caller may cancel/reclaim it while this scope waits to enter.
+      const InlineCallbackScope execution;
+      DVDCommandBlock* block;
+      {
+        std::lock_guard lock(m_mutex);
+        if (m_queue.empty()) break;
+        block = m_queue.front();
+        m_queue.pop_front();
+      }
+      // Pop one at a time: this callback may cancel and reclaim a different
+      // queued descriptor before the next iteration, exactly as in the SDK.
+      completeCommand(block, DVD_RESULT_CANCELED, 0);
     }
-  }
-
-  std::vector<DVDCommandBlock*> discard_pending_commands_locked() {
-    std::vector<DVDCommandBlock*> blocks;
-    blocks.reserve(m_queue.size());
-    for (auto* block : m_queue) {
-      blocks.push_back(block);
-    }
-    m_queue.clear();
-    return blocks;
   }
 
   std::thread m_thread;
@@ -675,6 +767,10 @@ private:
   std::deque<DVDCommandBlock*> m_queue;
   DVDCommandBlock* m_activeBlock = nullptr;
   DVDCommandBlock* m_cancelActiveBlock = nullptr;
+  DVDCBCallback m_cancelCallback = nullptr;
+  bool m_cancelCallbackGuest = false;
+  bool m_paused = false;
+  bool m_completing = false;
   bool m_running = false;
   bool m_shutdown = false;
 };
@@ -683,10 +779,7 @@ DvdWorker s_worker;
 
 int completeImmediateCommand(DVDCommandBlock* block, u32 command, s32 result, u32 transferred, DVDCBCallback callback) {
   beginCommand(block, command, nullptr, 0, 0, callback);
-  finishCommand(block, result, transferred);
-  if (callback != nullptr) {
-    callback(result, block);
-  }
+  completeInlineCommand(block, result, transferred);
   return TRUE;
 }
 
@@ -867,9 +960,7 @@ int DVDReadDiskID(DVDCommandBlock* block, DVDDiskID* diskID, DVDCBCallback callb
   if (block != nullptr) {
     setCommandResult(block, DVD_STATE_END, 0);
   }
-  if (callback != nullptr) {
-    callback(DVD_RESULT_GOOD, block);
-  }
+  invokeInlineCallback(aurora::allocation::routing_state.callbackGuest, callback, DVD_RESULT_GOOD, block);
   return TRUE;
 }
 
@@ -879,10 +970,7 @@ int DVDPrepareStreamAbsAsync(DVDCommandBlock* block, u32 length, u32 offset, DVD
     return FALSE;
   }
   beginCommand(block, DVD_COMMAND_INITSTREAM, nullptr, length, offset, callback);
-  finishCommand(block, DVD_RESULT_IGNORED, 0);
-  if (callback != nullptr) {
-    callback(DVD_RESULT_IGNORED, block);
-  }
+  completeInlineCommand(block, DVD_RESULT_IGNORED, 0);
   return TRUE;
 }
 
@@ -890,9 +978,7 @@ int DVDCancelStreamAsync(DVDCommandBlock* block, DVDCBCallback callback) {
   if (block != nullptr) {
     atomic_store_release(block->state, DVD_STATE_CANCELED);
   }
-  if (callback != nullptr) {
-    callback(DVD_RESULT_CANCELED, block);
-  }
+  invokeInlineCallback(aurora::allocation::routing_state.callbackGuest, callback, DVD_RESULT_CANCELED, block);
   return TRUE;
 }
 
@@ -907,9 +993,7 @@ int DVDStopStreamAtEndAsync(DVDCommandBlock* block, DVDCBCallback callback) {
   if (block != nullptr) {
     setCommandResult(block, DVD_STATE_END, 0);
   }
-  if (callback != nullptr) {
-    callback(DVD_RESULT_GOOD, block);
-  }
+  invokeInlineCallback(aurora::allocation::routing_state.callbackGuest, callback, DVD_RESULT_GOOD, block);
   return TRUE;
 }
 
@@ -993,9 +1077,7 @@ int DVDStopMotorAsync(DVDCommandBlock* block, DVDCBCallback callback) {
   if (block != nullptr) {
     setCommandResult(block, DVD_STATE_END, 0);
   }
-  if (callback != nullptr) {
-    callback(DVD_RESULT_GOOD, block);
-  }
+  invokeInlineCallback(aurora::allocation::routing_state.callbackGuest, callback, DVD_RESULT_GOOD, block);
   return TRUE;
 }
 
@@ -1011,9 +1093,7 @@ int DVDInquiryAsync(DVDCommandBlock* block, DVDDriveInfo* info, DVDCBCallback ca
   if (block != nullptr) {
     setCommandResult(block, DVD_STATE_END, 0);
   }
-  if (callback != nullptr) {
-    callback(DVD_RESULT_GOOD, block);
-  }
+  invokeInlineCallback(aurora::allocation::routing_state.callbackGuest, callback, DVD_RESULT_GOOD, block);
   return TRUE;
 }
 
@@ -1033,7 +1113,7 @@ s32 DVDGetCommandBlockStatus(const DVDCommandBlock* block) {
   return atomic_load_acquire(block->state);
 }
 
-s32 DVDGetDriveStatus(void) { return s_initialized ? DVD_STATE_END : DVD_STATE_NO_DISK; }
+s32 DVDGetDriveStatus(void) { return !s_initialized ? DVD_STATE_NO_DISK : s_worker.pausing() ? DVD_STATE_PAUSING : DVD_STATE_END; }
 
 BOOL DVDSetAutoInvalidation(BOOL autoInval) {
   BOOL prev = s_autoInvalidation;
@@ -1041,30 +1121,20 @@ BOOL DVDSetAutoInvalidation(BOOL autoInval) {
   return prev;
 }
 
-void DVDPause(void) {}
+void DVDPause(void) { s_worker.pause(); }
 
-void DVDResume(void) {}
+void DVDResume(void) { s_worker.resume(); }
 
 int DVDCancelAsync(DVDCommandBlock* block, DVDCBCallback callback) {
-  s_worker.retire_command(block);
-  if (callback != nullptr) {
-    callback(DVD_RESULT_GOOD, block);
-  }
-  return TRUE;
+  return s_worker.cancel_command(block, callback, false);
 }
 
 s32 DVDCancel(volatile DVDCommandBlock* block) {
-  auto* mutableBlock = const_cast<DVDCommandBlock*>(block);
-  s_worker.retire_command(mutableBlock);
-  return DVD_RESULT_GOOD;
+  return s_worker.cancel_command(const_cast<DVDCommandBlock*>(block), nullptr, true) ? DVD_RESULT_GOOD : DVD_RESULT_FATAL_ERROR;
 }
 
 int DVDCancelAllAsync(DVDCBCallback callback) {
-  s_worker.cancel_all();
-  if (callback != nullptr) {
-    callback(DVD_RESULT_CANCELED, nullptr);
-  }
-  return TRUE;
+  return s_worker.cancel_all(callback, false);
 }
 
 s32 DVDCancelAll(void) {
@@ -1446,24 +1516,20 @@ DVDDiskID* DVDGenerateDiskID(DVDDiskID* id, const char* game, const char* compan
 BOOL DVDLowRead(void* addr, u32 length, u32 offset, DVDLowCallback callback) {
   u32 transferred = 0;
   s32 result = readFromHandle(s_disc, addr, static_cast<s32>(length), static_cast<s32>(offset), &transferred);
-  if (callback != nullptr) {
-    callback(static_cast<u32>((result >= 0) ? DVD_RESULT_GOOD : DVD_RESULT_FATAL_ERROR));
-  }
+  invokeInterruptCallback(aurora::allocation::routing_state.callbackGuest, callback,
+                          static_cast<u32>((result >= 0) ? DVD_RESULT_GOOD : DVD_RESULT_FATAL_ERROR));
   return TRUE;
 }
 
 BOOL DVDLowSeek(u32 offset, DVDLowCallback callback) {
   const int64_t seek = s_disc != nullptr ? s_disc->seek(static_cast<int64_t>(offset), 0) : -1;
-  if (callback != nullptr) {
-    callback(static_cast<u32>((seek >= 0) ? DVD_RESULT_GOOD : DVD_RESULT_FATAL_ERROR));
-  }
+  invokeInterruptCallback(aurora::allocation::routing_state.callbackGuest, callback,
+                          static_cast<u32>((seek >= 0) ? DVD_RESULT_GOOD : DVD_RESULT_FATAL_ERROR));
   return TRUE;
 }
 
 BOOL DVDLowWaitCoverClose(DVDLowCallback callback) {
-  if (callback != nullptr) {
-    callback(0);
-  }
+  invokeInterruptCallback(aurora::allocation::routing_state.callbackGuest, callback, 0u);
   return TRUE;
 }
 
@@ -1471,23 +1537,17 @@ BOOL DVDLowReadDiskID(DVDDiskID* diskID, DVDLowCallback callback) {
   if (diskID != nullptr) {
     *diskID = s_diskID;
   }
-  if (callback != nullptr) {
-    callback(0);
-  }
+  invokeInterruptCallback(aurora::allocation::routing_state.callbackGuest, callback, 0u);
   return TRUE;
 }
 
 BOOL DVDLowStopMotor(DVDLowCallback callback) {
-  if (callback != nullptr) {
-    callback(0);
-  }
+  invokeInterruptCallback(aurora::allocation::routing_state.callbackGuest, callback, 0u);
   return TRUE;
 }
 
 BOOL DVDLowRequestError(DVDLowCallback callback) {
-  if (callback != nullptr) {
-    callback(0);
-  }
+  invokeInterruptCallback(aurora::allocation::routing_state.callbackGuest, callback, 0u);
   return TRUE;
 }
 
@@ -1495,9 +1555,7 @@ BOOL DVDLowInquiry(DVDDriveInfo* info, DVDLowCallback callback) {
   if (info != nullptr) {
     std::memset(info, 0, sizeof(*info));
   }
-  if (callback != nullptr) {
-    callback(0);
-  }
+  invokeInterruptCallback(aurora::allocation::routing_state.callbackGuest, callback, 0u);
   return TRUE;
 }
 
@@ -1505,46 +1563,42 @@ BOOL DVDLowAudioStream(u32 subcmd, u32 length, u32 offset, DVDLowCallback callba
   (void)subcmd;
   (void)length;
   (void)offset;
-  if (callback != nullptr) {
-    callback(0);
-  }
+  invokeInterruptCallback(aurora::allocation::routing_state.callbackGuest, callback, 0u);
   return TRUE;
 }
 
 BOOL DVDLowRequestAudioStatus(u32 subcmd, DVDLowCallback callback) {
   (void)subcmd;
-  if (callback != nullptr) {
-    callback(0);
-  }
+  invokeInterruptCallback(aurora::allocation::routing_state.callbackGuest, callback, 0u);
   return TRUE;
 }
 
 BOOL DVDLowAudioBufferConfig(BOOL enable, u32 size, DVDLowCallback callback) {
   (void)enable;
   (void)size;
-  if (callback != nullptr) {
-    callback(0);
-  }
+  invokeInterruptCallback(aurora::allocation::routing_state.callbackGuest, callback, 0u);
   return TRUE;
 }
 
 void DVDLowReset(void) {
-  if (s_resetCoverCallback != nullptr) {
-    s_resetCoverCallback(0);
-  }
+  const aurora::os::GuestThreadExecutionScope execution;
+  const auto registration = s_resetCoverCallback;
+  invokeInterruptCallback(registration.guest, registration.callback, 0u);
 }
 
 DVDLowCallback DVDLowSetResetCoverCallback(DVDLowCallback callback) {
-  DVDLowCallback previous = s_resetCoverCallback;
-  s_resetCoverCallback = callback;
+  const aurora::os::GuestThreadExecutionScope execution;
+  const auto previous = s_resetCoverCallback.callback;
+  s_resetCoverCallback = {callback, aurora::allocation::routing_state.callbackGuest};
   return previous;
 }
 
 BOOL DVDLowBreak(void) { return TRUE; }
 
 DVDLowCallback DVDLowClearCallback(void) {
-  DVDLowCallback previous = s_resetCoverCallback;
-  s_resetCoverCallback = nullptr;
+  const aurora::os::GuestThreadExecutionScope execution;
+  const auto previous = s_resetCoverCallback.callback;
+  s_resetCoverCallback = {};
   return previous;
 }
 

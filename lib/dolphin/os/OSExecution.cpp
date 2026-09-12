@@ -28,6 +28,13 @@ thread_local bool sOwnsCpu = false;
 thread_local bool sInterruptsEnabled = true;
 thread_local unsigned sGuestExecutionDepth = 0;
 thread_local OSThread* sCurrentThread = nullptr;
+thread_local OSContext* sCurrentContext = nullptr;
+thread_local unsigned sInterruptDepth = 0;
+// The cooperative CPU can be between guest host threads when a native device
+// delivers an interrupt. Retain only identities whose thread storage is live;
+// retirement clears them under the same gate before that storage can disappear.
+OSThread* sLastGuestThread = nullptr;
+OSContext* sLastGuestContext = nullptr;
 void check_thread_control();
 bool current_thread_cancelled();
 void reschedule();
@@ -36,15 +43,23 @@ u32 sReschedule = 0;
 
 s32 scheduler_count() { return std::bit_cast<s32>(sReschedule); }
 
-void acquire_cpu() {
+void acquire_cpu(bool interrupt = false) {
   if (!sOwnsCpu) {
     sCpuGate.lock();
     sOwnsCpu = true;
-    check_thread_control();
+    if (!interrupt) {
+      check_thread_control();
+      sLastGuestThread = OSGetCurrentThread();
+      sLastGuestContext = sCurrentContext != nullptr ? sCurrentContext : &sLastGuestThread->context;
+    }
   }
 }
 
 void release_cpu() {
+  if (sInterruptDepth == 0 && sCurrentThread != nullptr) {
+    sLastGuestThread = sCurrentThread;
+    sLastGuestContext = sCurrentContext != nullptr ? sCurrentContext : &sCurrentThread->context;
+  }
   sOwnsCpu = false;
   sCpuGate.unlock();
 }
@@ -190,6 +205,11 @@ struct NativeThread {
     // recursively held ones. A native TLS destructor is the actual host exit.
     __OSUnlockAllMutex(&thread);
     thread.state = 0;
+    if (sLastGuestThread == &thread) {
+      sLastGuestThread = nullptr;
+      sLastGuestContext = nullptr;
+    }
+    sCurrentContext = nullptr;
     sCurrentThread = nullptr;
     sInterruptsEnabled = true;
     release_cpu();
@@ -231,7 +251,24 @@ void update_priority(OSThread* thread) {
 }
 } // namespace
 
-OSThread* OSGetCurrentThread() { return sCurrentThread != nullptr ? sCurrentThread : &sNativeThread.thread; }
+OSThread* OSGetCurrentThread() {
+  return sCurrentThread != nullptr || sInterruptDepth != 0 ? sCurrentThread : &sNativeThread.thread;
+}
+
+OSContext* OSGetCurrentContext() {
+  if (sCurrentContext != nullptr) return sCurrentContext;
+  return &OSGetCurrentThread()->context;
+}
+
+void OSSetCurrentContext(OSContext* context) {
+  const BOOL enabled = OSDisableInterrupts();
+  sCurrentContext = context;
+  if (sInterruptDepth == 0) {
+    sLastGuestThread = sCurrentThread;
+    sLastGuestContext = context;
+  }
+  OSRestoreInterrupts(enabled);
+}
 
 void OSInitThreadQueue(OSThreadQueue* queue) { queue->head = queue->tail = nullptr; }
 
@@ -361,6 +398,10 @@ void check_thread_control() {
     sCurrentThread->state = OS_THREAD_STATE_RUNNING;
     sThreadWake.notify_all();
   }
+  if (sInterruptDepth == 0) {
+    sLastGuestThread = sCurrentThread;
+    sLastGuestContext = sCurrentContext != nullptr ? sCurrentContext : &sCurrentThread->context;
+  }
 }
 
 void run_managed_thread(ManagedThread* record) {
@@ -374,6 +415,8 @@ void run_managed_thread(ManagedThread* record) {
   ++sGuestExecutionDepth;
   try {
     check_thread_control();
+    sLastGuestThread = record->thread;
+    sLastGuestContext = &record->thread->context;
     aurora::allocation::routing_state = record->routing;
     const aurora::allocation::ClientAllocationScope client_callback;
     value = record->function(record->argument);
@@ -393,12 +436,17 @@ void run_managed_thread(ManagedThread* record) {
   record->thread->val = value;
   record->thread->state = (record->thread->attr & OS_THREAD_ATTR_DETACH) ? 0 : OS_THREAD_STATE_MORIBUND;
   record->thread->queue = nullptr;
+  if (sLastGuestThread == record->thread) {
+    sLastGuestThread = nullptr;
+    sLastGuestContext = nullptr;
+  }
   OSWakeupThread(&record->thread->queueJoin);
   record->finished = true;
   sThreadWake.notify_all();
   --sGuestExecutionDepth;
   sInterruptsEnabled = true;
   sCurrentThread = nullptr;
+  sCurrentContext = nullptr;
   release_cpu();
 }
 
@@ -424,6 +472,31 @@ GuestThreadExecutionScope::GuestThreadExecutionScope() {
 }
 GuestThreadExecutionScope::~GuestThreadExecutionScope() {
   --sGuestExecutionDepth;
+  release_cpu_if_enabled();
+}
+
+GuestInterruptExecutionScope::GuestInterruptExecutionScope() {
+  acquire_cpu(true);
+  ++sGuestExecutionDepth;
+  previousThread_ = sCurrentThread;
+  previousContext_ = sCurrentContext;
+  previousInterrupts_ = sInterruptsEnabled;
+  interruptedContext_ = previousContext_ != nullptr ? previousContext_ : sLastGuestContext;
+  sCurrentThread = previousThread_ != nullptr ? previousThread_ : sLastGuestThread;
+  sCurrentContext = &interruptContext_;
+  ++sInterruptDepth;
+  sInterruptsEnabled = false;
+  ++sReschedule;
+}
+
+GuestInterruptExecutionScope::~GuestInterruptExecutionScope() {
+  --sInterruptDepth;
+  --sReschedule;
+  sCurrentContext = previousContext_;
+  sCurrentThread = previousThread_;
+  sInterruptsEnabled = previousInterrupts_;
+  --sGuestExecutionDepth;
+  if (sCurrentThread != nullptr) reschedule();
   release_cpu_if_enabled();
 }
 

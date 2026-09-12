@@ -267,6 +267,7 @@ target("aurora-os")
     add_aurora_common_settings(true)
     add_files("lib/dolphin/os/OSInit.cpp", "lib/dolphin/os/OSMemory.cpp",
               "lib/dolphin/os/OSBootInfo.cpp", "lib/dolphin/os/OSTime.cpp",
+              "lib/dolphin/os/OSAlarm.cpp",
               "lib/dolphin/os/OSExecution.cpp", "lib/dolphin/os/OSMutex.cpp",
               "lib/dolphin/os/OSMessage.cpp",
               "lib/dolphin/os/OSCache.cpp",
@@ -315,7 +316,8 @@ target("aurora-vi")
     set_kind("static")
     add_aurora_common_settings(true)
     add_files("lib/dolphin/vi/vi.cpp")
-    add_deps("aurora-platform")
+    add_files("lib/dolphin/vi/vi_window.cpp")
+    add_deps("aurora-platform", "aurora-os")
 
 if has_config("aurora_enable_gx") then
     target("aurora-gx")
@@ -341,7 +343,7 @@ if has_config("aurora_enable_gx") then
                   "lib/dolphin/gx/GXFifo.cpp", "lib/dolphin/gx/GXFrameBuffer.cpp",
                   "lib/dolphin/gx/GXGeometry.cpp", "lib/dolphin/gx/GXGet.cpp",
                   "lib/dolphin/gx/GXLighting.cpp", "lib/dolphin/gx/GXManage.cpp",
-                  "lib/dolphin/gx/GXPerf.cpp", "lib/dolphin/gx/GXPixel.cpp",
+                  "lib/dolphin/gx/GXPerf.cpp", "lib/dolphin/gx/GXPixel.cpp", "lib/dolphin/gx/GXRegs.cpp",
                   "lib/dolphin/gx/GXTev.cpp", "lib/dolphin/gx/GXTexture.cpp",
                   "lib/dolphin/gx/GXTextureRegion.cpp",
                   "lib/dolphin/gx/GXTransform.cpp", "lib/dolphin/gx/GXVert.cpp",

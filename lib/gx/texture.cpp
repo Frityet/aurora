@@ -826,6 +826,7 @@ void clear_copy_texture_cache() noexcept {
   const aurora::allocation::HostAllocationScope hostAllocations;
   g_gxState.copyTextures.clear();
   g_gxState.copyTextureCache.clear();
+  g_gxState.displayCopies.clear();
   for (auto& [_, cache] : s_tlutObjectCaches) {
     cache.dynamicPaletteTextures.clear();
   }
@@ -842,6 +843,7 @@ void clear_static_texture_cache() noexcept { s_pendingCacheClears.fetch_add(1, s
 void evict_copy_texture(const void* dest) noexcept {
   const aurora::allocation::HostAllocationScope hostAllocations;
   absl::flat_hash_set<const void*> sourceIdentities;
+  g_gxState.displayCopies.erase(dest);
   if (const auto it = g_gxState.copyTextures.find(dest); it != g_gxState.copyTextures.end()) {
     if (it->second.handle) {
       sourceIdentities.insert(it->second.handle.get());

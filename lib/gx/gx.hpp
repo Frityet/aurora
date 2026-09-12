@@ -440,6 +440,7 @@ struct GXState {
   const void* texCopyDest = nullptr;
   absl::flat_hash_map<const void*, CopyTextureRef> copyTextures;
   absl::flat_hash_map<CopyTextureKey, CopyTextureRef> copyTextureCache;
+  absl::flat_hash_map<const void*, CopyTextureRef> displayCopies;
   CopyTextureKey frameDisplayCopyKey;
   bool frameDisplayCopyValid = false;
 
@@ -476,7 +477,14 @@ bool has_copy_texture(const void* dest) noexcept;
 void evict_copy_texture(const void* dest) noexcept;
 void evict_texture_object(u32 texObjId) noexcept;
 void evict_tlut_object(u32 tlutObjId) noexcept;
-const GXState::CopyTextureRef* display_copy_for_present() noexcept;
+const GXState::CopyTextureRef* latest_display_copy() noexcept;
+const GXState::CopyTextureRef* display_copy_for_frame_buffer(const void*) noexcept;
+struct DisplayCopySelection {
+  bool drawVideo;
+  bool supported;
+  GXState::CopyTextureRef copy;
+};
+DisplayCopySelection select_display_copy(bool viInitialized, bool black, const void* frameBuffer) noexcept;
 void clear_frame_display_copy() noexcept;
 bool has_display_copy() noexcept;
 bool display_copy_size(u32* width, u32* height) noexcept;

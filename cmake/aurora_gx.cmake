@@ -41,6 +41,7 @@ add_library(aurora_gx STATIC
         lib/dolphin/gx/GXLighting.cpp
         lib/dolphin/gx/GXManage.cpp
         lib/dolphin/gx/GXPerf.cpp
+        lib/dolphin/gx/GXRegs.cpp
         lib/dolphin/gx/GXPixel.cpp
         lib/dolphin/gx/GXTev.cpp
         lib/dolphin/gx/GXTexture.cpp

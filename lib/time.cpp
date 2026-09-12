@@ -9,6 +9,41 @@
 #include <shared_mutex>
 
 namespace aurora::time {
+namespace internal {
+struct ClockChangeListeners {
+  std::mutex mutex;
+  ClockChangeListener* head = nullptr;
+
+  static ClockChangeListeners& get() {
+    static ClockChangeListeners listeners;
+    return listeners;
+  }
+
+  static void notify() noexcept {
+    auto& listeners = get();
+    std::lock_guard lock{listeners.mutex};
+    for (auto* item = listeners.head; item != nullptr; item = item->next_) {
+      item->notify_(item->context_);
+    }
+  }
+};
+
+ClockChangeListener::ClockChangeListener(Notify notify, void* context) : notify_(notify), context_(context) {
+  auto& listeners = ClockChangeListeners::get();
+  std::lock_guard lock{listeners.mutex};
+  next_ = listeners.head;
+  listeners.head = this;
+}
+
+ClockChangeListener::~ClockChangeListener() {
+  auto& listeners = ClockChangeListeners::get();
+  std::lock_guard lock{listeners.mutex};
+  auto** link = &listeners.head;
+  while (*link != this) link = &(*link)->next_;
+  *link = next_;
+}
+} // namespace internal
+
 namespace {
 
 native_clock::time_point default_native_now() noexcept {
@@ -73,6 +108,8 @@ void set_scale(const float scale) noexcept {
   const auto nativeNow = get_native_now();
   rebase_locked(clockState, nativeNow);
   clockState.requestedScale = clampedScale;
+  lock.unlock();
+  internal::ClockChangeListeners::notify();
 }
 
 float scale() noexcept {
@@ -82,6 +119,12 @@ float scale() noexcept {
 }
 
 namespace internal {
+
+float effective_scale() noexcept {
+  auto& clockState = state();
+  std::shared_lock lock{clockState.mutex};
+  return clockState.pauseReasons == 0 ? static_cast<float>(clockState.requestedScale) : 0.0f;
+}
 
 void set_pause_reason(const PauseReason reason, const bool paused) noexcept {
   auto& clockState = state();
@@ -98,6 +141,8 @@ void set_pause_reason(const PauseReason reason, const bool paused) noexcept {
   } else {
     clockState.pauseReasons &= ~mask;
   }
+  lock.unlock();
+  ClockChangeListeners::notify();
 }
 
 void set_now_function(const NowFunction function) noexcept {
@@ -112,6 +157,8 @@ void reset() noexcept {
   clockState.gameAnchor = {};
   clockState.requestedScale = 1.0;
   clockState.pauseReasons = 0;
+  lock.unlock();
+  ClockChangeListeners::notify();
 }
 
 } // namespace internal

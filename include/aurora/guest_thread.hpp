@@ -1,5 +1,9 @@
 #pragma once
 
+#include <dolphin/os/OSContext.h>
+
+struct OSThread;
+
 namespace aurora::os {
 
 // Serialize host-to-guest execution with OS-created guest threads. SDK waits
@@ -12,6 +16,27 @@ public:
   ~GuestThreadExecutionScope();
   GuestThreadExecutionScope(const GuestThreadExecutionScope&) = delete;
   GuestThreadExecutionScope& operator=(const GuestThreadExecutionScope&) = delete;
+};
+
+// Native delivery of a nonblocking SDK interrupt. The interrupted guest keeps
+// its thread/context identity; the callback uses a separate current context.
+// Scheduler and interrupt state are restored when the callback returns. A
+// blocking SDK wait inside this scope is invalid, as in the alarm ISR.
+class GuestInterruptExecutionScope final {
+public:
+  GuestInterruptExecutionScope();
+  ~GuestInterruptExecutionScope();
+  GuestInterruptExecutionScope(const GuestInterruptExecutionScope&) = delete;
+  GuestInterruptExecutionScope& operator=(const GuestInterruptExecutionScope&) = delete;
+
+  [[nodiscard]] OSContext* interrupted_context() const noexcept { return interruptedContext_; }
+
+private:
+  OSThread* previousThread_;
+  OSContext* previousContext_;
+  OSContext* interruptedContext_;
+  OSContext interruptContext_{};
+  bool previousInterrupts_;
 };
 
 // Use only around a blocking native wait that cannot execute guest code on

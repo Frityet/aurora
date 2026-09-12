@@ -7,6 +7,7 @@
 #include "gx_test_common.hpp"
 #include "gfx/depth_snapshot_store.hpp"
 #include "__gx.h"
+#include <revolution/gx/GXRegs.h>
 
 #include <algorithm>
 #include <atomic>
@@ -110,6 +111,22 @@ TEST_F(GXFifoTest, FifoPublishesOnlyAtExplicitBoundary) {
   aurora::gx::fifo::shutdown();
 
   EXPECT_EQ(g_gxState.bpRegCache[0x41], 0x41123456u);
+}
+
+TEST_F(GXFifoTest, OriginalRawFifoMacrosPreserveBigEndianWidths) {
+  GX_WRITE_U8(0x61);
+  GX_WRITE_U32(0x41123456);
+  const auto command = capture_fifo();
+  EXPECT_EQ(command, (std::vector<u8>{0x61, 0x41, 0x12, 0x34, 0x56}));
+  decode_fifo(command);
+  EXPECT_EQ(g_gxState.bpRegCache[0x41], 0x41123456u);
+
+  GX_WRITE_U16(0xabcd);
+  GX_WRITE_S16(-2);
+  GX_WRITE_F32(1.0f);
+  GX_WRITE_F32(-0.0f);
+  EXPECT_EQ(capture_fifo(), (std::vector<u8>{0xab, 0xcd, 0xff, 0xfe,
+      0x3f, 0x80, 0, 0, 0x80, 0, 0, 0}));
 }
 
 TEST_F(GXFifoTest, AutoSizedDrawPublishesAfterLengthPatch) {

@@ -2,6 +2,7 @@
 #define _DOLPHIN_OSTHREAD_H_
 
 #include <dolphin/os/OSContext.h>
+#include <dolphin/os/OSTime.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -78,6 +79,7 @@ typedef void (*OSIdleFunction)(void*);
 
 void OSInitThreadQueue(OSThreadQueue* queue);
 void OSSleepThread(OSThreadQueue* queue);
+void OSSleepTicks(OSTime ticks);
 void OSWakeupThread(OSThreadQueue* queue);
 s32 OSSuspendThread(OSThread* thread);
 s32 OSResumeThread(OSThread* thread);

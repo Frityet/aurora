@@ -17,6 +17,7 @@ struct OSAlarm {
     OSAlarm* next;
     OSTime period;
     OSTime start;
+    void* userData;
 };
 
 BOOL OSCheckAlarmQueue(void);
@@ -28,6 +29,8 @@ void OSSetPeriodicAlarm(OSAlarm* alarm, OSTime start, OSTime period, OSAlarmHand
 void OSCancelAlarm(OSAlarm *alarm);
 void OSSetAlarmTag(OSAlarm* alarm, u32 tag);
 void OSCancelAlarms(u32 tag);
+void OSSetAlarmUserData(OSAlarm* alarm, void* userData);
+void* OSGetAlarmUserData(const OSAlarm* alarm);
 
 #ifdef __cplusplus
 }

@@ -90,7 +90,7 @@ aurora::gfx::CopyFilter current_copy_filter() noexcept {
 } // namespace
 
 namespace aurora::gx {
-const GXState::CopyTextureRef* display_copy_for_present() noexcept {
+const GXState::CopyTextureRef* latest_display_copy() noexcept {
   if (!g_gxState.frameDisplayCopyValid) {
     return nullptr;
   }
@@ -101,15 +101,29 @@ const GXState::CopyTextureRef* display_copy_for_present() noexcept {
   return &it->second;
 }
 
+const GXState::CopyTextureRef* display_copy_for_frame_buffer(const void* frameBuffer) noexcept {
+  const auto it = g_gxState.displayCopies.find(frameBuffer);
+  return it != g_gxState.displayCopies.end() && it->second.handle ? &it->second : nullptr;
+}
+
+DisplayCopySelection select_display_copy(bool viInitialized, bool black, const void* frameBuffer) noexcept {
+  if (viInitialized && (black || frameBuffer == nullptr)) {
+    return {.drawVideo = false, .supported = true};
+  }
+  const auto* copy = viInitialized ? display_copy_for_frame_buffer(frameBuffer) : latest_display_copy();
+  return {.drawVideo = true, .supported = !viInitialized || copy != nullptr,
+          .copy = copy != nullptr ? *copy : GXState::CopyTextureRef{}};
+}
+
 void clear_frame_display_copy() noexcept {
   g_gxState.frameDisplayCopyValid = false;
   g_gxState.frameDisplayCopyKey = {};
 }
 
-bool has_display_copy() noexcept { return display_copy_for_present() != nullptr; }
+bool has_display_copy() noexcept { return latest_display_copy() != nullptr; }
 
 bool display_copy_size(u32* width, u32* height) noexcept {
-  const auto* displayCopy = display_copy_for_present();
+  const auto* displayCopy = latest_display_copy();
   if (displayCopy == nullptr || !displayCopy->handle) {
     if (width != nullptr) {
       *width = 0;
@@ -134,7 +148,7 @@ bool read_display_copy_rgba8(void* dst, u32 dstSize, u32* width, u32* height, u3
   if (gpu_copy_ready()) {
     gfx::gpu_synchronize();
   }
-  const auto* displayCopy = display_copy_for_present();
+  const auto* displayCopy = latest_display_copy();
   if (displayCopy == nullptr || !displayCopy->handle || !gpu_copy_ready()) {
     display_copy_size(width, height);
     if (rowStrideOut != nullptr) {
@@ -505,6 +519,7 @@ void GXCopyDisp(void* dest, GXBool clear) {
   aurora::gfx::resolve_pass_into(handle.handle, rect, clearColor, clearAlpha, clearDepth, g_gxState.clearColor,
                                  aurora::gx::clear_depth_value(), GX_TF_RGBA8, current_copy_filter());
   ++handle.revision;
+  g_gxState.displayCopies[dest] = handle;
   g_gxState.frameDisplayCopyKey = key;
   g_gxState.frameDisplayCopyValid = true;
 }

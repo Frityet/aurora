@@ -1,5 +1,6 @@
 #include <aurora/aurora.h>
 #include <aurora/time.hpp>
+#include <aurora/vi.hpp>
 
 #ifdef AURORA_ENABLE_GX
 #include "gfx/resources.hpp"
@@ -217,6 +218,7 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
 }
 
 void shutdown() noexcept {
+  vi::shutdown();
 #ifdef AURORA_ENABLE_GX
   gx::fifo::shutdown();
   gfx::render_worker::synchronize();
@@ -290,8 +292,13 @@ void end_frame() noexcept {
   auto imguiDrawData = imgui::freeze();
 
   webgpu::TextureWithSampler presentSource = webgpu::present_source();
-  if (const auto* displayCopy = gx::display_copy_for_present(); displayCopy != nullptr && displayCopy->handle) {
-    presentSource = make_present_source(displayCopy->handle);
+  const auto scanout = vi::scanout_state();
+  const auto selection = gx::select_display_copy(scanout.initialized, scanout.black, scanout.frame_buffer);
+  const bool drawVideo = selection.drawVideo;
+  AURORA_ASSERT(selection.supported,
+                "VI scanout requires the selected framebuffer's completed GX display copy");
+  if (selection.copy.handle) {
+    presentSource = make_present_source(selection.copy.handle);
   }
   auto viewport = webgpu::calculate_present_viewport(webgpu::g_graphicsConfig.surfaceConfiguration.width,
                                                      webgpu::g_graphicsConfig.surfaceConfiguration.height,
@@ -317,7 +324,7 @@ void end_frame() noexcept {
   }
 #endif
 
-  gfx::end_frame([presentSource = std::move(presentSource), rmlBindGroup = std::move(rmlBindGroup), rmlOverlay, viewport,
+  gfx::end_frame([presentSource = std::move(presentSource), rmlBindGroup = std::move(rmlBindGroup), rmlOverlay, viewport, drawVideo,
                   imguiDrawData = std::move(imguiDrawData)](
                      wgpu::CommandEncoder& encoder, std::vector<gfx::AfterSubmitCallback> afterSubmitCallbacks) {
     wgpu::Texture currentTexture;
@@ -342,7 +349,7 @@ void end_frame() noexcept {
       wgpu::BindGroup presentBindGroup;
       if (rmlBindGroup && !rmlOverlay) {
         presentBindGroup = rmlBindGroup;
-      } else {
+      } else if (drawVideo) {
         const auto& resampledSource = webgpu::resample_present_source(encoder, viewport, presentSource);
         presentBindGroup = webgpu::create_copy_bind_group(resampledSource);
       }
@@ -361,13 +368,13 @@ void end_frame() noexcept {
             .timestampWrites = webgpu::gpu_prof::pass_writes("Present blit"),
         };
         const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
-        // Copy EFB -> XFB (swapchain)
-        pass.SetPipeline(webgpu::g_CopyPipeline);
-        pass.SetBindGroup(0, presentBindGroup, 0, nullptr);
         set_present_viewport(pass, viewport, webgpu::g_graphicsConfig.surfaceConfiguration.width,
                              webgpu::g_graphicsConfig.surfaceConfiguration.height);
-
-        pass.Draw(3);
+        if (presentBindGroup) {
+          pass.SetPipeline(webgpu::g_CopyPipeline);
+          pass.SetBindGroup(0, presentBindGroup, 0, nullptr);
+          pass.Draw(3);
+        }
         if (rmlBindGroup && rmlOverlay) {
           pass.SetPipeline(webgpu::g_CopyPremultipliedAlphaPipeline);
           pass.SetBindGroup(0, rmlBindGroup, 0, nullptr);

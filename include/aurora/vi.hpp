@@ -9,4 +9,15 @@ namespace aurora::vi {
 void set_dtv_connected(bool connected) noexcept;
 [[nodiscard]] bool dtv_connected() noexcept;
 
+// Stop the emulated VI interrupt source and retire its borrowed callbacks.
+// The next VIInit starts a fresh device lifetime.
+void shutdown() noexcept;
+
+struct ScanoutState {
+  bool initialized;
+  bool black;
+  void* frame_buffer;
+};
+[[nodiscard]] ScanoutState scanout_state() noexcept;
+
 } // namespace aurora::vi

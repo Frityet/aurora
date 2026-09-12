@@ -103,6 +103,33 @@ target_compile_definitions(os_execution_tests PRIVATE AURORA TARGET_PC)
 target_link_libraries(os_execution_tests PRIVATE gtest gtest_main Threads::Threads)
 gtest_discover_tests(os_execution_tests)
 
+add_executable(os_alarm_tests
+  os_alarm_test.cpp
+  os_time_test_stubs.cpp
+  ../lib/time.cpp
+  ../lib/dolphin/os/OSTime.cpp
+  ../lib/dolphin/os/OSAlarm.cpp
+  ../lib/dolphin/os/OSExecution.cpp
+  ../lib/dolphin/os/OSMutex.cpp
+  ../lib/dolphin/os/OSMessage.cpp
+)
+target_include_directories(os_alarm_tests PRIVATE ../include ../lib)
+target_compile_definitions(os_alarm_tests PRIVATE AURORA TARGET_PC)
+target_link_libraries(os_alarm_tests PRIVATE fmt::fmt gtest gtest_main Threads::Threads)
+gtest_discover_tests(os_alarm_tests)
+
+add_executable(vi_tests
+  vi_test.cpp
+  ../lib/dolphin/vi/vi.cpp
+  ../lib/dolphin/os/OSExecution.cpp
+  ../lib/dolphin/os/OSMutex.cpp
+  ../lib/dolphin/os/OSMessage.cpp
+)
+target_include_directories(vi_tests PRIVATE ../include ../lib)
+target_compile_definitions(vi_tests PRIVATE AURORA TARGET_PC)
+target_link_libraries(vi_tests PRIVATE gtest gtest_main Threads::Threads ${AURORA_SDL3_TARGET})
+gtest_discover_tests(vi_tests)
+
 add_executable(os_report_tests
   os_report_test.cpp
   ../lib/dolphin/os/OSReport.cpp
@@ -206,6 +233,9 @@ if (AURORA_ENABLE_GX)
     ../lib/compat.cpp
   )
   add_executable(gx_draw_sync_pass_render_test gx_draw_sync_pass_render_test.cpp ../lib/compat.cpp)
+  add_executable(gx_vi_scanout_render_test gx_vi_scanout_render_test.cpp ../lib/compat.cpp)
+  target_link_libraries(gx_vi_scanout_render_test PRIVATE aurora::core absl::flat_hash_map)
+  target_include_directories(gx_vi_scanout_render_test PRIVATE ../lib)
   target_link_libraries(gx_draw_sync_pass_render_test PRIVATE aurora::core)
   target_include_directories(gx_draw_sync_pass_render_test PRIVATE ../lib)
   target_link_libraries(gx_depth_snapshot_render_test PRIVATE aurora::core)
@@ -222,7 +252,7 @@ if (AURORA_ENABLE_GX)
     PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
   )
 
-  foreach(gx_completion_test IN ITEMS gx_depth_snapshot_render gx_draw_sync_pass_render)
+  foreach(gx_completion_test IN ITEMS gx_depth_snapshot_render gx_draw_sync_pass_render gx_vi_scanout_render)
     if (AURORA_XVFB_RUN_EXECUTABLE)
       add_test(NAME ${gx_completion_test}
         COMMAND "${CMAKE_COMMAND}" -E env
@@ -316,6 +346,7 @@ if (AURORA_ENABLE_GX)
     ../lib/dolphin/gx/GXAurora.cpp
     ../lib/dolphin/gx/GXPerf.cpp
     ../lib/dolphin/gx/GXPixel.cpp
+    ../lib/dolphin/gx/GXRegs.cpp
     ../lib/dolphin/gx/GXTev.cpp
     ../lib/dolphin/gx/GXTexture.cpp
     ../lib/dolphin/gx/GXTransform.cpp

@@ -21,10 +21,7 @@
 
 namespace aurora::gx::fifo {
 namespace detail {
-uint8_t* sBufferData = nullptr;
-uint32_t sBufferSize = 0;
-uint32_t sBufferCapacity = 0;
-std::atomic<uint64_t> sWritten{0};
+std::atomic<CommandStream*> sCPUStream{nullptr};
 bool sInDisplayList = false;
 uint8_t* sDlBuffer = nullptr;
 uint32_t sDlSize = 0;
@@ -38,14 +35,12 @@ constexpr uint32_t kDrawBatchSize = 1;
 
 bool sFrameActive = false;
 std::atomic<bool> sActive{false};
-std::atomic<uint64_t> sGeneration{0};
+std::atomic<uint64_t> sNextStreamId{0};
+std::atomic<detail::CommandStream*> sStreams{nullptr};
+std::atomic<detail::CommandStream*> sGPStream{nullptr};
 std::atomic<uint8_t*> sAddressBuffer{nullptr};
 constexpr uint32_t kAddressBufferSize = 64 * 1024;
 uint32_t sPendingDraws = 0;
-std::atomic<uint64_t> sPublished{0};
-std::atomic<uint64_t> sDecoded{0};
-std::atomic<uint64_t> sProcessed{0};
-uint64_t sStreamBase = 0;
 std::mutex sBufferMutex;
 // Control-register writes and decoding have one ordering. Callbacks run after
 // releasing this lock, so another thread can rearm a stopped FIFO from them.
@@ -59,7 +54,6 @@ struct BreakPoint {
 } sBreakPoint;
 std::atomic<uint64_t> sBreakPointRevision{1};
 std::atomic<uint64_t> sBreakPointHitRevision{0};
-std::atomic<uint64_t> sAbortFloor{0};
 std::atomic<uint64_t> sAcknowledgedEpoch{1};
 std::atomic<uint32_t> sWorkerWake{0};
 thread::Thread sWorkerThread;
@@ -153,8 +147,9 @@ void dispatch_breakpoint(uint64_t revision) noexcept {
   }
 }
 
-void process_to(uint64_t target, std::memory_order order) noexcept {
+void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revision, std::memory_order order) noexcept {
   while (true) {
+    if (stream->revision.load(std::memory_order_acquire) != revision) return;
     const gfx::CommandEpoch epoch;
     if (sAcknowledgedEpoch.load(std::memory_order_acquire) != epoch.value) {
       // No decoder/control mutex and no guest CPU ownership across retirement.
@@ -162,13 +157,15 @@ void process_to(uint64_t target, std::memory_order order) noexcept {
       gfx::abandon_recording();
       clear_draw_cache();
       if (!epoch.current()) continue;
-      const auto floor = sAbortFloor.load(std::memory_order_acquire);
+      std::lock_guard execution{sExecutionMutex};
+      if (stream->revision.load(std::memory_order_acquire) != revision) return;
+      const auto floor = stream->abortFloor.load(std::memory_order_acquire);
       if (!epoch.current()) continue;
-      sDecoded.store(std::max(floor, sDecoded.load(std::memory_order_acquire)), std::memory_order_release);
-      sProcessed.store(std::max(floor, sProcessed.load(std::memory_order_acquire)), std::memory_order_release);
+      stream->decoded.store(std::max(floor, stream->decoded.load(std::memory_order_acquire)), std::memory_order_release);
+      stream->processed.store(std::max(floor, stream->processed.load(std::memory_order_acquire)), std::memory_order_release);
       sAcknowledgedEpoch.store(epoch.value, std::memory_order_release);
       sAcknowledgedEpoch.notify_all();
-      sProcessed.notify_all();
+      stream->processed.notify_all();
       continue;
     }
     ProcessResult result{};
@@ -177,7 +174,16 @@ void process_to(uint64_t target, std::memory_order order) noexcept {
     uint64_t decoded;
     {
       std::lock_guard execution{sExecutionMutex};
-      decoded = sDecoded.load(std::memory_order_relaxed);
+      if (sGPStream.load(std::memory_order_acquire) != stream ||
+          stream->revision.load(std::memory_order_acquire) != revision) return;
+      decoded = stream->decoded.load(std::memory_order_relaxed);
+      const auto abortFloor = stream->abortFloor.load(std::memory_order_acquire);
+      if (decoded < abortFloor) {
+        decoded = abortFloor;
+        stream->decoded.store(decoded, std::memory_order_release);
+        stream->processed.store(decoded, std::memory_order_release);
+        stream->processed.notify_all();
+      }
       const bool breakpointEnabled = sBreakPoint.enabled &&
           sBreakPoint.revision == sBreakPointRevision.load(std::memory_order_acquire);
       if (breakpointEnabled && decoded == sBreakPoint.cursor) {
@@ -192,18 +198,18 @@ void process_to(uint64_t target, std::memory_order order) noexcept {
         const uint64_t end = breakpointEnabled ? std::min(target, sBreakPoint.cursor) : target;
         AURORA_ASSERT(end > decoded, "FIFO breakpoint is behind its decoder cursor");
         std::lock_guard buffer{sBufferMutex};
-        AURORA_ASSERT(decoded >= sStreamBase && end <= detail::sWritten.load(std::memory_order_acquire),
+        AURORA_ASSERT(decoded >= stream->bufferBase && end <= stream->written.load(std::memory_order_acquire),
                       "FIFO processing range [{}, {}) is outside buffered range [{}, {})", decoded, end,
-                      sStreamBase, detail::sWritten.load(std::memory_order_relaxed));
-        const auto start = static_cast<uint32_t>(decoded - sStreamBase);
+                      stream->bufferBase, stream->written.load(std::memory_order_relaxed));
+        const auto start = static_cast<uint32_t>(decoded - stream->bufferBase);
         const auto size = static_cast<uint32_t>(end - decoded);
-        result = process(detail::sBufferData + start, size, epoch);
+        result = process(stream->data + start, size, epoch);
         if (!epoch.current()) continue;
         AURORA_ASSERT(result.bytesProcessed > 0 && result.bytesProcessed <= size,
                       "FIFO processor made invalid progress: processed {} of {} remaining bytes", result.bytesProcessed,
                       size);
         decoded += result.bytesProcessed;
-        sDecoded.store(decoded, std::memory_order_release);
+        stream->decoded.store(decoded, std::memory_order_release);
       }
     }
     if (notifyBreakPoint) {
@@ -215,9 +221,12 @@ void process_to(uint64_t target, std::memory_order order) noexcept {
       dispatch_draw_done(epoch);
     }
     if (result.tokenWrite) dispatch_draw_sync(result.token, result.tokenInterrupt, epoch);
-    if (!epoch.current()) continue;
-    sProcessed.store(decoded, order);
-    sProcessed.notify_all();
+    {
+      std::lock_guard execution{sExecutionMutex};
+      if (!epoch.current() || stream->revision.load(std::memory_order_acquire) != revision) continue;
+      stream->processed.store(decoded, order);
+      stream->processed.notify_all();
+    }
   }
 }
 
@@ -225,10 +234,14 @@ void worker_main(std::stop_token token) noexcept {
   std::stop_callback wakeOnStop{token, wake_worker};
   while (true) {
     const uint32_t event = sWorkerWake.load(std::memory_order_acquire);
-    const uint64_t published = sPublished.load(std::memory_order_acquire);
-    process_to(published, std::memory_order_release);
-    if (sPublished.load(std::memory_order_acquire) != published) {
-      continue;
+    auto* stream = sGPStream.load(std::memory_order_acquire);
+    if (stream) {
+      const uint64_t revision = stream->revision.load(std::memory_order_acquire);
+      const uint64_t published = stream->published.load(std::memory_order_acquire);
+      process_to(stream, published, revision, std::memory_order_release);
+      if (sGPStream.load(std::memory_order_acquire) != stream ||
+          stream->revision.load(std::memory_order_acquire) != revision ||
+          stream->published.load(std::memory_order_acquire) != published) continue;
     }
 
     if (token.stop_requested()) {
@@ -259,9 +272,129 @@ void stop_worker() {
   const aurora::os::GuestThreadWaitScope wait;
   sWorkerThread.join();
 }
+detail::CommandStream* create_stream(void* base, uint32_t size, uint32_t readOffset, uint32_t writeOffset, uint32_t count) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  auto* stream = new detail::CommandStream;
+  stream->capacity = std::max<uint32_t>(64 * 1024, count);
+  stream->data = static_cast<uint8_t*>(malloc(stream->capacity));
+  AURORA_ASSERT(stream->data != nullptr, "GX FIFO command storage allocation failed");
+  stream->id = ++sNextStreamId;
+  stream->addressBase = static_cast<uint8_t*>(base);
+  stream->addressSize = size;
+  stream->initialReadOffset = readOffset;
+  stream->initialWriteOffset = (static_cast<uint64_t>(writeOffset) + size - count % size) % size;
+  // The initial GP read sequence is copied from the caller-programmed ring.
+  if (count) {
+    const uint32_t first = std::min(count, size - readOffset);
+    std::memcpy(stream->data, stream->addressBase + readOffset, first);
+    std::memcpy(stream->data + first, stream->addressBase, count - first);
+  }
+  stream->size = count;
+  stream->written = count;
+  stream->published = count;
+  stream->next = sStreams.load(std::memory_order_relaxed);
+  sStreams.store(stream, std::memory_order_release);
+  return stream;
+}
+
+void retire_streams() {
+  detail::sCPUStream = nullptr;
+  sGPStream = nullptr;
+  auto* stream = sStreams.exchange(nullptr);
+  while (stream) {
+    auto* next = stream->next;
+    free(stream->data);
+    delete stream;
+    stream = next;
+  }
+}
+
+std::unique_lock<std::mutex> lock_execution() {
+  std::unique_lock lock{sExecutionMutex, std::defer_lock};
+  while (!lock.try_lock()) {
+    const aurora::os::GuestThreadWaitScope wait;
+    std::this_thread::yield();
+  }
+  return lock;
+}
+
+void program_gp_stream(detail::CommandStream& stream, uint32_t readOffset, uint32_t writeOffset, uint32_t count) {
+  const auto written = stream.written.load(std::memory_order_acquire);
+  const auto decoded = stream.decoded.load(std::memory_order_acquire);
+  if ((stream.initialReadOffset + decoded) % stream.addressSize == readOffset &&
+      (stream.initialWriteOffset + written) % stream.addressSize == writeOffset && written - decoded == count) return;
+  AURORA_ASSERT(count <= stream.addressSize, "GX FIFO replay count exceeds retained ring storage");
+  std::lock_guard buffer{sBufferMutex};
+  stream.revision.fetch_add(1, std::memory_order_acq_rel);
+  if (count > stream.capacity) {
+    stream.data = static_cast<uint8_t*>(realloc(stream.data, count));
+    AURORA_ASSERT(stream.data != nullptr, "GX FIFO replay allocation failed");
+    stream.capacity = count;
+  }
+  const uint32_t first = std::min(count, stream.addressSize - readOffset);
+  std::memcpy(stream.data, stream.addressBase + readOffset, first);
+  std::memcpy(stream.data + first, stream.addressBase, count - first);
+  stream.bufferBase = 0;
+  stream.size = count;
+  stream.initialReadOffset = readOffset;
+  stream.initialWriteOffset = (static_cast<uint64_t>(writeOffset) + stream.addressSize - count % stream.addressSize) % stream.addressSize;
+  stream.written = count;
+  stream.published = count;
+  stream.decoded = 0;
+  stream.processed = 0;
+  stream.abortFloor = 0;
+  stream.revision.fetch_add(1, std::memory_order_release);
+}
+
+uint64_t bind_stream(bool cpu, void* base, uint32_t size, uint32_t readOffset, uint32_t writeOffset, uint32_t count) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  auto execution = lock_execution();
+  AURORA_ASSERT(sActive, "GX FIFO attachment requires an initialized command processor");
+  AURORA_ASSERT(!detail::sInDisplayList, "GX FIFO attachment inside display-list recording");
+  detail::CommandStream* selected = nullptr;
+  if (base) {
+    AURORA_ASSERT(size && readOffset < size && writeOffset < size, "Invalid GX FIFO range");
+    for (auto* stream = sStreams.load(std::memory_order_acquire); stream; stream = stream->next) {
+      if (stream->addressBase == base && stream->addressSize == size) {
+        selected = stream;
+        break;
+      }
+    }
+    if (!selected) {
+      AURORA_ASSERT(count <= size, "Prefilled GX FIFO count exceeds its storage");
+      selected = create_stream(base, size, readOffset, writeOffset, count);
+    }
+  }
+  if (cpu) {
+    if (selected) {
+      const auto produced = selected->written.load(std::memory_order_acquire);
+      const auto currentWrite = (selected->initialWriteOffset + produced) % size;
+      if (currentWrite != writeOffset) {
+        // An unread FIFO cannot be safely rewritten by merely moving the
+        // native append cursor. Require its GP count to be programmed first.
+        AURORA_ASSERT(produced == selected->decoded.load(std::memory_order_acquire),
+                      "Repositioning a CPU FIFO writer over unread commands is unsupported");
+        selected->revision.fetch_add(1, std::memory_order_acq_rel);
+        selected->initialWriteOffset = (static_cast<uint64_t>(writeOffset) + size - produced % size) % size;
+        selected->revision.fetch_add(1, std::memory_order_release);
+      }
+    }
+    detail::sCPUStream.store(selected, std::memory_order_release);
+  } else {
+    if (selected) program_gp_stream(*selected, readOffset, writeOffset, count);
+    sBreakPointRevision.fetch_add(1, std::memory_order_acq_rel);
+    sGPStream.store(selected, std::memory_order_release);
+    wake_worker();
+  }
+  return selected ? selected->id : 0;
+}
 } // namespace
 
 ProcessingMode processing_mode() noexcept { return kProcessingMode; }
+
+[[noreturn]] void detail::unbound_write() {
+  Log.fatal("GX writes require an attached CPU FIFO");
+}
 
 void init() {
   const aurora::allocation::HostAllocationScope hostAllocations;
@@ -269,15 +402,13 @@ void init() {
 
   {
     std::lock_guard execution{sExecutionMutex};
-    constexpr uint32_t initialCapacity = 64 * 1024;
+    retire_streams();
     free(sAddressBuffer.load(std::memory_order_acquire));
     sAddressBuffer = static_cast<uint8_t*>(malloc(kAddressBufferSize));
     AURORA_ASSERT(sAddressBuffer != nullptr, "fifo::init: failed to allocate FIFO address space");
-    free(detail::sBufferData);
-    detail::sBufferData = static_cast<uint8_t*>(malloc(initialCapacity));
-    AURORA_ASSERT(detail::sBufferData != nullptr, "fifo::init: failed to allocate {} bytes", initialCapacity);
-    detail::sBufferSize = 0;
-    detail::sBufferCapacity = initialCapacity;
+    auto* initial = create_stream(sAddressBuffer.load(std::memory_order_acquire), kAddressBufferSize, 0, 0, 0);
+    detail::sCPUStream = initial;
+    sGPStream = initial;
     detail::sInDisplayList = false;
     detail::sDlBuffer = nullptr;
     detail::sDlSize = 0;
@@ -285,15 +416,8 @@ void init() {
 
     sFrameActive = false;
     sPendingDraws = 0;
-    sStreamBase = 0;
-    detail::sWritten.store(0, std::memory_order_relaxed);
-    sPublished.store(0, std::memory_order_relaxed);
-    sDecoded.store(0, std::memory_order_relaxed);
-    sProcessed.store(0, std::memory_order_relaxed);
     sWorkerWake.store(0, std::memory_order_relaxed);
-    sAbortFloor.store(0, std::memory_order_relaxed);
     sAcknowledgedEpoch.store(gfx::CommandEpoch{}.value, std::memory_order_relaxed);
-    ++sGeneration;
     sActive = true;
     sBreakPoint = {};
   }
@@ -307,6 +431,7 @@ void shutdown() {
   {
     std::lock_guard execution{sExecutionMutex};
     sActive = false;
+    retire_streams();
     free(sAddressBuffer.load(std::memory_order_acquire));
     sAddressBuffer = nullptr;
   }
@@ -323,17 +448,19 @@ void end_frame() noexcept {
 
 void write_data_grow(const void* data, uint32_t length) {
   const aurora::allocation::HostAllocationScope hostAllocations;
-  const uint64_t needed64 = static_cast<uint64_t>(detail::sBufferSize) + length;
+  auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
+  AURORA_ASSERT(stream != nullptr, "GX writes require an attached CPU FIFO");
+  const uint64_t needed64 = static_cast<uint64_t>(stream->size) + length;
   AURORA_ASSERT(needed64 <= std::numeric_limits<uint32_t>::max(), "fifo::write_data: buffer size overflow");
   const auto needed = static_cast<uint32_t>(needed64);
-  const auto doubledCapacity = static_cast<uint64_t>(detail::sBufferCapacity) * 2;
+  const auto doubledCapacity = static_cast<uint64_t>(stream->capacity) * 2;
   const auto newCapacity = static_cast<uint32_t>(
       std::min<uint64_t>(std::max(doubledCapacity, needed64), std::numeric_limits<uint32_t>::max()));
-  const auto grow = [newCapacity] {
-    auto* resized = static_cast<uint8_t*>(realloc(detail::sBufferData, newCapacity));
+  const auto grow = [newCapacity, stream] {
+    auto* resized = static_cast<uint8_t*>(realloc(stream->data, newCapacity));
     AURORA_ASSERT(resized != nullptr, "fifo::write_data: failed to allocate {} bytes", newCapacity);
-    detail::sBufferData = resized;
-    detail::sBufferCapacity = newCapacity;
+    stream->data = resized;
+    stream->capacity = newCapacity;
   };
   if (sWorkerThread.joinable()) {
     std::lock_guard lock{sBufferMutex};
@@ -341,25 +468,28 @@ void write_data_grow(const void* data, uint32_t length) {
   } else {
     grow();
   }
-  std::memcpy(detail::sBufferData + detail::sBufferSize, data, length);
-  detail::sBufferSize = needed;
-  detail::sWritten.fetch_add(length, std::memory_order_release);
+  std::memcpy(stream->data + stream->size, data, length);
+  stream->size = needed;
+  detail::mirror_ring(*stream, data, length);
+  stream->written.fetch_add(length, std::memory_order_release);
 }
 
 void publish() noexcept {
   const aurora::allocation::HostAllocationScope hostAllocations;
+  auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
+  AURORA_ASSERT(stream != nullptr, "GX writes require an attached CPU FIFO");
   if (!sFrameActive || kProcessingMode == ProcessingMode::Drain || detail::sInDisplayList) {
     return;
   }
 
-  const uint64_t target = sStreamBase + detail::sBufferSize;
-  if (target > sPublished.load(std::memory_order_relaxed)) {
+  const uint64_t target = stream->bufferBase + stream->size;
+  if (target > stream->published.load(std::memory_order_relaxed)) {
     sPendingDraws = 0;
-    sPublished.store(target, std::memory_order_release);
+    stream->published.store(target, std::memory_order_release);
     if (kProcessingMode == ProcessingMode::Thread) {
       wake_worker();
     } else {
-      process_to(target, std::memory_order_relaxed);
+      process_to(stream, target, stream->revision.load(std::memory_order_acquire), std::memory_order_relaxed);
     }
   }
 }
@@ -385,16 +515,12 @@ BreakPointCallback set_breakpoint_callback(BreakPointCallback callback) noexcept
 void enable_breakpoint(uint64_t generation, uint64_t readOrigin, uint32_t initialReadOffset,
                        uint32_t ringSize, uint32_t breakOffset) noexcept {
   {
-    std::unique_lock execution{sExecutionMutex, std::defer_lock};
-    while (!execution.try_lock()) {
-      // Do not restore CPU ownership while holding the decoder lock.
-      const aurora::os::GuestThreadWaitScope wait;
-      std::this_thread::yield();
-    }
-    AURORA_ASSERT(sActive && sGeneration == generation, "GX breakpoint refers to a retired FIFO");
+    auto execution = lock_execution();
+    auto* stream = sGPStream.load(std::memory_order_acquire);
+    AURORA_ASSERT(sActive && stream && stream->id == generation, "GX breakpoint refers to a retired FIFO");
     AURORA_ASSERT(ringSize != 0 && initialReadOffset < ringSize && breakOffset < ringSize,
                   "GX breakpoint is outside its GP FIFO");
-    const uint64_t decoded = sDecoded.load(std::memory_order_relaxed);
+    const uint64_t decoded = stream->decoded.load(std::memory_order_relaxed);
     AURORA_ASSERT(decoded >= readOrigin, "GX breakpoint FIFO origin is after its read cursor");
     const uint64_t offset = (decoded - readOrigin + initialReadOffset) % ringSize;
     const uint64_t distance = (static_cast<uint64_t>(breakOffset) + ringSize - offset) % ringSize;
@@ -411,12 +537,14 @@ void disable_breakpoint() noexcept {
 }
 
 void abort_frame() noexcept {
-  const auto floor = detail::sWritten.load(std::memory_order_acquire);
-  sAbortFloor.store(floor, std::memory_order_release);
+  auto* stream = sGPStream.load(std::memory_order_acquire);
+  if (!stream) return;
+  const auto floor = stream->written.load(std::memory_order_acquire);
+  stream->abortFloor.store(floor, std::memory_order_release);
   disable_breakpoint();
   gfx::abandon_command_epoch();
-  auto published = sPublished.load(std::memory_order_relaxed);
-  while (published < floor && !sPublished.compare_exchange_weak(published, floor, std::memory_order_release)) {}
+  auto published = stream->published.load(std::memory_order_relaxed);
+  while (published < floor && !stream->published.compare_exchange_weak(published, floor, std::memory_order_release)) {}
   wake_worker();
 }
 
@@ -443,13 +571,22 @@ void finish_draw() noexcept {
 }
 
 void patch_u32(uint32_t offset, uint32_t val) {
-  AURORA_ASSERT(!detail::sInDisplayList && offset <= detail::sBufferSize &&
-                    sizeof(uint32_t) <= detail::sBufferSize - offset,
-                "fifo::patch_u32: invalid patch offset {} (buffer size {})", offset, detail::sBufferSize);
-  AURORA_ASSERT(sStreamBase + offset >= sPublished.load(std::memory_order_relaxed),
+  auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
+  AURORA_ASSERT(stream != nullptr, "GX patch requires an attached CPU FIFO");
+  AURORA_ASSERT(!detail::sInDisplayList && offset <= stream->size &&
+                    sizeof(uint32_t) <= stream->size - offset,
+                "fifo::patch_u32: invalid patch offset {} (buffer size {})", offset, stream->size);
+  AURORA_ASSERT(stream->bufferBase + offset >= stream->published.load(std::memory_order_relaxed),
                 "fifo::patch_u32: offset {} is below the published watermark", offset);
   const auto out = bswap(val);
-  std::memcpy(detail::sBufferData + offset, &out, sizeof(out));
+  std::memcpy(stream->data + offset, &out, sizeof(out));
+  const auto written = stream->written.load(std::memory_order_relaxed);
+  const auto absolute = stream->bufferBase + offset;
+  if (written - absolute <= stream->addressSize) {
+    const auto* bytes = reinterpret_cast<const uint8_t*>(&out);
+    for (uint32_t i = 0; i < sizeof(out); ++i)
+      stream->addressBase[(stream->initialWriteOffset + absolute + i) % stream->addressSize] = bytes[i];
+  }
 }
 
 void begin_display_list(uint8_t* buf, uint32_t size) {
@@ -476,20 +613,22 @@ bool in_display_list() { return detail::sInDisplayList; }
 
 void drain() {
   const aurora::allocation::HostAllocationScope hostAllocations;
-  if (detail::sBufferSize == 0 &&
+  auto* stream = sGPStream.load(std::memory_order_acquire);
+  if (!stream) return;
+  if (stream->size == 0 &&
       sAcknowledgedEpoch.load(std::memory_order_acquire) == gfx::CommandEpoch{}.value) return;
 
   ZoneScoped;
-  const uint64_t target = sStreamBase + detail::sBufferSize;
+  const uint64_t target = stream->written.load(std::memory_order_acquire);
 
   switch (kProcessingMode) {
   case ProcessingMode::Drain:
   case ProcessingMode::Inline:
-    sPublished.store(target, std::memory_order_relaxed);
-    process_to(target, std::memory_order_relaxed);
+    stream->published.store(target, std::memory_order_relaxed);
+    process_to(stream, target, stream->revision.load(std::memory_order_acquire), std::memory_order_relaxed);
     break;
   case ProcessingMode::Thread: {
-    sPublished.store(target, std::memory_order_release);
+    stream->published.store(target, std::memory_order_release);
     wake_worker();
 
     auto acknowledged = sAcknowledgedEpoch.load(std::memory_order_acquire);
@@ -500,12 +639,12 @@ void drain() {
         acknowledged = sAcknowledgedEpoch.load(std::memory_order_acquire);
       } while (acknowledged != gfx::CommandEpoch{}.value);
     }
-    uint64_t processed = sProcessed.load(std::memory_order_acquire);
+    uint64_t processed = stream->processed.load(std::memory_order_acquire);
     if (processed < target) {
       const aurora::os::GuestThreadWaitScope wait;
       do {
-        sProcessed.wait(processed, std::memory_order_acquire);
-        processed = sProcessed.load(std::memory_order_acquire);
+        stream->processed.wait(processed, std::memory_order_acquire);
+        processed = stream->processed.load(std::memory_order_acquire);
       } while (processed < target);
     }
     break;
@@ -514,34 +653,78 @@ void drain() {
 
   {
     std::lock_guard lock{sBufferMutex};
-    sStreamBase = target;
-    detail::sBufferSize = 0;
+    const uint32_t retired = static_cast<uint32_t>(target - stream->bufferBase);
+    AURORA_ASSERT(retired <= stream->size, "GX drain retired beyond its FIFO storage");
+    const uint32_t remaining = stream->size - retired;
+    std::memmove(stream->data, stream->data + retired, remaining);
+    stream->bufferBase = target;
+    stream->size = remaining;
   }
   sPendingDraws = 0;
 }
 
-const uint8_t* get_buffer_data() { return detail::sBufferData; }
-uint32_t get_buffer_size() { return detail::sBufferSize; }
+const uint8_t* get_buffer_data() {
+  auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
+  return stream ? stream->data : nullptr;
+}
+uint32_t get_buffer_size() {
+  auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
+  return stream ? stream->size : 0;
+}
+
+CursorSnapshot cursor_snapshot(uint64_t streamId) {
+  if (!sActive.load(std::memory_order_acquire)) return {};
+  for (auto* stream = sStreams.load(std::memory_order_acquire); stream; stream = stream->next) {
+    if (stream->id != streamId) continue;
+    while (true) {
+      const auto revision = stream->revision.load(std::memory_order_acquire);
+      if (revision & 1) continue;
+      const auto completed = stream->processed.load(std::memory_order_acquire);
+      const auto consumed = stream->decoded.load(std::memory_order_acquire);
+      const auto published = stream->published.load(std::memory_order_acquire);
+      const auto written = stream->written.load(std::memory_order_acquire);
+      const auto initialRead = stream->initialReadOffset.load(std::memory_order_relaxed);
+      const auto initialWrite = stream->initialWriteOffset.load(std::memory_order_relaxed);
+      if (stream->revision.load(std::memory_order_acquire) != revision) continue;
+      return {stream->addressBase, stream->addressSize, initialRead, initialWrite,
+              written, published, consumed, completed, stream->id, true,
+              sGPStream.load(std::memory_order_acquire) == stream &&
+                sBreakPointHitRevision.load(std::memory_order_acquire) == sBreakPointRevision.load(std::memory_order_acquire)};
+    }
+  }
+  return {};
+}
+
+CursorSnapshot default_cursor_snapshot() {
+  if (!sActive.load(std::memory_order_acquire)) return {};
+  auto* base = sAddressBuffer.load(std::memory_order_acquire);
+  for (auto* stream = sStreams.load(std::memory_order_acquire); stream; stream = stream->next)
+    if (stream->addressBase == base) return cursor_snapshot(stream->id);
+  return {};
+}
 
 CursorSnapshot cursor_snapshot() {
-  const auto completed = sProcessed.load(std::memory_order_acquire);
-  const auto consumed = sDecoded.load(std::memory_order_acquire);
-  const auto published = sPublished.load(std::memory_order_acquire);
-  const auto written = detail::sWritten.load(std::memory_order_acquire);
-  return {sAddressBuffer.load(std::memory_order_acquire), kAddressBufferSize, written,
-          published, consumed, completed,
-          sGeneration.load(std::memory_order_acquire), sActive.load(std::memory_order_acquire),
-          sBreakPointHitRevision.load(std::memory_order_acquire) == sBreakPointRevision.load(std::memory_order_acquire)};
+  auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
+  return stream ? cursor_snapshot(stream->id) : CursorSnapshot{};
+}
+
+uint64_t bind_cpu_fifo(void* base, uint32_t size, uint32_t readOffset, uint32_t writeOffset, uint32_t count) {
+  return bind_stream(true, base, size, readOffset, writeOffset, count);
+}
+uint64_t bind_gpu_fifo(void* base, uint32_t size, uint32_t readOffset, uint32_t writeOffset, uint32_t count) {
+  return bind_stream(false, base, size, readOffset, writeOffset, count);
 }
 
 void clear_buffer() {
-  const uint64_t processed = sProcessed.load(std::memory_order_acquire);
-  AURORA_ASSERT(sPublished.load(std::memory_order_acquire) == processed,
+  auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
+  AURORA_ASSERT(stream != nullptr, "GX buffer clear requires an attached CPU FIFO");
+  const uint64_t processed = stream->processed.load(std::memory_order_acquire);
+  AURORA_ASSERT(stream->published.load(std::memory_order_acquire) == processed,
                 "fifo::clear_buffer: published commands are still pending");
   std::lock_guard lock{sBufferMutex};
-  sStreamBase = processed;
-  detail::sBufferSize = 0;
-  detail::sWritten.store(processed, std::memory_order_release);
+  stream->bufferBase = processed;
+  stream->size = 0;
+  stream->written.store(processed, std::memory_order_release);
   sPendingDraws = 0;
 }
 

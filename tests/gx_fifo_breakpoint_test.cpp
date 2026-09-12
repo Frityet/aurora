@@ -278,6 +278,77 @@ TEST_F(GXFifoBreakpointTest, PassedAddressRefersToNextLapOfSuppliedRing) {
   EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
 }
 
+TEST_F(GXFifoBreakpointTest, IndependentBindingsRetainPendingCommandsAndResumeTheirOwnCursor) {
+  GXFifoObj first;
+  ASSERT_TRUE(GXGetCPUFifo(&first));
+  write_bp(0x40000011);
+  GXSaveCPUFifo(&first);
+
+  alignas(32) std::array<u8, 64> storage{};
+  GXFifoObj second;
+  GXInitFifoBase(&second, storage.data(), storage.size());
+  GXSetCPUFifo(&second);
+  write_bp(0x40000017);
+  GXSaveCPUFifo(&second);
+  EXPECT_EQ(GXGetFifoCount(&first), 5u);
+  EXPECT_EQ(GXGetFifoCount(&second), 5u);
+
+  // Draining the GP reads the first ring while the CPU writes the second.
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000011u);
+  ASSERT_TRUE(GXGetCPUFifo(&second));
+  EXPECT_EQ(GXGetFifoCount(&second), 5u);
+  ASSERT_TRUE(GXGetGPFifo(&first));
+  EXPECT_EQ(GXGetFifoCount(&first), 0u);
+
+  GXSetGPFifo(&second);
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
+  GXSetCPUFifo(&first);
+  write_bp(0x40000012);
+  GXSaveCPUFifo(&first);
+  GXSetGPFifo(&first);
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000012u);
+  ASSERT_TRUE(GXGetCPUFifo(&first));
+  void* read;
+  void* write;
+  GXGetFifoPtrs(&first, &read, &write);
+  EXPECT_EQ(read, static_cast<u8*>(GXGetFifoBase(&first)) + 10);
+  EXPECT_EQ(write, read);
+}
+
+TEST_F(GXFifoBreakpointTest, PrefilledWrappedRingPreservesItsReadAndWriteOffsets) {
+  alignas(32) std::array<u8, 64> storage{};
+  storage[62] = GX_LOAD_BP_REG;
+  storage[63] = 0x40;
+  storage[0] = 0;
+  storage[1] = 0;
+  storage[2] = 0x17;
+  GXFifoObj ring;
+  GXInitFifoBase(&ring, storage.data(), storage.size());
+  GXInitFifoPtrs(&ring, storage.data() + 62, storage.data() + 3);
+  GXSetCPUFifo(&ring);
+  GXSetGPFifo(&ring);
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
+  GXFifoObj current;
+  ASSERT_TRUE(GXGetGPFifo(&current));
+  EXPECT_EQ(GXGetFifoCount(&current), 0u);
+  void* read;
+  void* write;
+  GXGetFifoPtrs(&current, &read, &write);
+  EXPECT_EQ(read, storage.data() + 3);
+  EXPECT_EQ(write, read);
+
+  // The original stale descriptor explicitly programs the old GP read/count
+  // again. That request replays its ring, unlike rebinding a current snapshot.
+  aurora::gx::g_gxState.bpRegCache[0x40] = 0;
+  GXSetGPFifo(&ring);
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
+}
+
 TEST_F(GXFifoBreakpointTest, CanArmAgainstDecodedCursorWhileEarlierCallbackIsRunning) {
   write_bp(0x40000011);
   write_bp(0x45000002); // Draw-done callback pauses the decoder after this command.

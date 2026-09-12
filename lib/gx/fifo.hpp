@@ -8,10 +8,42 @@
 namespace aurora::gx::fifo {
 
 namespace detail {
-extern uint8_t* sBufferData;
-extern uint32_t sBufferSize;
-extern uint32_t sBufferCapacity;
-extern std::atomic<uint64_t> sWritten;
+// Each initialized FIFO storage retains its encoded commands independently.
+// Only the selected CPU stream is written by the serialized guest producer.
+struct CommandStream {
+  uint8_t* data = nullptr;
+  uint32_t size = 0;
+  uint32_t capacity = 0;
+  std::atomic<uint64_t> written{0};
+  std::atomic<uint64_t> published{0};
+  std::atomic<uint64_t> decoded{0};
+  std::atomic<uint64_t> processed{0};
+  std::atomic<uint64_t> abortFloor{0};
+  std::atomic<uint64_t> revision{0};
+  uint64_t bufferBase = 0;
+  uint64_t id = 0;
+  uint8_t* addressBase = nullptr;
+  uint32_t addressSize = 0;
+  std::atomic<uint32_t> initialReadOffset{0};
+  std::atomic<uint32_t> initialWriteOffset{0};
+  CommandStream* next = nullptr;
+};
+inline void mirror_ring(CommandStream& stream, const void* source, uint32_t length) {
+  const auto* bytes = static_cast<const uint8_t*>(source);
+  uint64_t position = stream.initialWriteOffset + stream.written.load(std::memory_order_relaxed);
+  if (length > stream.addressSize) {
+    const uint32_t skipped = length - stream.addressSize;
+    bytes += skipped;
+    position += skipped;
+    length = stream.addressSize;
+  }
+  const auto offset = static_cast<uint32_t>(position % stream.addressSize);
+  const uint32_t first = length < stream.addressSize - offset ? length : stream.addressSize - offset;
+  std::memmove(stream.addressBase + offset, bytes, first);
+  std::memmove(stream.addressBase, bytes + first, length - first);
+}
+extern std::atomic<CommandStream*> sCPUStream;
+[[noreturn]] void unbound_write();
 extern bool sInDisplayList;
 extern uint8_t* sDlBuffer;
 extern uint32_t sDlSize;
@@ -40,11 +72,14 @@ void write_data_grow(const void* data, uint32_t length);
 inline void write_data(const void* data, const uint32_t length) {
   if (!detail::sInDisplayList)
     LIKELY {
-      if (length <= detail::sBufferCapacity - detail::sBufferSize)
+      auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
+      if (!stream) UNLIKELY { detail::unbound_write(); }
+      if (length <= stream->capacity - stream->size)
         LIKELY {
-          std::memcpy(detail::sBufferData + detail::sBufferSize, data, length);
-          detail::sBufferSize += length;
-          detail::sWritten.fetch_add(length, std::memory_order_release);
+          std::memcpy(stream->data + stream->size, data, length);
+          stream->size += length;
+          detail::mirror_ring(*stream, data, length);
+          stream->written.fetch_add(length, std::memory_order_release);
           return;
         }
       write_data_grow(data, length);
@@ -58,10 +93,13 @@ inline void write_data(const void* data, const uint32_t length) {
 inline void write_u8(const uint8_t val) {
   if (!detail::sInDisplayList)
     LIKELY {
-      if (detail::sBufferSize < detail::sBufferCapacity)
+      auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
+      if (!stream) UNLIKELY { detail::unbound_write(); }
+      if (stream->size < stream->capacity)
         LIKELY {
-          detail::sBufferData[detail::sBufferSize++] = val;
-          detail::sWritten.fetch_add(1, std::memory_order_release);
+          stream->data[stream->size++] = val;
+          detail::mirror_ring(*stream, &val, 1);
+          stream->written.fetch_add(1, std::memory_order_release);
           return;
         }
       write_data_grow(&val, 1);
@@ -141,6 +179,8 @@ void clear_buffer();
 struct CursorSnapshot {
   uint8_t* addressBase;
   uint32_t addressSize;
+  uint32_t initialReadOffset;
+  uint32_t initialWriteOffset;
   uint64_t written;
   uint64_t published;
   uint64_t consumed;
@@ -150,5 +190,11 @@ struct CursorSnapshot {
   bool breakpoint;
 };
 CursorSnapshot cursor_snapshot();
+CursorSnapshot default_cursor_snapshot();
+CursorSnapshot cursor_snapshot(uint64_t streamId);
+// A binding changes where subsequent CPU writes or GP reads are routed. It
+// never drains, discards or transfers the pending bytes of another FIFO.
+uint64_t bind_cpu_fifo(void* base, uint32_t size, uint32_t readOffset, uint32_t writeOffset, uint32_t count);
+uint64_t bind_gpu_fifo(void* base, uint32_t size, uint32_t readOffset, uint32_t writeOffset, uint32_t count);
 
 } // namespace aurora::gx::fifo

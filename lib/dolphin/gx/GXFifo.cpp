@@ -4,7 +4,9 @@
 
 #include <cstring>
 #include <limits>
+#include <aurora/guest_thread.hpp>
 #include <mutex>
+#include <thread>
 #include <type_traits>
 
 namespace {
@@ -30,8 +32,6 @@ static_assert(sizeof(FifoRecord) <= sizeof(GXFifoObj));
 
 struct FifoBinding {
   FifoRecord record;
-  uint64_t writtenOrigin = 0;
-  uint64_t consumedOrigin = 0;
   uint64_t generation = 0;
   bool ready = false;
 };
@@ -39,6 +39,17 @@ struct FifoBinding {
 FifoBinding sCPUFifo;
 FifoBinding sGPFifo;
 std::mutex sFifoMutex;
+class FifoLock {
+public:
+  FifoLock() : lock(sFifoMutex, std::defer_lock) {
+    while (!lock.try_lock()) {
+      const aurora::os::GuestThreadWaitScope wait;
+      std::this_thread::yield();
+    }
+  }
+private:
+  std::unique_lock<std::mutex> lock;
+};
 using CursorSnapshot = aurora::gx::fifo::CursorSnapshot;
 
 FifoRecord read_record(const GXFifoObj* fifo) {
@@ -73,47 +84,42 @@ bool same_fifo(const FifoRecord& first, const FifoRecord& second) {
   return first.base == second.base && first.size == second.size;
 }
 
-bool linked(const CursorSnapshot& cursor) {
-  return ready(sCPUFifo, cursor) && ready(sGPFifo, cursor) &&
-         same_fifo(sCPUFifo.record, sGPFifo.record);
-}
-
 FifoRecord snapshot(const FifoBinding& binding, const CursorSnapshot& cursor) {
   FifoRecord record = binding.record;
   record.cpuBound = ready(sCPUFifo, cursor) && same_fifo(record, sCPUFifo.record);
   record.gpBound = ready(sGPFifo, cursor) && same_fifo(record, sGPFifo.record);
   AURORA_ASSERT(cursor.consumed <= cursor.written, "GX FIFO consumer passed its producer");
-  AURORA_ASSERT(linked(cursor) || cursor.consumed == cursor.written,
-                "Aurora cannot decode commands from independently attached CPU and GP FIFOs");
   const uint64_t count = cursor.written - cursor.consumed;
   AURORA_ASSERT(count <= std::numeric_limits<u32>::max(), "GX FIFO byte count exceeds its API width");
   record.count = static_cast<u32>(count);
   // Both default and caller-supplied FIFOs use a stable logical ring over the
   // decoder stream. A saved address survives growth and reclamation of decoded
   // command storage. Counts retain actual outstanding bytes, including overflow.
-  const uint64_t produced = cursor.written - binding.writtenOrigin + record.write - record.base;
-  const uint64_t consumed = cursor.consumed - binding.consumedOrigin + record.read - record.base;
+  const uint64_t produced = cursor.written + cursor.initialWriteOffset;
+  const uint64_t consumed = cursor.consumed + cursor.initialReadOffset;
   record.write = record.base + produced % record.size;
   record.read = record.base + consumed % record.size;
   record.wrap = produced >= record.size;
   return record;
 }
 
-void bind_fifo(FifoBinding& binding, const GXFifoObj* fifo, const CursorSnapshot& cursor) {
-  AURORA_ASSERT(cursor.active, "GX FIFO attachment requires an initialized Aurora command stream");
-  AURORA_ASSERT(cursor.written == cursor.completed,
-                "GX FIFO rebinding with pending commands requires native stream routing support");
+void bind_fifo(FifoBinding& binding, const GXFifoObj* fifo, bool cpu) {
+  const auto bind = cpu ? aurora::gx::fifo::bind_cpu_fifo : aurora::gx::fifo::bind_gpu_fifo;
   if (fifo == nullptr) {
+    bind(nullptr, 0, 0, 0, 0);
     binding = {};
     return;
   }
-  const FifoRecord record = read_record(fifo);
-  AURORA_ASSERT(!record.nativeBuffer ||
-                    (record.base == reinterpret_cast<uintptr_t>(cursor.addressBase) && record.size == cursor.addressSize),
-                "GX FIFO attachment refers to a retired default address space");
-  AURORA_ASSERT(record.count == 0,
-                "Attaching a prefilled GX FIFO requires importing its command bytes into the native decoder");
-  binding = {record, cursor.written, cursor.consumed, cursor.generation, true};
+  const auto record = read_record(fifo);
+  if (record.nativeBuffer) {
+    const auto initial = aurora::gx::fifo::default_cursor_snapshot();
+    AURORA_ASSERT(initial.active && record.base == reinterpret_cast<uintptr_t>(initial.addressBase) &&
+                  record.size == initial.addressSize, "GX FIFO attachment refers to a retired default address space");
+  }
+  const auto id = bind(reinterpret_cast<void*>(record.base), record.size,
+                       static_cast<uint32_t>(record.read - record.base),
+                       static_cast<uint32_t>(record.write - record.base), record.count);
+  binding = {record, id, true};
 }
 } // namespace
 
@@ -122,7 +128,7 @@ extern "C" {
 void GXInitFifoBase(GXFifoObj* fifo, void* base, u32 size) {
   FifoRecord record;
   if (base == nullptr && size == 0) {
-    const auto cursor = aurora::gx::fifo::cursor_snapshot();
+    const auto cursor = aurora::gx::fifo::default_cursor_snapshot();
     AURORA_ASSERT(cursor.active && cursor.addressBase != nullptr && cursor.addressSize != 0,
                   "GXInit requires an initialized Aurora command stream");
     record.nativeBuffer = true;
@@ -164,32 +170,26 @@ void GXInitFifoLimits(GXFifoObj* fifo, u32 hiWaterMark, u32 loWaterMark) {
 }
 
 void GXSetCPUFifo(const GXFifoObj* fifo) {
-  std::lock_guard lock{sFifoMutex};
-  bind_fifo(sCPUFifo, fifo, aurora::gx::fifo::cursor_snapshot());
+  const FifoLock lock;
+  bind_fifo(sCPUFifo, fifo, true);
 }
 
 void GXSetGPFifo(const GXFifoObj* fifo) {
-  std::lock_guard lock{sFifoMutex};
-  const auto cursor = aurora::gx::fifo::cursor_snapshot();
-  if (fifo != nullptr && ready(sCPUFifo, cursor)) {
-    AURORA_ASSERT(same_fifo(read_record(fifo), sCPUFifo.record),
-                  "Independent GP FIFO storage requires native stream routing support");
-  }
-  bind_fifo(sGPFifo, fifo, cursor);
-  aurora::gx::fifo::disable_breakpoint();
+  const FifoLock lock;
+  bind_fifo(sGPFifo, fifo, false);
 }
 
 GXBool GXGetCPUFifo(GXFifoObj* fifo) {
-  std::lock_guard lock{sFifoMutex};
-  const auto cursor = aurora::gx::fifo::cursor_snapshot();
+  const FifoLock lock;
+  const auto cursor = aurora::gx::fifo::cursor_snapshot(sCPUFifo.generation);
   if (!ready(sCPUFifo, cursor)) return GX_FALSE;
   write_record(fifo, snapshot(sCPUFifo, cursor));
   return GX_TRUE;
 }
 
 GXBool GXGetGPFifo(GXFifoObj* fifo) {
-  std::lock_guard lock{sFifoMutex};
-  const auto cursor = aurora::gx::fifo::cursor_snapshot();
+  const FifoLock lock;
+  const auto cursor = aurora::gx::fifo::cursor_snapshot(sGPFifo.generation);
   if (!ready(sGPFifo, cursor)) return GX_FALSE;
   write_record(fifo, snapshot(sGPFifo, cursor));
   return GX_TRUE;
@@ -222,8 +222,8 @@ void GXGetFifoStatus(GXFifoObj* fifo, GXBool* overhi, GXBool* underlow, u32* fif
 }
 
 void GXGetGPStatus(GXBool* overhi, GXBool* underlow, GXBool* readIdle, GXBool* cmdIdle, GXBool* brkpt) {
-  std::lock_guard lock{sFifoMutex};
-  const auto cursor = aurora::gx::fifo::cursor_snapshot();
+  const FifoLock lock;
+  const auto cursor = aurora::gx::fifo::cursor_snapshot(sGPFifo.generation);
   AURORA_ASSERT(ready(sGPFifo, cursor), "GXGetGPStatus requires an attached GP FIFO");
   const auto record = snapshot(sGPFifo, cursor);
   *overhi = record.count > record.highWatermark;
@@ -242,8 +242,8 @@ void GXEnableBreakPt(void* breakPt) {
   FifoBinding binding;
   CursorSnapshot cursor;
   {
-    std::lock_guard lock{sFifoMutex};
-    cursor = aurora::gx::fifo::cursor_snapshot();
+    const FifoLock lock;
+    cursor = aurora::gx::fifo::cursor_snapshot(sGPFifo.generation);
     AURORA_ASSERT(ready(sGPFifo, cursor), "GXEnableBreakPt requires an attached GP FIFO");
     binding = sGPFifo;
   }
@@ -251,12 +251,11 @@ void GXEnableBreakPt(void* breakPt) {
   const auto address = reinterpret_cast<uintptr_t>(breakPt);
   AURORA_ASSERT(address >= record.base && address - record.base < record.size,
                 "GXEnableBreakPt requires an address within the attached GP FIFO");
-  aurora::gx::fifo::enable_breakpoint(cursor.generation, binding.consumedOrigin,
-                                     static_cast<u32>(record.read - record.base), record.size,
+  aurora::gx::fifo::enable_breakpoint(cursor.generation, 0, cursor.initialReadOffset, record.size,
                                      static_cast<u32>(address - record.base));
 }
 
 void GXDisableBreakPt() { aurora::gx::fifo::disable_breakpoint(); }
 
-// Importing prefilled FIFOs and independent CPU/GP routing remain unsupported.
+// Pending encoded commands belong to FIFO storage, not to its current binding.
 }

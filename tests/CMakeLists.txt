@@ -84,6 +84,12 @@ target_link_libraries(os_time_tests PRIVATE fmt::fmt gtest gtest_main)
 gtest_discover_tests(os_time_tests)
 
 find_package(Threads REQUIRED)
+add_executable(os_fast_cast_tests os_fast_cast_test.cpp os_fast_cast_c_test.c)
+target_include_directories(os_fast_cast_tests PRIVATE ../include)
+target_compile_definitions(os_fast_cast_tests PRIVATE AURORA TARGET_PC)
+target_link_libraries(os_fast_cast_tests PRIVATE gtest gtest_main)
+gtest_discover_tests(os_fast_cast_tests)
+
 add_executable(os_execution_tests
   os_execution_test.cpp
   os_mutex_test.cpp

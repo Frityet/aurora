@@ -6,6 +6,7 @@ add_library(aurora_os STATIC lib/dolphin/os/OSInit.cpp
         lib/dolphin/os/OSTime.cpp
         lib/dolphin/os/OSAlarm.cpp
         lib/dolphin/os/OSReset.cpp
+        lib/dolphin/arc.cpp
         lib/dolphin/os/OSExecution.cpp
         lib/dolphin/os/OSMutex.cpp
         lib/dolphin/os/OSMessage.cpp

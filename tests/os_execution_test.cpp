@@ -305,3 +305,182 @@ TEST(OSExecutionTest, YieldPreservesEnabledInterruptsAndAllowsNegativeCount) {
 }
 
 } // namespace
+
+namespace {
+struct ManagedTestThread {
+  OSThread thread{};
+  alignas(32) std::byte stack[4096]{};
+
+  ManagedTestThread(void* (*entry)(void*), void* argument, OSPriority priority) {
+    if (!OSCreateThread(&thread, entry, argument, stack + sizeof(stack), sizeof(stack), priority, 0))
+      std::abort();
+  }
+  ~ManagedTestThread() { OSCancelThread(&thread); }
+  ManagedTestThread(const ManagedTestThread&) = delete;
+};
+
+struct QueueWorker {
+  OSMessageQueue queue{};
+  OSMessage slot{};
+  int steps = 0;
+  OSMessage received = nullptr;
+  static void* run(void* argument) {
+    auto& state = *static_cast<QueueWorker*>(argument);
+    OSInitMessageQueue(&state.queue, &state.slot, 1);
+    ++state.steps;
+    OSReceiveMessage(&state.queue, &state.received, OS_MESSAGE_BLOCK);
+    ++state.steps;
+    return state.received;
+  }
+};
+
+TEST(OSExecutionTest, HigherPriorityResumeInitializesQueueBeforeCallerContinues) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  for (int cycle = 0; cycle < 64; ++cycle) {
+    QueueWorker state;
+    ManagedTestThread worker(QueueWorker::run, &state, 8);
+    EXPECT_EQ(OSResumeThread(&worker.thread), 1);
+    EXPECT_EQ(state.steps, 1);
+    EXPECT_EQ(state.queue.msgCount, 1);
+    EXPECT_EQ(worker.thread.state, OS_THREAD_STATE_WAITING);
+    EXPECT_EQ(state.queue.queueReceive.head, &worker.thread);
+    const auto payload = reinterpret_cast<OSMessage>(uintptr_t{0x123456789ABC});
+    EXPECT_TRUE(OSSendMessage(&state.queue, payload, OS_MESSAGE_NOBLOCK));
+    EXPECT_EQ(state.steps, 2);
+    EXPECT_EQ(state.received, payload);
+    void* result = nullptr;
+    EXPECT_TRUE(OSJoinThread(&worker.thread, &result));
+    EXPECT_EQ(result, payload);
+  }
+}
+
+TEST(OSExecutionTest, PriorityPreemptionPreservesMaskedInterruptState) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  QueueWorker state;
+  ManagedTestThread worker(QueueWorker::run, &state, 7);
+  const BOOL saved = OSDisableInterrupts();
+  OSResumeThread(&worker.thread);
+  EXPECT_EQ(state.steps, 1);
+  EXPECT_FALSE(OSDisableInterrupts());
+  EXPECT_TRUE(OSSendMessage(&state.queue, nullptr, OS_MESSAGE_NOBLOCK));
+  EXPECT_EQ(state.steps, 2);
+  EXPECT_FALSE(OSDisableInterrupts());
+  OSRestoreInterrupts(saved);
+  EXPECT_TRUE(OSJoinThread(&worker.thread, nullptr));
+}
+
+TEST(OSExecutionTest, SchedulerDisableDefersPreemptionAndExplicitYieldHonorsPendingPriority) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  QueueWorker state;
+  ManagedTestThread worker(QueueWorker::run, &state, 7);
+  OSDisableScheduler();
+  OSResumeThread(&worker.thread);
+  EXPECT_EQ(state.steps, 0);
+  OSYieldThread();
+  EXPECT_EQ(state.steps, 0);
+  OSEnableScheduler();
+  // The SDK's enable call only changes the nesting count. SelectThread is
+  // requested by the next scheduling operation, not invented here.
+  EXPECT_EQ(state.steps, 0);
+  OSYieldThread();
+  EXPECT_EQ(state.steps, 1);
+  EXPECT_TRUE(OSSendMessage(&state.queue, nullptr, OS_MESSAGE_NOBLOCK));
+  EXPECT_TRUE(OSJoinThread(&worker.thread, nullptr));
+}
+
+TEST(OSExecutionTest, NestedSuspensionOnlyBecomesRunnableOnFinalResume) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  QueueWorker state;
+  ManagedTestThread worker(QueueWorker::run, &state, 7);
+  EXPECT_EQ(OSSuspendThread(&worker.thread), 1);
+  EXPECT_EQ(OSResumeThread(&worker.thread), 2);
+  EXPECT_EQ(state.steps, 0);
+  EXPECT_EQ(OSResumeThread(&worker.thread), 1);
+  EXPECT_EQ(state.steps, 1);
+  // A suspended wait-queue member may be woken but must not become runnable
+  // until resumed. Its real message remains available for that continuation.
+  EXPECT_EQ(OSSuspendThread(&worker.thread), 0);
+  EXPECT_TRUE(OSSendMessage(&state.queue, nullptr, OS_MESSAGE_NOBLOCK));
+  EXPECT_EQ(state.steps, 1);
+  EXPECT_EQ(worker.thread.state, OS_THREAD_STATE_READY);
+  EXPECT_EQ(worker.thread.queue, nullptr);
+  EXPECT_EQ(OSResumeThread(&worker.thread), 1);
+  EXPECT_EQ(state.steps, 2);
+  EXPECT_TRUE(OSJoinThread(&worker.thread, nullptr));
+}
+
+TEST(OSExecutionTest, ReturningFromNativeWaitHonorsReadyGuestPriority) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  QueueWorker state;
+  ManagedTestThread worker(QueueWorker::run, &state, 7);
+  OSDisableScheduler();
+  OSResumeThread(&worker.thread);
+  OSEnableScheduler();
+  EXPECT_EQ(state.steps, 0);
+  {
+    const aurora::os::GuestThreadWaitScope wait;
+  }
+  EXPECT_EQ(state.steps, 1);
+  EXPECT_TRUE(OSSendMessage(&state.queue, nullptr, OS_MESSAGE_NOBLOCK));
+  EXPECT_TRUE(OSJoinThread(&worker.thread, nullptr));
+}
+
+TEST(OSExecutionTest, EqualPriorityYieldUsesReadyOrderAndNeverRunsLowerPriorityFirst) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  struct Record {
+    std::vector<int>* order;
+    int value;
+    static void* run(void* argument) {
+      auto& record = *static_cast<Record*>(argument);
+      record.order->push_back(record.value);
+      return nullptr;
+    }
+  };
+  std::vector<int> order;
+  Record low{&order, 31}, first{&order, 1}, second{&order, 2};
+  ManagedTestThread lowWorker(Record::run, &low, 31);
+  ManagedTestThread firstWorker(Record::run, &first, 16);
+  ManagedTestThread secondWorker(Record::run, &second, 16);
+  OSResumeThread(&lowWorker.thread);
+  OSResumeThread(&firstWorker.thread);
+  OSResumeThread(&secondWorker.thread);
+  EXPECT_TRUE(order.empty());
+  OSYieldThread();
+  EXPECT_EQ(order, (std::vector<int>{1, 2}));
+  EXPECT_TRUE(OSJoinThread(&firstWorker.thread, nullptr));
+  EXPECT_TRUE(OSJoinThread(&secondWorker.thread, nullptr));
+  EXPECT_TRUE(OSJoinThread(&lowWorker.thread, nullptr));
+  EXPECT_EQ(order, (std::vector<int>{1, 2, 31}));
+}
+
+TEST(OSExecutionTest, PriorityChangeReordersReadyThreadsBeforeReturning) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  QueueWorker state;
+  ManagedTestThread worker(QueueWorker::run, &state, 24);
+  OSResumeThread(&worker.thread);
+  EXPECT_EQ(state.steps, 0);
+  EXPECT_TRUE(OSSetThreadPriority(&worker.thread, 7));
+  EXPECT_EQ(state.steps, 1);
+  EXPECT_TRUE(OSSendMessage(&state.queue, nullptr, OS_MESSAGE_NOBLOCK));
+  EXPECT_TRUE(OSJoinThread(&worker.thread, nullptr));
+}
+
+TEST(OSExecutionTest, CancellingReadyThreadRemovesItsSchedulerLink) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  for (int cycle = 0; cycle < 32; ++cycle) {
+    QueueWorker state;
+    ManagedTestThread cancelled(QueueWorker::run, &state, 24);
+    OSResumeThread(&cancelled.thread);
+    EXPECT_EQ(state.steps, 0);
+    OSCancelThread(&cancelled.thread);
+    EXPECT_EQ(state.steps, 0);
+    EXPECT_TRUE(OSIsThreadTerminated(&cancelled.thread));
+    EXPECT_EQ(cancelled.thread.queue, nullptr);
+    ManagedTestThread next(QueueWorker::run, &state, 7);
+    OSResumeThread(&next.thread);
+    EXPECT_EQ(state.steps, 1);
+    EXPECT_TRUE(OSSendMessage(&state.queue, nullptr, OS_MESSAGE_NOBLOCK));
+    EXPECT_TRUE(OSJoinThread(&next.thread, nullptr));
+  }
+}
+} // namespace

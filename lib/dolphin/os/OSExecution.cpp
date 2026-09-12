@@ -30,6 +30,8 @@ thread_local unsigned sGuestExecutionDepth = 0;
 thread_local OSThread* sCurrentThread = nullptr;
 void check_thread_control();
 bool current_thread_cancelled();
+void reschedule();
+void yield_guest_cpu();
 u32 sReschedule = 0;
 
 s32 scheduler_count() { return std::bit_cast<s32>(sReschedule); }
@@ -91,9 +93,7 @@ void OSYieldThread() {
   if (scheduler_count() <= 0) {
     // SelectThread(TRUE) can switch even when the caller's saved interrupt
     // state is disabled. Retain that context's bit across the explicit yield.
-    release_cpu();
-    std::this_thread::yield();
-    acquire_cpu();
+    yield_guest_cpu();
   }
   OSRestoreInterrupts(enabled);
 }
@@ -103,6 +103,10 @@ void OSYieldThread() {
 // serialized with host entry scopes and yields at explicit SDK boundaries.
 namespace {
 std::condition_variable sThreadWake;
+// The native workers share the SDK's single CPU. Keep ready threads ordered
+// here instead of allowing host mutex acquisition order to choose the next
+// guest. The same intrusive link belongs to either this queue or a wait queue.
+OSThreadQueue sRunQueue{};
 
 [[noreturn]] void unsupported_thread_boundary(const char* reason) {
   std::fprintf(stderr, "Aurora OS thread boundary: %s\n", reason);
@@ -128,6 +132,36 @@ void enqueue_thread_by_priority(OSThreadQueue* queue, OSThread* thread) {
   else next->link.prev = thread;
   if (previous == nullptr) queue->head = thread;
   else previous->link.next = thread;
+}
+
+void make_runnable(OSThread* thread) {
+  thread->queue = &sRunQueue;
+  enqueue_thread_by_priority(&sRunQueue, thread);
+  sThreadWake.notify_all();
+}
+
+void reschedule() {
+  if (scheduler_count() > 0 || sRunQueue.head == nullptr) return;
+  auto* current = OSGetCurrentThread();
+  // Exiting threads publish their completed state before waking joiners.
+  if (current->state != OS_THREAD_STATE_RUNNING) return;
+  const auto priority = sRunQueue.head->priority;
+  if (current->priority <= priority) return;
+  current->state = OS_THREAD_STATE_READY;
+  make_runnable(current);
+  check_thread_control();
+}
+
+void yield_guest_cpu() {
+  auto* current = OSGetCurrentThread();
+  current->state = OS_THREAD_STATE_READY;
+  make_runnable(current);
+  // Keep this context in the ready queue while allowing native interrupt
+  // callbacks to enter the CPU gate. SDK workers must claim the queue head,
+  // so a lower-priority worker cannot steal the yielding context's turn.
+  release_cpu();
+  std::this_thread::yield();
+  acquire_cpu();
 }
 
 struct NativeThread {
@@ -172,6 +206,14 @@ OSThread* set_effective_priority(OSThread* thread, OSPriority priority) {
     if (thread->mutex != nullptr) return thread->mutex->thread;
     break;
   case OS_THREAD_STATE_READY:
+    if (thread->queue == &sRunQueue) {
+      dequeue_thread(&sRunQueue, thread);
+      thread->priority = priority;
+      make_runnable(thread);
+      break;
+    }
+    thread->priority = priority;
+    break;
   case OS_THREAD_STATE_RUNNING:
     thread->priority = priority;
     break;
@@ -202,6 +244,7 @@ void OSSleepThread(OSThreadQueue* queue) {
   current->state = OS_THREAD_STATE_WAITING;
   current->queue = queue;
   enqueue_thread_by_priority(queue, current);
+  sThreadWake.notify_all();
 
   // std::condition_variable atomically drops this same CPU mutex and waits;
   // wakeup edits the intrusive SDK queue under that mutex. No lost wakeup,
@@ -209,13 +252,12 @@ void OSSleepThread(OSThreadQueue* queue) {
   std::unique_lock lock{sCpuGate, std::adopt_lock};
   sOwnsCpu = false;
   sThreadWake.wait(lock, [&] {
-    return current_thread_cancelled() || (current->state != OS_THREAD_STATE_WAITING && current->suspend <= 0);
+    return current_thread_cancelled() ||
+           (current->suspend <= 0 && current == sRunQueue.head);
   });
   sOwnsCpu = true;
   lock.release();
   check_thread_control();
-  current->state = OS_THREAD_STATE_RUNNING;
-  current->queue = nullptr;
   OSRestoreInterrupts(enabled);
 }
 
@@ -225,11 +267,11 @@ void OSWakeupThread(OSThreadQueue* queue) {
     auto* thread = queue->head;
     dequeue_thread(queue, thread);
     thread->state = OS_THREAD_STATE_READY;
-    // Actual native runnable threads wait in the host scheduler. No forged
-    // original RunQueue pointer is published for an unimplemented scheduler.
     thread->queue = nullptr;
+    if (thread->suspend <= 0) make_runnable(thread);
   }
   sThreadWake.notify_all();
+  reschedule();
   OSRestoreInterrupts(enabled);
 }
 
@@ -255,6 +297,7 @@ BOOL OSSetThreadPriority(OSThread* thread, OSPriority priority) {
   if (thread->base != priority) {
     thread->base = priority;
     update_priority(thread);
+    reschedule();
   }
   OSRestoreInterrupts(enabled);
   return TRUE;
@@ -306,12 +349,18 @@ bool current_thread_cancelled() {
 void check_thread_control() {
   if (current_thread_cancelled()) throw ThreadExit{reinterpret_cast<void*>(~std::uintptr_t{0})};
   if (sCurrentThread == nullptr) return;
-  while (sCurrentThread->suspend > 0) {
+  while (sCurrentThread->suspend > 0 ||
+         (sCurrentThread->state == OS_THREAD_STATE_READY && sRunQueue.head != sCurrentThread)) {
     if (sCurrentThread->state == OS_THREAD_STATE_RUNNING) sCurrentThread->state = OS_THREAD_STATE_READY;
     wait_for_control_change();
     if (current_thread_cancelled()) throw ThreadExit{reinterpret_cast<void*>(~std::uintptr_t{0})};
   }
-  if (sCurrentThread->state == OS_THREAD_STATE_READY) sCurrentThread->state = OS_THREAD_STATE_RUNNING;
+  if (sCurrentThread->state == OS_THREAD_STATE_READY) {
+    dequeue_thread(&sRunQueue, sCurrentThread);
+    sCurrentThread->queue = nullptr;
+    sCurrentThread->state = OS_THREAD_STATE_RUNNING;
+    sThreadWake.notify_all();
+  }
 }
 
 void run_managed_thread(ManagedThread* record) {
@@ -387,7 +436,10 @@ GuestThreadWaitScope::GuestThreadWaitScope() : owned_(sOwnsCpu) {
 }
 
 GuestThreadWaitScope::~GuestThreadWaitScope() noexcept(false) {
-  if (owned_) acquire_cpu();
+  if (owned_) {
+    acquire_cpu();
+    reschedule();
+  }
 }
 } // namespace aurora::os
 
@@ -441,7 +493,10 @@ s32 OSResumeThread(OSThread* thread) {
   thread->suspend = std::bit_cast<s32>(std::bit_cast<u32>(previous) - 1U);
   if (thread->suspend < 0) thread->suspend = 0;
   else if (thread->suspend == 0) {
-    if (thread->state == OS_THREAD_STATE_READY) thread->priority = __OSGetEffectivePriority(thread);
+    if (thread->state == OS_THREAD_STATE_READY) {
+      thread->priority = __OSGetEffectivePriority(thread);
+      make_runnable(thread);
+    }
     else if (thread->state == OS_THREAD_STATE_WAITING) {
       dequeue_thread(thread->queue, thread);
       thread->priority = __OSGetEffectivePriority(thread);
@@ -449,6 +504,7 @@ s32 OSResumeThread(OSThread* thread) {
       if (thread->mutex != nullptr) update_priority(thread->mutex->thread);
     }
     sThreadWake.notify_all();
+    reschedule();
   }
   OSRestoreInterrupts(enabled);
   return previous;
@@ -460,6 +516,11 @@ s32 OSSuspendThread(OSThread* thread) {
   thread->suspend = std::bit_cast<s32>(std::bit_cast<u32>(previous) + 1U);
   if (previous == 0) {
     if (thread->state == OS_THREAD_STATE_RUNNING) thread->state = OS_THREAD_STATE_READY;
+    else if (thread->state == OS_THREAD_STATE_READY && thread->queue == &sRunQueue) {
+      dequeue_thread(&sRunQueue, thread);
+      thread->queue = nullptr;
+      sThreadWake.notify_all();
+    }
     else if (thread->state == OS_THREAD_STATE_WAITING) {
       dequeue_thread(thread->queue, thread);
       thread->priority = OS_PRIORITY_MAX + 1;
@@ -468,6 +529,7 @@ s32 OSSuspendThread(OSThread* thread) {
       if (thread->mutex != nullptr) update_priority(thread->mutex->thread);
     }
     if (thread == OSGetCurrentThread()) check_thread_control();
+    reschedule();
   }
   OSRestoreInterrupts(enabled);
   return previous;
@@ -511,6 +573,9 @@ void OSCancelThread(OSThread* thread) {
     thread->queue = nullptr;
     thread->state = OS_THREAD_STATE_READY;
     if (thread->mutex != nullptr) update_priority(thread->mutex->thread);
+  } else if (thread->state == OS_THREAD_STATE_READY && thread->queue == &sRunQueue) {
+    dequeue_thread(&sRunQueue, thread);
+    thread->queue = nullptr;
   }
   sThreadWake.notify_all();
   while (!record->finished) wait_for_control_change();

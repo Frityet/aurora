@@ -54,19 +54,22 @@ void C_VECNormalize(const Vec* src, Vec* unit) {
 }
 
 void PSVECNormalize(const Vec* src, Vec* unit) {
-  f32 sqsum;
-  f32 rsqrt;
-
   assert(src && "VECNormalize():  NULL VecPtr 'src' ");
   assert(unit && "VECNormalize():  NULL VecPtr 'unit' ");
 
-  sqsum = (src->z * src->z + src->x * src->x) + src->y * src->y;
-  assert(0.0f != sqsum && "VECNormalize():  zero magnitude vector ");
-
-  rsqrt = ppc_rsqrte(sqsum);
-  unit->x = src->x * rsqrt;
-  unit->y = src->y * rsqrt;
-  unit->z = src->z * rsqrt;
+  // The paired-single entry has no zero-magnitude assertion. Preserve its
+  // arithmetic (including IEEE exceptional results) and load before any store.
+  const f32 x = src->x;
+  const f32 y = src->y;
+  const f32 z = src->z;
+  const f32 xx = x * x;
+  const f32 yy = y * y;
+  const f32 sqsum = fmaf(z, z, xx) + yy;
+  // ppc_rsqrte already performs the original single Newton refinement.
+  const f32 rsqrt = ppc_rsqrte(sqsum);
+  unit->x = ppc_psq_store_f32(x * rsqrt);
+  unit->y = ppc_psq_store_f32(y * rsqrt);
+  unit->z = ppc_psq_store_f32(z * rsqrt);
 }
 
 f32 C_VECSquareMag(const Vec* v) {

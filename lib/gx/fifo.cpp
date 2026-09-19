@@ -185,6 +185,7 @@ void dispatch_breakpoint(uint64_t revision) noexcept {
 }
 
 void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revision, std::memory_order order) noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
   while (true) {
     if (stream->revision.load(std::memory_order_acquire) != revision) return;
     const gfx::CommandEpoch epoch;
@@ -198,6 +199,8 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
       if (stream->revision.load(std::memory_order_acquire) != revision) return;
       const auto floor = stream->abortFloor.load(std::memory_order_acquire);
       if (!epoch.current()) continue;
+      stream->displayList.clear();
+      stream->displayListOffset = 0;
       stream->fetched.store(std::max(floor, stream->fetched.load(std::memory_order_acquire)), std::memory_order_release);
       stream->decoded.store(std::max(floor, stream->decoded.load(std::memory_order_acquire)), std::memory_order_release);
       stream->processed.store(std::max(floor, stream->processed.load(std::memory_order_acquire)), std::memory_order_release);
@@ -227,9 +230,25 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
         update_write_limit(*stream);
         stream->processed.notify_all();
       }
+      if (stream->displayListEpoch != epoch.value) {
+        stream->displayList.clear();
+        stream->displayListOffset = 0;
+      }
       const bool breakpointEnabled = sBreakPoint.enabled &&
           sBreakPoint.revision == sBreakPointRevision.load(std::memory_order_acquire);
-      if (breakpointEnabled && fetched == sBreakPoint.cursor) {
+      if (!stream->displayList.empty()) {
+        const auto remaining = static_cast<uint32_t>(stream->displayList.size() - stream->displayListOffset);
+        result = process(stream->displayList.data() + stream->displayListOffset, remaining, epoch, InputMode::DisplayList);
+        if (!epoch.current()) continue;
+        AURORA_ASSERT(result.bytesProcessed > 0 && result.bytesProcessed <= remaining &&
+                          !result.displayListCall && !result.incomplete,
+                      "Display-list decoder made invalid progress");
+        stream->displayListOffset += result.bytesProcessed;
+        if (stream->displayListOffset == stream->displayList.size()) {
+          stream->displayList.clear();
+          stream->displayListOffset = 0;
+        }
+      } else if (breakpointEnabled && fetched == sBreakPoint.cursor) {
         sBreakPointHitRevision.store(sBreakPoint.revision, std::memory_order_release);
         sBreakPoint.hit = true;
         if (sBreakPoint.notified) return;
@@ -255,6 +274,13 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
         stream->decoded.store(decoded, std::memory_order_release);
         stream->fetched.store(result.incomplete ? end : decoded, std::memory_order_release);
         update_write_limit(*stream);
+        if (result.displayListCall && result.displayListSize) {
+          // The borrowed source is read at GP fetch, not when the CPU emits
+          // CALL_DL. Keep one owned span through tokens, callbacks and abort.
+          stream->displayList.assign(result.displayListData, result.displayListData + result.displayListSize);
+          stream->displayListOffset = 0;
+          stream->displayListEpoch = epoch.value;
+        }
       }
     }
     if (notifyBreakPoint) {
@@ -269,8 +295,10 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
     {
       std::lock_guard execution{sExecutionMutex};
       if (!epoch.current() || stream->revision.load(std::memory_order_acquire) != revision) continue;
-      stream->processed.store(decoded, order);
-      stream->processed.notify_all();
+      if (stream->displayList.empty()) {
+        stream->processed.store(decoded, order);
+        stream->processed.notify_all();
+      }
     }
   }
 }
@@ -404,6 +432,8 @@ void program_gp_stream(detail::CommandStream& stream, uint32_t readOffset, uint3
   stream.decoded = 0;
   stream.processed = 0;
   stream.abortFloor = 0;
+  stream.displayList.clear();
+  stream.displayListOffset = 0;
   stream.revision.fetch_add(1, std::memory_order_release);
 }
 

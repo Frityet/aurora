@@ -18,11 +18,16 @@ struct ProcessResult {
   bool tokenInterrupt = false;
   uint16_t token = 0;
   bool incomplete = false;
+  bool displayListCall = false;
+  const uint8_t* displayListData = nullptr;
+  uint32_t displayListSize = 0;
 };
 
 enum class InputMode {
   Complete,
   Streaming,
+  // Finite list input; hardware does not execute calls nested inside a list.
+  DisplayList,
 };
 
 // Streaming input can end inside a command. Its prefix remains unprocessed

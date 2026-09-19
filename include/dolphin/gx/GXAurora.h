@@ -114,6 +114,13 @@ void AuroraDrainGXCommands(void);
  */
 #define GX_AURORA_DRAW_INDEXED 0x0041
 
+/**
+ * Calls a native display-list span: u64 host address followed by u32 byte length.
+ * This command occupies 15 FIFO bytes; the list payload is fetched separately.
+ * The caller retains readable source memory until GXDrawDone/AuroraDrainGXCommands.
+ */
+#define GX_AURORA_CALL_DISPLAY_LIST 0x0042
+
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
 

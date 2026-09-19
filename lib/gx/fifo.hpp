@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <vector>
 
 namespace aurora::gx::fifo {
 
@@ -33,6 +34,11 @@ struct CommandStream {
   uint32_t addressSize = 0;
   std::atomic<uint32_t> initialReadOffset{0};
   std::atomic<uint32_t> initialWriteOffset{0};
+  // List bytes are fetched separately from the physical FIFO command stream.
+  // The decoder owns this snapshot through callback suspension and abort.
+  std::vector<uint8_t> displayList;
+  uint32_t displayListOffset = 0;
+  uint64_t displayListEpoch = 0;
   CommandStream* next = nullptr;
 };
 inline void mirror_ring(CommandStream& stream, const void* source, uint32_t length) {

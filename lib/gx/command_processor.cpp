@@ -1,6 +1,7 @@
 #include "../gfx/command_epoch.hpp"
 #include <aurora/allocation.hpp>
 #include <aurora/gx_array.hpp>
+#include <dolphin/os.h>
 
 #include "command_processor.hpp"
 
@@ -304,6 +305,8 @@ static bool complete_aurora_command(ByteReader reader) noexcept {
   case GX_AURORA_REQUEST_TAGGED_DEPTH_SNAPSHOT:
   case GX_AURORA_DESTROY_COPY_TEX:
     return reader.remaining() >= sizeof(u64);
+  case GX_AURORA_CALL_DISPLAY_LIST:
+    return reader.remaining() >= sizeof(u64) + sizeof(u32);
   case GX_AURORA_LOAD_COPY_FILTER:
     return reader.remaining() >= 2 + 12 * 2 + 7;
   case GX_AURORA_BEGIN_OFFSCREEN:
@@ -435,10 +438,19 @@ ProcessResult process(const u8* data, u32 size, gfx::CommandEpoch epoch, InputMo
     }
 
     case CP_CMD_CALL_DL: {
-      // Call display list: 8 bytes (address + size)
-      Log.warn("Ignoring nested GX_CMD_CALL_DL");
-      reader.skip(8);
-      break;
+      // Hardware ignores the low five address/length bits. Cached and
+      // uncached CPU aliases name the same physical RAM window.
+      const u32 address = reader.read<u32>() & 0x3fffffe0;
+      const u32 length = reader.read<u32>() & ~31u;
+      if (mode == InputMode::DisplayList) {
+        Log.warn("Ignoring nested GX_CMD_CALL_DL");
+        break;
+      }
+      AURORA_ASSERT(address <= g_config.mem1Size && length <= g_config.mem1Size - address,
+                    "GX_CMD_CALL_DL exceeds physical MEM1 extent");
+      const auto* list = static_cast<const u8*>(OSPhysicalToCached(address));
+      return {.bytesProcessed = static_cast<u32>(reader.offset()), .displayListCall = true,
+              .displayListData = list, .displayListSize = length};
     }
 
     case CP_CMD_INVAL_VTX: {
@@ -451,6 +463,24 @@ ProcessResult process(const u8* data, u32 size, gfx::CommandEpoch epoch, InputMo
     }
 
     case GX_AURORA: {
+      // Native display-list calls retain full host pointers without aliasing
+      // the physical-address namespace of the nine-byte retail command.
+      ByteReader command = reader;
+      if (command.read<u16>() == GX_AURORA_CALL_DISPLAY_LIST) {
+        const u64 address = command.read<u64>();
+        const u32 length = command.read<u32>();
+        reader = command;
+        if (mode == InputMode::DisplayList) {
+          Log.warn("Ignoring nested native display-list call");
+          break;
+        }
+        AURORA_ASSERT(address <= std::numeric_limits<uintptr_t>::max() &&
+                          length <= std::numeric_limits<uintptr_t>::max() - address && (address || !length),
+                      "Native display-list call has an invalid readable span");
+        return {.bytesProcessed = static_cast<u32>(reader.offset()), .displayListCall = true,
+                .displayListData = reinterpret_cast<const u8*>(static_cast<uintptr_t>(address)),
+                .displayListSize = length};
+      }
       handle_aurora(reader);
       break;
     }

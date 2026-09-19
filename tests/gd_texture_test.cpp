@@ -61,7 +61,7 @@ protected:
 
   void replay(const std::vector<u8>& bytes) {
     GXCallDisplayList(bytes.data(), static_cast<u32>(bytes.size()));
-    decode_fifo(capture_fifo());
+    aurora::gx::fifo::drain();
   }
 
   alignas(32) std::array<u8, 128 * 1024> memory{};

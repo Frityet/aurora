@@ -9,6 +9,8 @@ extern "C" {
 
 void GXBeginDisplayList(void* list, u32 size);
 u32 GXEndDisplayList(void);
+// Source memory is borrowed until GP consumption. Retain the readable span
+// until GXDrawDone or AuroraDrainGXCommands before freeing or reusing it.
 void GXCallDisplayList(const void* list, u32 nbytes);
 
 #ifdef __cplusplus

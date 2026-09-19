@@ -53,8 +53,7 @@ protected:
 
   void replay(const std::vector<u8>& bytes) {
     GXCallDisplayList(bytes.data(), static_cast<u32>(bytes.size()));
-    const auto fifo = capture_fifo();
-    decode_fifo(fifo);
+    aurora::gx::fifo::drain();
   }
 
   static void position_format() {

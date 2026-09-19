@@ -57,8 +57,18 @@ void GXCallDisplayList(const void* data, u32 nbytes) {
     __GXSendFlushPrim();
   }
 
-  // Write display list contents to the FIFO
-  aurora::gx::fifo::write_data(data, nbytes);
+  // Native pointers use the Aurora extension namespace; raw retail CALL_DL
+  // addresses remain physical addresses. Borrow the span until GP fetch.
+  // Submit one finalized record so abort during a high-water wait cancels
+  // every remaining header byte, rather than emitting a later field alone.
+  u8 command[15]{GX_AURORA};
+  const auto subtype = bswap(u16{GX_AURORA_CALL_DISPLAY_LIST});
+  const auto address = bswap(u64{reinterpret_cast<uintptr_t>(data)});
+  const auto length = bswap(nbytes);
+  std::memcpy(command + 1, &subtype, sizeof(subtype));
+  std::memcpy(command + 3, &address, sizeof(address));
+  std::memcpy(command + 11, &length, sizeof(length));
+  aurora::gx::fifo::write_data(command, sizeof(command));
   aurora::gx::fifo::publish();
 }
 

@@ -325,6 +325,7 @@ if (AURORA_ENABLE_GX)
     byte_buffer_test.cpp
     gx_fifo_test.cpp
     gx_fifo_breakpoint_test.cpp
+    gx_display_list_test.cpp
     gx_array_registry_test.cpp
     gd_array_test.cpp
     gd_texture_test.cpp

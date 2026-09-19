@@ -56,6 +56,8 @@ std::atomic<uint64_t> sBreakPointRevision{1};
 std::atomic<uint64_t> sBreakPointHitRevision{0};
 std::atomic<uint64_t> sAcknowledgedEpoch{1};
 std::atomic<uint32_t> sWorkerWake{0};
+std::atomic<bool> sRetiringStreams{false};
+std::atomic<uint32_t> sBlockedWriters{0};
 thread::Thread sWorkerThread;
 // A callback may sleep in an original SDK queue while keeping this recursive
 // lock. Its setter must then yield the CPU while waiting for it to return.
@@ -111,6 +113,25 @@ void wake_worker() noexcept {
   sWorkerWake.notify_all();
 }
 
+void update_write_limit(detail::CommandStream& stream) {
+  const bool linked = !sRetiringStreams.load(std::memory_order_acquire) &&
+      detail::sCPUStream.load(std::memory_order_acquire) == &stream &&
+      sGPStream.load(std::memory_order_acquire) == &stream;
+  // The high interrupt is raised when the count exceeds its watermark.
+  // Also cap at physical capacity for tiny native FIFOs whose high mark is
+  // their full size; an unread ring byte must never be overwritten.
+  const auto capacity = std::min<uint64_t>(stream.addressSize,
+      uint64_t{stream.highWatermark.load(std::memory_order_acquire)} + 1);
+  const auto limit = linked ? stream.fetched.load(std::memory_order_acquire) + capacity : UINT64_MAX;
+  stream.writeLimit.store(limit, std::memory_order_release);
+  stream.writeLimit.notify_all();
+}
+
+void update_write_limits() {
+  for (auto* stream = sStreams.load(std::memory_order_acquire); stream; stream = stream->next)
+    update_write_limit(*stream);
+}
+
 void dispatch_draw_sync(uint16_t token, bool interrupt, gfx::CommandEpoch epoch) noexcept {
   if (!epoch.current()) return;
   gfx::complete_draw();
@@ -164,6 +185,7 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
       stream->fetched.store(std::max(floor, stream->fetched.load(std::memory_order_acquire)), std::memory_order_release);
       stream->decoded.store(std::max(floor, stream->decoded.load(std::memory_order_acquire)), std::memory_order_release);
       stream->processed.store(std::max(floor, stream->processed.load(std::memory_order_acquire)), std::memory_order_release);
+      update_write_limit(*stream);
       sAcknowledgedEpoch.store(epoch.value, std::memory_order_release);
       sAcknowledgedEpoch.notify_all();
       stream->processed.notify_all();
@@ -186,6 +208,7 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
         stream->fetched.store(fetched, std::memory_order_release);
         stream->decoded.store(decoded, std::memory_order_release);
         stream->processed.store(decoded, std::memory_order_release);
+        update_write_limit(*stream);
         stream->processed.notify_all();
       }
       const bool breakpointEnabled = sBreakPoint.enabled &&
@@ -215,6 +238,7 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
         decoded += result.bytesProcessed;
         stream->decoded.store(decoded, std::memory_order_release);
         stream->fetched.store(result.incomplete ? end : decoded, std::memory_order_release);
+        update_write_limit(*stream);
       }
     }
     if (notifyBreakPoint) {
@@ -268,6 +292,20 @@ void start_worker() {
 }
 
 void stop_worker() {
+  {
+    std::lock_guard execution{sExecutionMutex};
+    sRetiringStreams.store(true, std::memory_order_release);
+    gfx::abandon_command_epoch();
+    update_write_limits();
+  }
+  {
+    const aurora::os::GuestThreadWaitScope wait;
+    auto writers = sBlockedWriters.load(std::memory_order_acquire);
+    while (writers) {
+      sBlockedWriters.wait(writers, std::memory_order_acquire);
+      writers = sBlockedWriters.load(std::memory_order_acquire);
+    }
+  }
   if (!sWorkerThread.joinable()) {
     return;
   }
@@ -286,6 +324,8 @@ detail::CommandStream* create_stream(void* base, uint32_t size, uint32_t readOff
   stream->id = ++sNextStreamId;
   stream->addressBase = static_cast<uint8_t*>(base);
   stream->addressSize = size;
+  stream->highWatermark = size > 16 * 1024 ? size - 16 * 1024 : size;
+  stream->lowWatermark = (size / 2) & ~31u;
   stream->initialReadOffset = readOffset;
   stream->initialWriteOffset = (static_cast<uint64_t>(writeOffset) + size - count % size) % size;
   // The initial GP read sequence is copied from the caller-programmed ring.
@@ -357,6 +397,9 @@ uint64_t bind_stream(bool cpu, void* base, uint32_t size, uint32_t readOffset, u
   auto execution = lock_execution();
   AURORA_ASSERT(sActive, "GX FIFO attachment requires an initialized command processor");
   AURORA_ASSERT(!detail::sInDisplayList, "GX FIFO attachment inside display-list recording");
+  AURORA_ASSERT(!detail::recording_pending(), "GX FIFO attachment inside patchable recording");
+  AURORA_ASSERT(!cpu || sBlockedWriters.load(std::memory_order_acquire) == 0,
+                "GX CPU FIFO attachment during a blocked producer write");
   detail::CommandStream* selected = nullptr;
   if (base) {
     AURORA_ASSERT(size && readOffset < size && writeOffset < size, "Invalid GX FIFO range");
@@ -392,6 +435,7 @@ uint64_t bind_stream(bool cpu, void* base, uint32_t size, uint32_t readOffset, u
     sGPStream.store(selected, std::memory_order_release);
     wake_worker();
   }
+  update_write_limits();
   return selected ? selected->id : 0;
 }
 } // namespace
@@ -405,6 +449,7 @@ ProcessingMode processing_mode() noexcept { return kProcessingMode; }
 void init() {
   const aurora::allocation::HostAllocationScope hostAllocations;
   stop_worker();
+  detail::discard_recording();
 
   {
     std::lock_guard execution{sExecutionMutex};
@@ -426,6 +471,8 @@ void init() {
     sAcknowledgedEpoch.store(gfx::CommandEpoch{}.value, std::memory_order_relaxed);
     sActive = true;
     sBreakPoint = {};
+    sRetiringStreams.store(false, std::memory_order_release);
+    update_write_limits();
   }
 
   start_worker();
@@ -434,6 +481,7 @@ void init() {
 void shutdown() {
   const aurora::allocation::HostAllocationScope hostAllocations;
   stop_worker();
+  detail::discard_recording();
   {
     std::lock_guard execution{sExecutionMutex};
     sActive = false;
@@ -478,6 +526,68 @@ void write_data_grow(const void* data, uint32_t length) {
   stream->size = needed;
   detail::mirror_ring(*stream, data, length);
   stream->written.fetch_add(length, std::memory_order_release);
+}
+
+void write_data_throttled(const void* data, uint32_t length) {
+  struct WriterScope {
+    WriterScope() { sBlockedWriters.fetch_add(1, std::memory_order_acq_rel); }
+    ~WriterScope() {
+      sBlockedWriters.fetch_sub(1, std::memory_order_acq_rel);
+      sBlockedWriters.notify_all();
+    }
+  } writer;
+  const gfx::CommandEpoch epoch;
+  const auto* bytes = static_cast<const uint8_t*>(data);
+  while (length) {
+    if (sRetiringStreams.load(std::memory_order_acquire) || !epoch.current()) return;
+    auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
+    if (!stream) detail::unbound_write();
+    const auto written = stream->written.load(std::memory_order_relaxed);
+    const auto limit = stream->writeLimit.load(std::memory_order_acquire);
+    if (written < limit) {
+      const auto count = static_cast<uint32_t>(std::min<uint64_t>(length, limit - written));
+      write_data(bytes, count);
+      bytes += count;
+      length -= count;
+      continue;
+    }
+
+    // The CP consumes a byte stream, so publish a partial command when the
+    // ring fills. Its fetched prefix remains owned by the decoder until the
+    // producer supplies the suffix; waiting for decoded would deadlock here.
+    stream->published.store(written, std::memory_order_release);
+    if (kProcessingMode == ProcessingMode::Thread) wake_worker();
+    const aurora::os::GuestThreadWaitScope wait;
+    while (true) {
+      const auto currentLimit = stream->writeLimit.load(std::memory_order_acquire);
+      const auto low = stream->lowWatermark.load(std::memory_order_acquire);
+      const auto fetched = stream->fetched.load(std::memory_order_acquire);
+      // Hardware resumes below the low mark. A zero mark is accepted for
+      // small host FIFOs and resumes only once all their bytes are fetched.
+      if (currentLimit == UINT64_MAX ||
+          (written < currentLimit && (low ? written - fetched < low : written == fetched))) break;
+      if (kProcessingMode == ProcessingMode::Thread) {
+        stream->writeLimit.wait(currentLimit, std::memory_order_acquire);
+      } else {
+        // Synchronous modes have no worker to fetch the published prefix.
+        // Keep yielding guest ownership when a breakpoint stops progress so
+        // another guest thread can disable or rearm it.
+        process_to(stream, written, stream->revision.load(std::memory_order_acquire), std::memory_order_release);
+        std::this_thread::yield();
+      }
+    }
+  }
+}
+
+void set_fifo_limits(uint64_t generation, uint32_t highWatermark, uint32_t lowWatermark) {
+  auto execution = lock_execution();
+  for (auto* stream = sStreams.load(std::memory_order_acquire); stream; stream = stream->next) {
+    if (stream->id != generation) continue;
+    stream->highWatermark.store(highWatermark, std::memory_order_release);
+    stream->lowWatermark.store(lowWatermark, std::memory_order_release);
+    update_write_limit(*stream);
+    return;
+  }
 }
 
 void publish() noexcept {
@@ -577,6 +687,10 @@ void finish_draw() noexcept {
 }
 
 void patch_u32(uint32_t offset, uint32_t val) {
+  if (detail::recording_active()) {
+    detail::patch_recording_u32(offset, val);
+    return;
+  }
   auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
   AURORA_ASSERT(stream != nullptr, "GX patch requires an attached CPU FIFO");
   AURORA_ASSERT(!detail::sInDisplayList && offset <= stream->size &&
@@ -596,6 +710,7 @@ void patch_u32(uint32_t offset, uint32_t val) {
 }
 
 void begin_display_list(uint8_t* buf, uint32_t size) {
+  AURORA_ASSERT(!detail::recording_pending(), "GX display list inside patchable recording");
   detail::sInDisplayList = true;
   detail::sDlBuffer = buf;
   detail::sDlSize = size;
@@ -670,10 +785,12 @@ void drain() {
 }
 
 const uint8_t* get_buffer_data() {
+  if (detail::recording_active()) return detail::recording_data();
   auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
   return stream ? stream->data : nullptr;
 }
 uint32_t get_buffer_size() {
+  if (detail::recording_active()) return detail::recording_size();
   auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
   return stream ? stream->size : 0;
 }

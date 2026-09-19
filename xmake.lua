@@ -335,7 +335,7 @@ if has_config("aurora_enable_gx") then
                   "lib/gfx/png_io.cpp",
                   "lib/gx/array_registry.cpp", "lib/gx/attr_fmt.cpp", "lib/gx/command_processor.cpp", "lib/gx/destruction_state.cpp",
                   "lib/gx/regs.cpp",
-                  "lib/gx/dl.cpp", "lib/gx/fifo.cpp", "lib/gx/gx.cpp", "lib/gx/texture.cpp",
+                  "lib/gx/dl.cpp", "lib/gx/fifo.cpp", "lib/gx/fifo_recording.cpp", "lib/gx/gx.cpp", "lib/gx/texture.cpp",
                   "lib/gx/pipeline.cpp", "lib/gx/shader.cpp", "lib/gx/shader_info.cpp",
                   "lib/rfl/CharacterModel.cpp", "lib/rfl/CharacterResource.cpp",
                   "lib/dolphin/gx/GXBump.cpp", "lib/dolphin/gx/GXCull.cpp",

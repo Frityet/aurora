@@ -364,6 +364,7 @@ if (AURORA_ENABLE_GX)
     # FIFO/command processor (encoder + decoder)
     ../lib/gx/array_registry.cpp
     ../lib/gx/fifo.cpp
+    ../lib/gx/fifo_recording.cpp
     ../lib/gx/destruction_state.cpp
     ../lib/gx/command_processor.cpp
     ../lib/gx/regs.cpp

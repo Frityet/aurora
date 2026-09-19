@@ -1,6 +1,7 @@
 #include "gx.hpp"
 #include "__gx.h"
 #include "../../gx/fifo.hpp"
+#include "../../gx/fifo_recording.hpp"
 
 namespace {
 // Retail primitives end at their FIFO-declared vertex count. Only Aurora draw
@@ -50,6 +51,7 @@ void GXBegin(GXPrimitive primitive, GXVtxFmt vtxFmt, u16 nVerts) {
   sBeginAuto = nVerts == GX_AUTO;
   if (sBeginAuto) {
     AURORA_ASSERT(!aurora::gx::fifo::in_display_list(), "GXBegin: GX_AUTO not supported in display lists");
+    aurora::gx::fifo::begin_patchable_recording();
     GX_WRITE_AURORA(GX_AURORA_DRAW_SIZED);
     GX_WRITE_U8(drawCmd);
     sBeginSizeOffset = aurora::gx::fifo::get_buffer_size();
@@ -84,9 +86,12 @@ void GXBeginIndexed(GXVtxFmt vtxFmt, u16 nVerts, const u16* indices, u32 nIndice
 
 void GXEnd() {
   if (sInBegin) {
+    bool finishDraw = true;
     u32 bytesWritten = aurora::gx::fifo::get_buffer_size() - sBeginFifoSize;
     if (sBeginAuto) {
       aurora::gx::fifo::patch_u32(sBeginSizeOffset, bytesWritten);
+      aurora::gx::fifo::end_patchable_recording(aurora::gx::fifo::finish_draw);
+      finishDraw = false;
       sBeginAuto = false;
     } else if (sBeginNeedsEnd && sBeginNVerts > 0 && bytesWritten > 0) {
       // We don't know the vertex size without processing the FIFO for vtxFmt changes
@@ -97,7 +102,7 @@ void GXEnd() {
     }
     sInBegin = false;
     sBeginNeedsEnd = false;
-    aurora::gx::fifo::finish_draw();
+    if (finishDraw) aurora::gx::fifo::finish_draw();
   }
 }
 

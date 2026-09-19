@@ -120,6 +120,7 @@ void bind_fifo(FifoBinding& binding, const GXFifoObj* fifo, bool cpu) {
                        static_cast<uint32_t>(record.read - record.base),
                        static_cast<uint32_t>(record.write - record.base), record.count);
   binding = {record, id, true};
+  if (!cpu) aurora::gx::fifo::set_fifo_limits(id, record.highWatermark, record.lowWatermark);
 }
 } // namespace
 

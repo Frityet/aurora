@@ -430,6 +430,202 @@ TEST_F(GXFifoBreakpointTest, PublicationCanPauseInsideACommandWithoutABreakpoint
   EXPECT_EQ(fifo::cursor_snapshot().completed, start + 10);
 }
 
+TEST_F(GXFifoBreakpointTest, ActiveProducerStopsAboveHighWatermarkBeforeReusingRingBytes) {
+  alignas(32) std::array<u8, 128> storage{};
+  GXFifoObj object;
+  GXInitFifoBase(&object, storage.data(), storage.size());
+  GXInitFifoLimits(&object, 64, 16);
+  GXSetCPUFifo(&object);
+  GXSetGPFifo(&object);
+  GXSetDrawDoneCallback(blocking_callback);
+  fifo::begin_frame();
+  write_bp(0x45000002);
+  fifo::publish();
+  ASSERT_TRUE(wait_until([] { return sCallbackEntered.load(std::memory_order_acquire); }));
+
+  auto producer = std::async(std::launch::async, [] { write_nops(256); });
+  EXPECT_EQ(producer.wait_for(50ms), std::future_status::timeout);
+  const auto stopped = fifo::cursor_snapshot();
+  EXPECT_LE(stopped.written - stopped.consumed, 65u);
+  sCallbackMayReturn.store(true, std::memory_order_release);
+  ASSERT_EQ(producer.wait_for(2s), std::future_status::ready);
+  producer.get();
+  fifo::drain();
+  EXPECT_EQ(fifo::cursor_snapshot().written, fifo::cursor_snapshot().completed);
+  EXPECT_TRUE(sCallbackReturned.load(std::memory_order_acquire));
+}
+
+TEST_F(GXFifoBreakpointTest, BlockedProducerResumesStrictlyBelowLowWatermark) {
+  alignas(32) std::array<u8, 128> ring{};
+  GXFifoObj object;
+  GXInitFifoBase(&object, ring.data(), ring.size());
+  GXInitFifoLimits(&object, 64, 16);
+  GXSetCPUFifo(&object);
+  GXSetGPFifo(&object);
+  GXEnableBreakPt(ring.data());
+  auto producer = std::async(std::launch::async, [] { write_nops(256); });
+  EXPECT_TRUE(wait_until([] {
+    const auto snapshot = fifo::cursor_snapshot();
+    return snapshot.breakpoint && snapshot.written == 65;
+  }));
+  EXPECT_EQ(fifo::cursor_snapshot().written, 65u);
+  GXEnableBreakPt(ring.data() + 49);
+  EXPECT_TRUE(wait_until([] { return fifo::cursor_snapshot().consumed == 49; }));
+  EXPECT_EQ(producer.wait_for(50ms), std::future_status::timeout);
+  EXPECT_EQ(fifo::cursor_snapshot().written, 65u); // count == low: still suspended
+  GXEnableBreakPt(ring.data() + 50);
+  EXPECT_TRUE(wait_until([] { return fifo::cursor_snapshot().written == 115; }));
+  EXPECT_EQ(fifo::cursor_snapshot().consumed, 50u); // count < low resumed the producer
+  GXDisableBreakPt();
+  EXPECT_EQ(producer.wait_for(2s), std::future_status::ready);
+  producer.get();
+  fifo::drain();
+  EXPECT_EQ(fifo::cursor_snapshot().consumed, 256u);
+}
+
+TEST_F(GXFifoBreakpointTest, LinkedPreFrameProducerUsesGPWatermarksAndPublishesForProgress) {
+  alignas(32) std::array<u8, 128> storage{};
+  GXFifoObj gpu;
+  GXInitFifoBase(&gpu, storage.data(), storage.size());
+  GXInitFifoLimits(&gpu, 64, 16);
+  GXSetGPFifo(&gpu);
+  GXFifoObj cpu = gpu;
+  GXInitFifoLimits(&cpu, 96, 32);
+  GXSetCPUFifo(&cpu);
+  GXSetDrawDoneCallback(blocking_callback);
+  write_bp(0x45000002);
+
+  // No begin_frame or publish: the linked hardware FIFO must still make
+  // progress, using the limits programmed by GXSetGPFifo.
+  auto producer = std::async(std::launch::async, [] { write_nops(256); });
+  const bool entered = wait_until([] { return sCallbackEntered.load(std::memory_order_acquire); });
+  EXPECT_TRUE(entered);
+  if (entered) {
+    EXPECT_EQ(producer.wait_for(50ms), std::future_status::timeout);
+    const auto stopped = fifo::cursor_snapshot();
+    EXPECT_LE(stopped.written - stopped.consumed, 65u);
+  }
+  sCallbackMayReturn.store(true, std::memory_order_release);
+  ASSERT_EQ(producer.wait_for(2s), std::future_status::ready);
+  producer.get();
+  fifo::drain();
+  EXPECT_EQ(fifo::cursor_snapshot().written, fifo::cursor_snapshot().completed);
+}
+
+TEST_F(GXFifoBreakpointTest, HighWaterWaitYieldsGuestExecutionToTheBreakpointCallback) {
+  alignas(32) std::array<u8, 128> ring{};
+  GXFifoObj object;
+  GXInitFifoBase(&object, ring.data(), ring.size());
+  GXInitFifoLimits(&object, 64, 16);
+  GXSetCPUFifo(&object);
+  GXSetGPFifo(&object);
+  write_bp(0x40000011);
+  GXSetBreakPtCallback(routed_breakpoint_callback);
+  GXEnableBreakPt(ring.data() + 5);
+  auto producer = std::async(std::launch::async, [] {
+    const aurora::os::GuestThreadExecutionScope execution;
+    write_nops(256);
+  });
+  EXPECT_EQ(producer.wait_for(2s), std::future_status::ready);
+  producer.get();
+  fifo::drain();
+  EXPECT_EQ(sBreakCount.load(std::memory_order_acquire), 1u);
+  EXPECT_EQ(sLastCommand.load(), 0x40000011u);
+  EXPECT_EQ(fifo::cursor_snapshot().consumed, 261u);
+}
+
+TEST_F(GXFifoBreakpointTest, BackpressureFetchesDrawLargerThanRingWithoutDecodingPartialVertices) {
+  alignas(32) std::array<u8, 128> storage{};
+  GXFifoObj object;
+  GXInitFifoBase(&object, storage.data(), storage.size());
+  GXInitFifoLimits(&object, 64, 16);
+  GXSetCPUFifo(&object);
+  GXSetGPFifo(&object);
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 0);
+  __GXSetDirtyState();
+  fifo::drain();
+  aurora::gfx::g_testProcessedDrawCount.store(0, std::memory_order_relaxed);
+  fifo::begin_frame();
+  GXBegin(GX_POINTS, GX_VTXFMT0, 128);
+  for (u16 vertex = 0; vertex < 128; ++vertex) GXPosition3u8(vertex, vertex, vertex);
+  GXEnd();
+  fifo::drain();
+  EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(std::memory_order_acquire), 1u);
+  EXPECT_EQ(fifo::cursor_snapshot().written, fifo::cursor_snapshot().completed);
+}
+
+TEST_F(GXFifoBreakpointTest, IndexedDrawStreamsItsIndexArrayAndPayloadAcrossRingWraps) {
+  alignas(32) std::array<u8, 128> ring{};
+  GXFifoObj object;
+  GXInitFifoBase(&object, ring.data(), ring.size());
+  GXInitFifoLimits(&object, 64, 16);
+  GXSetCPUFifo(&object);
+  GXSetGPFifo(&object);
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 0);
+  __GXSetDirtyState();
+  fifo::drain();
+  fifo::begin_frame();
+  aurora::gfx::g_testProcessedDrawCount.store(0, std::memory_order_relaxed);
+  std::array<u16, 300> indices{};
+  for (u32 i = 0; i < indices.size(); ++i) indices[i] = i % 60;
+  GXBeginIndexed(GX_VTXFMT0, 60, indices.data(), indices.size());
+  EXPECT_FALSE(fifo::detail::recording_pending());
+  EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(std::memory_order_acquire), 0u);
+  for (u32 i = 0; i < 60; ++i) GXPosition3u8(i, i + 1, i + 2);
+  GXEnd();
+  fifo::drain();
+  EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(std::memory_order_acquire), 1u);
+  EXPECT_EQ(fifo::cursor_snapshot().consumed, fifo::cursor_snapshot().written);
+}
+
+TEST_F(GXFifoBreakpointTest, UnbindingGPReleasesBlockedProducerWithoutDecodingDetachedBytes) {
+  alignas(32) std::array<u8, 128> storage{};
+  GXFifoObj object;
+  GXInitFifoBase(&object, storage.data(), storage.size());
+  GXInitFifoLimits(&object, 64, 16);
+  GXSetCPUFifo(&object);
+  GXSetGPFifo(&object);
+  GXSetDrawDoneCallback(blocking_callback);
+  write_bp(0x45000002);
+  auto producer = std::async(std::launch::async, [] { write_nops(256); });
+  ASSERT_TRUE(wait_until([] { return sCallbackEntered.load(std::memory_order_acquire); }));
+  EXPECT_EQ(producer.wait_for(25ms), std::future_status::timeout);
+  GXSetGPFifo(nullptr);
+  ASSERT_EQ(producer.wait_for(2s), std::future_status::ready);
+  producer.get();
+  EXPECT_EQ(fifo::cursor_snapshot().consumed, 5u);
+  sCallbackMayReturn.store(true, std::memory_order_release);
+  ASSERT_TRUE(wait_until([] { return sCallbackReturned.load(std::memory_order_acquire); }));
+  ASSERT_TRUE(GXGetCPUFifo(&object));
+  GXSetGPFifo(&object);
+  fifo::drain();
+  EXPECT_EQ(fifo::cursor_snapshot().written, fifo::cursor_snapshot().completed);
+}
+
+TEST_F(GXFifoBreakpointTest, ShutdownCancelsBlockedProducerBeforeRetiringItsStream) {
+  alignas(32) std::array<u8, 128> storage{};
+  GXFifoObj object;
+  GXInitFifoBase(&object, storage.data(), storage.size());
+  GXInitFifoLimits(&object, 64, 16);
+  GXSetCPUFifo(&object);
+  GXSetGPFifo(&object);
+  GXEnableBreakPt(write_pointer());
+  auto producer = std::async(std::launch::async, [] { write_nops(256); });
+  ASSERT_TRUE(wait_until([] { return fifo::cursor_snapshot().breakpoint; }));
+  EXPECT_EQ(producer.wait_for(25ms), std::future_status::timeout);
+  fifo::shutdown();
+  ASSERT_EQ(producer.wait_for(2s), std::future_status::ready);
+  producer.get();
+  EXPECT_FALSE(fifo::cursor_snapshot().active);
+  fifo::init();
+  GXInit(nullptr, 0);
+  fifo::clear_buffer();
+}
+
 TEST_F(GXFifoBreakpointTest, RebindingASavedReadCursorRetainsThePartialCommand) {
   write_bp(0x40000011);
   fifo::drain();

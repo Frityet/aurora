@@ -21,6 +21,7 @@ add_library(aurora_gx STATIC
         lib/gx/regs.cpp
         lib/gx/dl.cpp
         lib/gx/fifo.cpp
+        lib/gx/fifo_recording.cpp
         lib/gx/gx.cpp
         lib/gx/texture.cpp
         lib/gx/pipeline.cpp

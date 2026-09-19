@@ -5,6 +5,7 @@
 // validate the decoded state matches expected values.
 
 #include "gx_test_common.hpp"
+#include "gx/fifo_recording.hpp"
 #include "gfx/depth_snapshot_store.hpp"
 #include "__gx.h"
 #include <revolution/gx/GXRegs.h>
@@ -15,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <future>
 #include <limits>
 #include <memory>
 #include <thread>
@@ -148,6 +150,165 @@ TEST_F(GXFifoTest, AutoSizedDrawPublishesAfterLengthPatch) {
   aurora::gx::fifo::shutdown();
 
   EXPECT_EQ(aurora::gfx::g_testDrawCount, 1u);
+}
+
+TEST_F(GXFifoTest, AutoSizedDrawLargerThanRingStagesUntilItsLengthIsFinal) {
+  namespace fifo = aurora::gx::fifo;
+  std::array<u8, 256> ring{};
+  GXFifoObj object;
+  GXInitFifoBase(&object, ring.data(), ring.size());
+  GXInitFifoLimits(&object, 128, 64);
+  GXSetCPUFifo(&object);
+  GXSetGPFifo(&object);
+  fifo::begin_frame();
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 0);
+  __GXSetDirtyState();
+  fifo::drain();
+  aurora::gfx::g_testProcessedDrawCount.store(0, std::memory_order_relaxed);
+
+  // Leave less than a complete sized-draw header before the high watermark.
+  // Submission must be able to pause at every byte of the finalized header.
+  for (u32 spare = 1; spare <= 7; ++spare) {
+    SCOPED_TRACE(spare);
+    const std::vector<u8> nops(129 - spare, GX_NOP);
+    fifo::write_data(nops.data(), nops.size());
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, GX_AUTO);
+    const auto pending = fifo::cursor_snapshot().written;
+    for (u32 vertex = 0; vertex < 600; ++vertex)
+      GXPosition3u8(vertex, vertex + 1, vertex + 2);
+    EXPECT_EQ(fifo::cursor_snapshot().written, pending);
+    EXPECT_EQ(fifo::get_buffer_size(), 8u + 600u * 3u);
+    fifo::publish(); // Only earlier immutable commands become visible.
+    EXPECT_EQ(fifo::cursor_snapshot().written, pending);
+    EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(std::memory_order_acquire), spare - 1);
+    GXEnd();
+    fifo::drain();
+    EXPECT_FALSE(fifo::detail::recording_pending());
+    EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(std::memory_order_acquire), spare);
+  }
+  fifo::end_frame();
+  GXSetCPUFifo(nullptr);
+  GXSetGPFifo(nullptr);
+}
+
+TEST_F(GXFifoTest, AbortDiscardsUnsubmittedPatchableDraw) {
+  namespace fifo = aurora::gx::fifo;
+  fifo::begin_frame();
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 0);
+  aurora::gfx::g_testProcessedDrawCount.store(0, std::memory_order_relaxed);
+  GXBegin(GX_TRIANGLES, GX_VTXFMT0, GX_AUTO);
+  GXPosition3u8(0, 1, 2);
+  GXPosition3u8(3, 4, 5);
+  GXPosition3u8(6, 7, 8);
+  const auto before = fifo::cursor_snapshot().written;
+  GXAbortFrame();
+  GXEnd();
+  EXPECT_FALSE(fifo::detail::recording_pending());
+  EXPECT_EQ(fifo::cursor_snapshot().written, before);
+  fifo::drain();
+  EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(std::memory_order_acquire), 0u);
+
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 0);
+  GXBegin(GX_TRIANGLES, GX_VTXFMT0, GX_AUTO);
+  GXPosition3u8(0, 1, 2);
+  GXPosition3u8(3, 4, 5);
+  GXPosition3u8(6, 7, 8);
+  GXEnd();
+  fifo::drain();
+  EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(std::memory_order_acquire), 1u);
+  fifo::end_frame();
+}
+
+TEST_F(GXFifoTest, PatchableDrawCannotChangeFifoOwner) {
+  EXPECT_DEATH({
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, GX_AUTO);
+    GXSetCPUFifo(nullptr);
+  }, "[Pp]atchable");
+  EXPECT_DEATH({
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, GX_AUTO);
+    GXSetGPFifo(nullptr);
+  }, "[Pp]atchable");
+}
+
+TEST_F(GXFifoTest, AbortDuringPatchableSubmissionDropsTheRemainingPayload) {
+  namespace fifo = aurora::gx::fifo;
+  alignas(32) std::array<u8, 256> ring{};
+  GXFifoObj object;
+  GXInitFifoBase(&object, ring.data(), ring.size());
+  GXInitFifoLimits(&object, 128, 64);
+  GXSetCPUFifo(&object);
+  GXSetGPFifo(&object);
+  fifo::begin_frame();
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 0);
+  __GXSetDirtyState();
+  fifo::drain();
+  const auto initial = fifo::cursor_snapshot();
+  GXSetBreakPtCallback(nullptr);
+  GXEnableBreakPt(ring.data() + (initial.initialReadOffset + initial.consumed + 3) % ring.size());
+  aurora::gfx::g_testProcessedDrawCount.store(0, std::memory_order_relaxed);
+  GXBegin(GX_TRIANGLES, GX_VTXFMT0, GX_AUTO);
+  for (u32 vertex = 0; vertex < 600; ++vertex) GXPosition3u8(vertex, vertex, vertex);
+  auto producer = std::async(std::launch::async, [] { GXEnd(); });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+  while (!fifo::cursor_snapshot().breakpoint && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::yield();
+  const auto stopped = fifo::cursor_snapshot();
+  EXPECT_TRUE(stopped.breakpoint);
+  EXPECT_EQ(stopped.consumed, initial.consumed + 3);
+  EXPECT_EQ(producer.wait_for(std::chrono::milliseconds{10}), std::future_status::timeout);
+  GXAbortFrame();
+  ASSERT_EQ(producer.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+  producer.get();
+  EXPECT_FALSE(fifo::detail::recording_pending());
+  EXPECT_EQ(fifo::cursor_snapshot().written, stopped.written);
+  fifo::drain();
+  EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(std::memory_order_acquire), 0u);
+  fifo::end_frame();
+  GXSetCPUFifo(nullptr);
+  GXSetGPFifo(nullptr);
+}
+
+TEST_F(GXFifoTest, ShutdownRetiresBlockedPatchableSubmissionBeforeItsFifoOwner) {
+  namespace fifo = aurora::gx::fifo;
+  alignas(32) std::array<u8, 256> ring{};
+  GXFifoObj object;
+  GXInitFifoBase(&object, ring.data(), ring.size());
+  GXInitFifoLimits(&object, 128, 64);
+  GXSetCPUFifo(&object);
+  GXSetGPFifo(&object);
+  fifo::begin_frame();
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 0);
+  __GXSetDirtyState();
+  fifo::drain();
+  const auto initial = fifo::cursor_snapshot();
+  GXSetBreakPtCallback(nullptr);
+  GXEnableBreakPt(ring.data() + (initial.initialReadOffset + initial.consumed + 3) % ring.size());
+  aurora::gfx::g_testProcessedDrawCount.store(0, std::memory_order_relaxed);
+  GXBegin(GX_TRIANGLES, GX_VTXFMT0, GX_AUTO);
+  for (u32 vertex = 0; vertex < 600; ++vertex) GXPosition3u8(vertex, vertex, vertex);
+  auto producer = std::async(std::launch::async, [] { GXEnd(); });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+  while (!fifo::cursor_snapshot().breakpoint && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::yield();
+  EXPECT_TRUE(fifo::cursor_snapshot().breakpoint);
+  EXPECT_EQ(producer.wait_for(std::chrono::milliseconds{10}), std::future_status::timeout);
+  EXPECT_TRUE(fifo::detail::recording_pending());
+  fifo::shutdown();
+  ASSERT_EQ(producer.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+  producer.get();
+  EXPECT_FALSE(fifo::detail::recording_pending());
+  EXPECT_FALSE(fifo::cursor_snapshot().active);
+  EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(std::memory_order_acquire), 0u);
 }
 
 TEST_F(GXFifoTest, FixedCountDrawsNeedNoEndAcrossStateChangesAndRawWrites) {

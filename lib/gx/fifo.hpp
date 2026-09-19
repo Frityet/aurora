@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../internal.hpp"
+#include "fifo_recording.hpp"
 
 #include <atomic>
 #include <cstring>
@@ -23,6 +24,9 @@ struct CommandStream {
   std::atomic<uint64_t> processed{0};
   std::atomic<uint64_t> abortFloor{0};
   std::atomic<uint64_t> revision{0};
+  std::atomic<uint64_t> writeLimit{UINT64_MAX};
+  std::atomic<uint32_t> highWatermark{0};
+  std::atomic<uint32_t> lowWatermark{0};
   uint64_t bufferBase = 0;
   uint64_t id = 0;
   uint8_t* addressBase = nullptr;
@@ -71,12 +75,22 @@ void end_frame() noexcept;
 
 // Out-of-line slow path: grows internal buffer then appends data
 void write_data_grow(const void* data, uint32_t length);
+void write_data_throttled(const void* data, uint32_t length);
 
 inline void write_data(const void* data, const uint32_t length) {
+  if (detail::recording_active()) UNLIKELY {
+    detail::append_recording(data, length);
+    return;
+  }
   if (!detail::sInDisplayList)
     LIKELY {
       auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
       if (!stream) UNLIKELY { detail::unbound_write(); }
+      if (stream->written.load(std::memory_order_relaxed) + length >
+          stream->writeLimit.load(std::memory_order_acquire)) UNLIKELY {
+        write_data_throttled(data, length);
+        return;
+      }
       if (length <= stream->capacity - stream->size)
         LIKELY {
           std::memcpy(stream->data + stream->size, data, length);
@@ -94,10 +108,19 @@ inline void write_data(const void* data, const uint32_t length) {
 }
 
 inline void write_u8(const uint8_t val) {
+  if (detail::recording_active()) UNLIKELY {
+    detail::append_recording(&val, 1);
+    return;
+  }
   if (!detail::sInDisplayList)
     LIKELY {
       auto* stream = detail::sCPUStream.load(std::memory_order_acquire);
       if (!stream) UNLIKELY { detail::unbound_write(); }
+      if (stream->written.load(std::memory_order_relaxed) >=
+          stream->writeLimit.load(std::memory_order_acquire)) UNLIKELY {
+        write_data_throttled(&val, 1);
+        return;
+      }
       if (stream->size < stream->capacity)
         LIKELY {
           stream->data[stream->size++] = val;
@@ -200,5 +223,6 @@ CursorSnapshot cursor_snapshot(uint64_t streamId);
 // never drains, discards or transfers the pending bytes of another FIFO.
 uint64_t bind_cpu_fifo(void* base, uint32_t size, uint32_t readOffset, uint32_t writeOffset, uint32_t count);
 uint64_t bind_gpu_fifo(void* base, uint32_t size, uint32_t readOffset, uint32_t writeOffset, uint32_t count);
+void set_fifo_limits(uint64_t generation, uint32_t highWatermark, uint32_t lowWatermark);
 
 } // namespace aurora::gx::fifo

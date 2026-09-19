@@ -210,10 +210,15 @@ struct DepthCase {
   bool early = false;
   SampleMode sample = SampleMode::Normal;
   bool displayList = false;
+  bool destinationAlpha = false;
 };
 
 void run_case(const DepthCase& test) {
   begin_frame();
+  if (test.destinationAlpha) {
+    GXSetPixelFmt(GX_PF_RGBA6_Z24, GX_ZC_LINEAR);
+    GXSetDstAlpha(GX_TRUE, 84);
+  }
   Texture texture;
   texture.init(test.sourceFormat);
   Texture lastTexture;
@@ -428,6 +433,8 @@ void prove_z_texture() {
                 SampleMode::Swapped},
       DepthCase{"raw BP display list has identical state", GX_TF_RGBA8, GX_TF_Z24X8, GX_ZT_ADD, 0x100000, 0xa23456,
                 false, SampleMode::Normal, true},
+      DepthCase{"destination alpha coexists with fragment depth", GX_TF_RGBA8, GX_TF_Z24X8, GX_ZT_REPLACE, 0,
+                0x123456, false, SampleMode::Normal, false, true},
   };
   for (const auto& test : cases)
     run_case(test);

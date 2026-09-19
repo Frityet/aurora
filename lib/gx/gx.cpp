@@ -57,7 +57,7 @@ std::pair<f32, f32> polygon_offset_for_cull_mode(GXCullMode cullMode) noexcept {
   return {g_gxState.frontOffset, g_gxState.frontScale};
 }
 
-wgpu::BlendFactor to_blend_factor(GXBlendFactor fac, bool isDst) {
+wgpu::BlendFactor to_blend_factor(GXBlendFactor fac, bool isDst, bool dstAlphaEnabled) {
   switch (fac) {
     DEFAULT_FATAL("invalid blend factor {}", underlying(fac));
   case GX_BL_ZERO:
@@ -77,9 +77,9 @@ wgpu::BlendFactor to_blend_factor(GXBlendFactor fac, bool isDst) {
       return wgpu::BlendFactor::OneMinusDst;
     }
   case GX_BL_SRCALPHA:
-    return wgpu::BlendFactor::SrcAlpha;
+    return dstAlphaEnabled ? wgpu::BlendFactor::Src1Alpha : wgpu::BlendFactor::SrcAlpha;
   case GX_BL_INVSRCALPHA:
-    return wgpu::BlendFactor::OneMinusSrcAlpha;
+    return dstAlphaEnabled ? wgpu::BlendFactor::OneMinusSrc1Alpha : wgpu::BlendFactor::OneMinusSrcAlpha;
   case GX_BL_DSTALPHA:
     return wgpu::BlendFactor::DstAlpha;
   case GX_BL_INVDSTALPHA:
@@ -124,8 +124,8 @@ wgpu::BlendState to_blend_state(GXBlendMode mode, GXBlendFactor srcFac, GXBlendF
   case GX_BM_BLEND:
     colorBlendComponent = {
         .operation = wgpu::BlendOperation::Add,
-        .srcFactor = to_blend_factor(srcFac, false),
-        .dstFactor = to_blend_factor(dstFac, true),
+        .srcFactor = to_blend_factor(srcFac, false, dstAlpha != UINT32_MAX),
+        .dstFactor = to_blend_factor(dstFac, true, dstAlpha != UINT32_MAX),
     };
     break;
   case GX_BM_SUBTRACT:
@@ -429,6 +429,8 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
   }
   config.shaderConfig.tevStageCount = g_gxState.numTevStages;
   config.shaderConfig.texGenCount = g_gxState.numTexGens;
+  config.shaderConfig.dstAlphaEnabled = g_gxState.dstAlpha != UINT32_MAX && g_gxState.alphaUpdate &&
+                                        g_gxState.pixelFmt == GX_PF_RGBA6_Z24;
   config.shaderConfig.zTextureOp = g_gxState.zTextureOp;
   if (g_gxState.zTextureOp != GX_ZT_DISABLE) {
     config.shaderConfig.zTextureFormat = g_gxState.zTextureFormat;
@@ -466,7 +468,7 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
       .blendFacSrc = g_gxState.blendFacSrc,
       .blendFacDst = g_gxState.blendFacDst,
       .blendOp = g_gxState.blendOp,
-      .dstAlpha = g_gxState.dstAlpha,
+      .dstAlpha = config.shaderConfig.dstAlphaEnabled ? g_gxState.dstAlpha : UINT32_MAX,
       .polygonOffsetBits = std::bit_cast<uint32_t>(polygonOffset),
       .polygonOffsetScaleBits = std::bit_cast<uint32_t>(polygonOffsetScale),
       .polygonOffsetClampBits = std::bit_cast<uint32_t>(g_gxState.clamp),

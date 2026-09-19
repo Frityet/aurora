@@ -939,6 +939,8 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu, SwapchainInvalidatio
       } else if (feature == wgpu::FeatureName::ClipDistances) {
         clipDistancesSupported = true;
         requiredFeatures.push_back(feature);
+      } else if (feature == wgpu::FeatureName::DualSourceBlending) {
+        requiredFeatures.push_back(feature);
       }
 #ifdef TRACY_ENABLE
       if (feature == wgpu::FeatureName::TimestampQuery) {

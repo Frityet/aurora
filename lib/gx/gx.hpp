@@ -556,7 +556,8 @@ struct ShaderConfig {
   u8 lineMode : 2 = 0; // 1 = GX_LINES, 2 = GX_LINESTRIP, 3 = GX_POINTS
   u8 fogRangeEnabled : 1 = false;
   u8 clippingDisabled : 1 = false;
-  u8 pad1 : 4 = 0;
+  u8 dstAlphaEnabled : 1 = false;
+  u8 pad1 : 3 = 0;
   u8 zTextureOp : 2 = GX_ZT_DISABLE;
   u8 zTextureFormat : 2 = 0;
   u8 zCompLocBeforeTex : 1 = false;

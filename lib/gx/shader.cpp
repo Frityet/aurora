@@ -1730,8 +1730,31 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
   }
 
   const bool writesTextureDepth = info.usesZTexture && !config.zCompLocBeforeTex;
+  std::string fragmentOutput;
+  std::string fragmentReturnType = "@location(0) vec4f";
+  std::string fragmentReturnValue = "prev";
+  if (config.dstAlphaEnabled || writesTextureDepth) {
+    fragmentReturnType = "FragmentOutput";
+    fragmentOutput = "struct FragmentOutput { @location(0) ";
+    if (config.dstAlphaEnabled) {
+      // The original TEV alpha still participates in RGB blending and alpha
+      // testing. Only the stored EFB alpha is replaced by the blend constant.
+      fragmentOutput += "@blend_src(0) color: vec4f, @location(0) @blend_src(1) blend: vec4f, ";
+      fragmentReturnValue = "FragmentOutput(vec4f(prev.rgb, 1.0), prev";
+    } else {
+      fragmentOutput += "color: vec4f, ";
+      fragmentReturnValue = "FragmentOutput(prev";
+    }
+    if (writesTextureDepth) {
+      fragmentOutput += "@builtin(frag_depth) depth: f32, ";
+      fragmentReturnValue += UseReversedZ ? ", 1.0 - ztexture_depth" : ", ztexture_depth";
+    }
+    fragmentOutput += "};";
+    fragmentReturnValue += ")";
+  }
   const auto shaderSource = fmt::format(R"""(
 enable clip_distances;
+{13}
 
 fn bswap32(v: u32, le: bool) -> u32 {{
   if (le) {{
@@ -2110,9 +2133,8 @@ fn fs_main(in: FragmentInput) -> {11} {{{6}{5}
 )""",
                                         uniBufAttrs, texBindings, vtxOutAttrs, vtxInAttrs, vtxXfrAttrs, fragmentFn,
                                         fragmentFnPre, vtxXfrAttrsPre, uniformPre, disabledPolygonClipping ? 6 : 2,
-                                        writesTextureDepth ? "struct FragmentOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f32, };" : "",
-                                        writesTextureDepth ? "FragmentOutput" : "@location(0) vec4f",
-                                        writesTextureDepth ? (UseReversedZ ? "FragmentOutput(prev, 1.0 - ztexture_depth)" : "FragmentOutput(prev, ztexture_depth)") : "prev");
+                                        fragmentOutput, fragmentReturnType, fragmentReturnValue,
+                                        config.dstAlphaEnabled ? "enable dual_source_blending;" : "");
   if (EnableDebugPrints) {
     Log.info("Generated shader (hash {:x}): {}", hash, shaderSource);
   }
@@ -2122,6 +2144,8 @@ fn fs_main(in: FragmentInput) -> {11} {{{6}{5}
 
 wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
   ZoneScoped;
+  AURORA_ASSERT(!config.dstAlphaEnabled || webgpu::g_device.HasFeature(wgpu::FeatureName::DualSourceBlending),
+                "GX destination alpha requires GPU DualSourceBlending support");
   const auto shaderSource = build_shader_source(config);
   const auto hash = xxh3_hash(config);
   wgpu::ShaderSourceWGSL wgslDescriptor{};

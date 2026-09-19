@@ -927,7 +927,7 @@ RenderTargetLayout get_render_target_layout() noexcept {
 }
 
 void invalidate_surface_resources() noexcept {
-  gx::clear_copy_texture_cache();
+  gx::trim_copy_texture_cache();
   clear_caches();
 }
 

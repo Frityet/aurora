@@ -277,6 +277,62 @@ TEST_F(GxTextureCacheTest, CopyRevisionRequeuesDynamicPaletteConversion) {
   EXPECT_EQ(testing::palette_conversions(), 2);
 }
 
+TEST_F(GxTextureCacheTest, CopyPoolTrimPreservesSourceAndRebuildsDerivedPalette) {
+  std::array<uint8_t, 512> palette{};
+  std::array<uint8_t, 32> destination{};
+  const auto copy = testing::make_texture_handle(4, 4, GX_TF_I8);
+  g_gxState.loadedTextures[0] = make_texture(destination.data(), 1, GX_TF_C8, 4, 4);
+  g_gxState.loadedTextures[0].tlut = GX_TLUT0;
+  g_gxState.loadedTluts[0] = make_tlut(palette.data(), 1, 256);
+  g_gxState.copyTextures[destination.data()] = {.handle = copy, .revision = 1};
+  const GXState::CopyTextureKey key{
+      .dest = destination.data(), .width = 4, .height = 4, .format = GX_TF_I8};
+  g_gxState.copyTextureCache[key] = {.handle = copy, .revision = 1};
+  ShaderInfo info{};
+  info.sampledTextures.set(0);
+  resolve_sampled_textures(info);
+  const auto converted = g_gxState.textures[0].ref;
+  ASSERT_EQ(testing::palette_conversions(), 1u);
+
+  trim_copy_texture_cache();
+  EXPECT_TRUE(g_gxState.copyTextureCache.empty());
+  ASSERT_TRUE(g_gxState.copyTextures.contains(destination.data()));
+  EXPECT_EQ(g_gxState.copyTextures.at(destination.data()).handle, copy);
+  resolve_sampled_textures(info);
+  EXPECT_EQ(testing::palette_conversions(), 2u);
+  EXPECT_NE(g_gxState.textures[0].ref, converted);
+}
+
+TEST_F(GxTextureCacheTest, DerivedPaletteRetainsSourceIdentityUntilIdleEviction) {
+  std::array<uint8_t, 512> palette{};
+  std::array<uint8_t, 32> destination{};
+  auto copy = testing::make_texture_handle(4, 4, GX_TF_I8);
+  const std::weak_ptr<gfx::TextureRef> originalSource = copy;
+  g_gxState.loadedTextures[0] = make_texture(destination.data(), 1, GX_TF_C8, 4, 4);
+  g_gxState.loadedTextures[0].tlut = GX_TLUT0;
+  g_gxState.loadedTluts[0] = make_tlut(palette.data(), 1, 256);
+  g_gxState.copyTextures[destination.data()] = {.handle = copy, .revision = 1};
+  trim_copy_texture_cache();
+  ShaderInfo info{};
+  info.sampledTextures.set(0);
+  resolve_sampled_textures(info);
+  ASSERT_EQ(testing::palette_conversions(), 1u);
+
+  // The retained old destination can be sampled after trimming, then replaced.
+  // Its derived key must not outlive the source object whose address it names.
+  g_gxState.copyTextures[destination.data()] = {
+      .handle = testing::make_texture_handle(4, 4, GX_TF_I8), .revision = 1};
+  copy.reset();
+  EXPECT_FALSE(originalSource.expired());
+  texture::invalidate_bindings();
+  resolve_sampled_textures(info);
+  EXPECT_EQ(testing::palette_conversions(), 2u);
+  for (uint64_t i = 0; i <= texture::ObjectCacheIdleFrames; ++i) {
+    texture::end_frame();
+  }
+  EXPECT_TRUE(originalSource.expired());
+}
+
 TEST_F(GxTextureCacheTest, AbandonedConversionRequeuesEvenWhenCopyAndPaletteVersionsAreReused) {
   std::array<uint8_t, 32> palette{};
   const auto copy = testing::make_texture_handle(4, 4, GX_TF_C8);

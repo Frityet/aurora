@@ -94,13 +94,11 @@ aurora::gx::DisplayCopySelection selected() {
   return aurora::gx::select_display_copy(state.initialized, state.black, state.frame_buffer);
 }
 
-void expect_color(GXColor expected) {
-  const auto selection = selected();
-  require(selection.supported && selection.drawVideo && selection.copy.handle,
-          "VI must select a real retained display copy");
+void expect_texture_color(const aurora::gfx::TextureHandle& texture, GXColor expected,
+                          u32 width = CopyWidth, u32 height = CopyHeight) {
+  require(bool(texture), "completed GX copy must retain its GPU texture");
   aurora::gfx::gpu_synchronize();
-  const auto& texture = selection.copy.handle;
-  require(texture->size.width == CopyWidth && texture->size.height == CopyHeight,
+  require(texture->size.width == width && texture->size.height == height,
           "selected copy must preserve configured pixel dimensions");
   // Copy one genuine GPU pixel from the same retained texture selected by
   // Aurora's presentation path. A logical VI pointer alone cannot pass this.
@@ -109,7 +107,7 @@ void expect_color(GXColor expected) {
   auto buffer = aurora::webgpu::g_device.CreateBuffer(&descriptor);
   auto encoder = aurora::webgpu::g_device.CreateCommandEncoder();
   const wgpu::TexelCopyTextureInfo source{
-      .texture = texture->texture, .origin = {CopyWidth / 2, CopyHeight / 2, 0}};
+      .texture = texture->texture, .origin = {width / 2, height / 2, 0}};
   const wgpu::TexelCopyBufferInfo destination{
       .layout = {.bytesPerRow = 256, .rowsPerImage = 1}, .buffer = buffer};
   constexpr wgpu::Extent3D extent{1, 1, 1};
@@ -138,7 +136,24 @@ void expect_color(GXColor expected) {
   const auto close = [](u8 a, u8 b) { return int(a) >= int(b) - 2 && int(a) <= int(b) + 2; };
   const bool matches = close(r, expected.r) && close(g, expected.g) && close(b, expected.b);
   buffer.Unmap();
-  require(matches, "VI must present the selected buffer's pixels, not the newest GX copy");
+  require(matches, "GX destination must retain its own copied pixels");
+}
+
+void expect_color(GXColor expected, u32 width = CopyWidth, u32 height = CopyHeight) {
+  const auto selection = selected();
+  require(selection.supported && selection.drawVideo && selection.copy.handle,
+          "VI must select a real retained display copy");
+  expect_texture_color(selection.copy.handle, expected, width, height);
+}
+
+void expect_texture_copy(const void* address, GXColor expected) {
+  const auto it = aurora::gx::g_gxState.copyTextures.find(address);
+  require(it != aurora::gx::g_gxState.copyTextures.end(),
+          "window resize must preserve completed GXCopyTex destination contents");
+  const auto* copy = it->second.live();
+  require(copy && copy->submission && copy->submission->is_submitted(),
+          "texture copy must still have submitted ownership");
+  expect_texture_color(copy->handle, expected);
 }
 
 void empty_frame() {
@@ -175,6 +190,7 @@ void prove_scanout() {
   VIConfigure(&mode);
   VIInit();
   alignas(32) std::array<u8, CopyWidth * CopyHeight * 2> a{}, b{};
+  alignas(32) std::array<u8, CopyWidth * CopyHeight * 4> textureCopy{};
   constexpr GXColor red{232, 24, 24, 255}, green{24, 232, 24, 255}, blue{24, 24, 232, 255};
   const auto copy = [&](void* address, GXColor color) {
     draw_quad(-1.0f, -1.0f, 1.0f, 1.0f, -0.5f, color);
@@ -189,6 +205,10 @@ void prove_scanout() {
   GXSetDispCopyYScale(1.0f);
   copy(a.data(), red);
   copy(b.data(), green);
+  draw_quad(-1.0f, -1.0f, 1.0f, 1.0f, -0.5f, blue);
+  GXSetTexCopySrc(0, 0, CopyWidth, CopyHeight);
+  GXSetTexCopyDst(CopyWidth, CopyHeight, GX_TF_RGBA8, GX_FALSE);
+  GXCopyTex(textureCopy.data(), GX_TRUE);
   aurora_end_frame();
   require(!selected().drawVideo, "unconfigured black VI output must suppress both actual copies");
 
@@ -207,6 +227,98 @@ void prove_scanout() {
   VIWaitForRetrace();
   empty_frame();
   expect_color(green);
+
+  // Completed copies represent guest-owned memory. Changing the host surface
+  // or EFB allocation must not discard either XFB, or a texture-copy source.
+  // Read from the original destination maps again after each resize, so a
+  // test-owned shared pointer cannot accidentally preserve a lost owner.
+  const auto efbSize = aurora::webgpu::g_frameBuffer.size;
+  const auto surface = aurora::webgpu::g_graphicsConfig.surfaceConfiguration;
+  const auto verify_copies = [&] {
+    expect_color(green);
+    VISetNextFrameBuffer(a.data());
+    VIFlush();
+    VIWaitForRetrace();
+    expect_color(red);
+    VISetNextFrameBuffer(b.data());
+    VIFlush();
+    VIWaitForRetrace();
+    expect_color(green);
+    expect_texture_copy(textureCopy.data(), blue);
+  };
+  expect_texture_copy(textureCopy.data(), blue);
+  aurora::webgpu::resize_swapchain(efbSize.width, efbSize.height, surface.width + 64, surface.height + 48);
+  verify_copies();
+  require(aurora::gx::g_gxState.copyTextureCache.empty(),
+          "resize must discard reusable allocations when no current-frame copy needs its key");
+  std::cout << "[ok] surface-only resize preserves both XFBs and GXCopyTex GPU pixels\n";
+
+  // A resize must also preserve the current-frame fallback/readback identity.
+  // It is deliberately a different color from the older destination A.
+  require(aurora_begin_frame(), "current-frame copy proof must begin");
+  configure_draw_state();
+  copy(b.data(), green);
+  aurora_end_frame();
+  const auto currentKey = aurora::gx::g_gxState.frameDisplayCopyKey;
+  aurora::webgpu::resize_swapchain(efbSize.width + 32, efbSize.height + 24,
+                                  surface.width + 64, surface.height + 48);
+  verify_copies();
+  require(aurora::gx::g_gxState.copyTextureCache.size() == 1 &&
+              aurora::gx::g_gxState.copyTextureCache.contains(currentKey),
+          "resize must keep only the current-frame reuse key");
+  const auto* latest = aurora::gx::latest_display_copy();
+  require(latest && latest->submission && latest->submission->is_submitted(),
+          "resize must preserve current-frame display-copy submission ownership");
+  expect_texture_color(latest->handle, green);
+  std::cout << "[ok] EFB-size change preserves both XFBs and GXCopyTex GPU pixels\n";
+
+  // A new scaled copy to the same guest address must obtain the new size,
+  // while the other two destinations retain their original dimensions/pixels.
+  AuroraSetViewportPolicy(AURORA_VIEWPORT_STRETCH);
+  aurora_update();
+  const u32 scaledWidth = efbSize.width + 32;
+  const u32 scaledHeight = efbSize.height + 24;
+  aurora::webgpu::resize_swapchain(scaledWidth, scaledHeight, surface.width + 64, surface.height + 48);
+  const auto oldSelectedTexture = selected().copy.handle;
+  require(aurora_begin_frame(), "scaled copy proof frame must begin");
+  configure_draw_state();
+  copy(b.data(), green);
+  aurora_end_frame();
+  require(selected().copy.handle != oldSelectedTexture,
+          "a changed-size copy must not reuse the old destination allocation");
+  expect_color(green, scaledWidth, scaledHeight);
+  VISetNextFrameBuffer(a.data());
+  VIFlush();
+  VIWaitForRetrace();
+  expect_color(red);
+  expect_texture_copy(textureCopy.data(), blue);
+  VISetNextFrameBuffer(b.data());
+  VIFlush();
+  VIWaitForRetrace();
+  for (u32 delta = 1; delta <= 8; ++delta) {
+    aurora::webgpu::resize_swapchain(scaledWidth + delta, scaledHeight + delta,
+                                    surface.width + 64 + delta, surface.height + 48 + delta);
+    require(aurora::gx::g_gxState.copyTextureCache.size() == 1,
+            "repeated resize must not accumulate allocation-size variants");
+    expect_color(green, scaledWidth + delta - 1, scaledHeight + delta - 1);
+    require(aurora_begin_frame(), "repeated scaled copy frame must begin");
+    configure_draw_state();
+    copy(b.data(), green);
+    aurora_end_frame();
+    expect_color(green, scaledWidth + delta, scaledHeight + delta);
+    require(aurora::gx::g_gxState.copyTextureCache.size() <= 2,
+            "new size may add one reusable allocation until the next resize");
+  }
+  std::cout << "[ok] new scaled copy changes allocation and repeated resize bounds reuse cache\n";
+  AuroraSetViewportPolicy(AURORA_VIEWPORT_NATIVE);
+  aurora_update();
+  aurora::webgpu::resize_swapchain(efbSize.width, efbSize.height, surface.width, surface.height);
+  require(aurora_begin_frame(), "native copy restoration frame must begin");
+  configure_draw_state();
+  copy(b.data(), green);
+  aurora_end_frame();
+  empty_frame();
+  verify_copies();
 
   // Replace a submitted XFB in an unsubmitted encoder, then abandon it. A
   // retained native texture alone cannot establish the correct pixel owner.
@@ -265,13 +377,14 @@ void prove_scanout() {
   expect_color(red);
   GXDestroyCopyTex(a.data());
   GXDestroyCopyTex(b.data());
+  GXDestroyCopyTex(textureCopy.data());
   aurora::vi::shutdown();
 }
 } // namespace
 int main() {
   try {
     prove_scanout();
-    std::cout << "[ok] real GX copy selection follows VI flush, retrace, black, retirement and reuse\n";
+    std::cout << "[ok] real GX copies survive resize and follow VI flush, retrace, black, retirement and reuse\n";
     return 0;
   } catch (const std::exception& e) {
     std::cerr << "[fail] VI scanout: " << e.what() << '\n';

@@ -42,6 +42,9 @@ struct DynamicPaletteKey {
 
 struct DynamicPaletteEntry {
   gfx::TextureHandle handle;
+  // The key uses the source object's address. Keep that identity alive until
+  // its derived texture is evicted, including after copy-pool trimming.
+  gfx::TextureHandle source;
   std::shared_ptr<gfx::SubmissionState> submission;
   u32 sourceRevision = 0;
   u32 tlutDataVersion = 0;
@@ -432,6 +435,7 @@ gfx::TextureHandle resolve_dynamic_palette_texture(const GXTexObj_& obj, const G
     // Use source size instead of target (logical) size.
     entry.handle = gfx::new_conv_texture(source.handle->size.width, source.handle->size.height, GX_TF_RGBA8,
                                          "GX Dynamic Palette Texture");
+    entry.source = source.handle;
   }
   if (entry.sourceRevision != source.revision || entry.tlutDataVersion != tlut.tlutDataVersion ||
       (entry.submission && entry.submission->abandoned())) {
@@ -830,6 +834,24 @@ void clear_copy_texture_cache() noexcept {
   g_gxState.copyTextures.clear();
   g_gxState.copyTextureCache.clear();
   g_gxState.displayCopies.clear();
+  for (auto& [_, cache] : s_tlutObjectCaches) {
+    cache.dynamicPaletteTextures.clear();
+  }
+  texture::invalidate_bindings();
+}
+
+void trim_copy_texture_cache() noexcept {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  // Copies belong to their guest destinations, not the EFB or host surface.
+  // Drop old allocation-size variants without discarding those contents. The
+  // current-frame lookup still uses its cache key until the next frame starts.
+  for (auto it = g_gxState.copyTextureCache.begin(); it != g_gxState.copyTextureCache.end();) {
+    if (g_gxState.frameDisplayCopyValid && it->first == g_gxState.frameDisplayCopyKey) {
+      ++it;
+    } else {
+      g_gxState.copyTextureCache.erase(it++);
+    }
+  }
   for (auto& [_, cache] : s_tlutObjectCaches) {
     cache.dynamicPaletteTextures.clear();
   }

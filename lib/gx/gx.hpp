@@ -488,6 +488,7 @@ void update() noexcept;
 void set_viewport_policy(AuroraViewportPolicy policy) noexcept;
 void clear_static_texture_cache() noexcept;
 void clear_copy_texture_cache() noexcept;
+void trim_copy_texture_cache() noexcept;
 bool has_copy_texture(const void* dest) noexcept;
 void evict_copy_texture(const void* dest) noexcept;
 void evict_texture_object(u32 texObjId) noexcept;

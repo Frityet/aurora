@@ -273,13 +273,110 @@ static void require_array_span(AttrArray& array, u64 offset, u64 length, const c
 
 static void handle_draw(u8 cmd, ByteReader& reader) noexcept;
 static void handle_aurora(ByteReader& reader) noexcept;
+static u32 vertex_size(GXVtxFmt fmt) noexcept;
 
-ProcessResult process(const u8* data, u32 size, gfx::CommandEpoch epoch) noexcept {
+// Probe using a copy of the reader, before any register write, renderer call or
+// callback. GP breakpoints and publication boundaries can split every field of
+// a command, including host pointer payloads in Aurora's extended encoding.
+static bool complete_aurora_command(ByteReader reader) noexcept {
+  u16 subCmd;
+  if (!reader.try_read(subCmd)) return false;
+  if (subCmd >= GX_AURORA_LOAD_ARRAYBASE && subCmd <= (GX_AURORA_LOAD_ARRAYBASE | 0x0f)) {
+    return reader.remaining() >= sizeof(u64) + sizeof(u32) + sizeof(u8);
+  }
+  switch (subCmd) {
+  case GX_AURORA_LOAD_VIEWPORT_RENDER:
+    return reader.remaining() >= 6 * sizeof(f32);
+  case GX_AURORA_LOAD_SCISSOR_RENDER:
+  case GX_AURORA_LOAD_COPY_SRC:
+    return reader.remaining() >= 4 * sizeof(s32);
+  case GX_AURORA_LOAD_PROJECTION_FULL:
+    return reader.remaining() >= 16 * sizeof(f32);
+  case GX_AURORA_LOAD_TEXOBJ:
+    return reader.remaining() >= 2 * sizeof(u8) + sizeof(u64) + 6 * sizeof(u32);
+  case GX_AURORA_LOAD_TLUT:
+    return reader.remaining() >= sizeof(u8) + sizeof(u64) + 3 * sizeof(u32) + sizeof(u16);
+  case GX2_SET_POLYGON_OFFSET:
+    return reader.remaining() >= 5 * sizeof(f32);
+  case GX_AURORA_LOAD_COPY_DST:
+    return reader.remaining() >= 3 * sizeof(u32) + sizeof(u8);
+  case GX_AURORA_LOAD_COPY_DEST:
+  case GX_AURORA_REQUEST_TAGGED_DEPTH_SNAPSHOT:
+  case GX_AURORA_DESTROY_COPY_TEX:
+    return reader.remaining() >= sizeof(u64);
+  case GX_AURORA_LOAD_COPY_FILTER:
+    return reader.remaining() >= 2 + 12 * 2 + 7;
+  case GX_AURORA_BEGIN_OFFSCREEN:
+    return reader.remaining() >= 2 * sizeof(u32);
+  case GX_AURORA_DESTROY_TEXOBJ:
+  case GX_AURORA_DESTROY_TLUT:
+    return reader.remaining() >= sizeof(u32);
+  case GX_AURORA_DRAW_SIZED: {
+    u8 cmd;
+    u32 byteLen;
+    return reader.try_read(cmd) && reader.try_read(byteLen) && reader.remaining() >= byteLen;
+  }
+  case GX_AURORA_DRAW_INDEXED: {
+    u8 cmd;
+    u16 vtxCount;
+    u32 indexCount;
+    if (!reader.try_read(cmd) || !reader.try_read(vtxCount) || !reader.try_read(indexCount)) return false;
+    const auto fmt = static_cast<GXVtxFmt>(cmd & CP_VAT_MASK);
+    const u64 bytes = static_cast<u64>(indexCount) * sizeof(u16) + static_cast<u64>(vtxCount) * vertex_size(fmt);
+    return reader.remaining() >= bytes;
+  }
+  case GX_AURORA_DEBUG_GROUP_PUSH:
+  case GX_AURORA_DEBUG_MARKER_INSERT: {
+    u16 length;
+    return reader.try_read(length) && reader.remaining() >= length;
+  }
+  default:
+    // The remaining known commands have no payload. Unknown subcommands retain
+    // the decoder's diagnostic; having their header is enough to execute it.
+    return true;
+  }
+}
+
+static bool complete_command(ByteReader reader) noexcept {
+  const u8 cmd = reader.read<u8>();
+  const u8 opcode = cmd & CP_OPCODE_MASK;
+  switch (opcode) {
+  case CP_CMD_LOAD_BP_REG:
+  case CP_CMD_LOAD_INDX_A:
+  case CP_CMD_LOAD_INDX_B:
+  case CP_CMD_LOAD_INDX_C:
+  case CP_CMD_LOAD_INDX_D:
+    return reader.remaining() >= sizeof(u32);
+  case CP_CMD_LOAD_CP_REG:
+    return reader.remaining() >= sizeof(u8) + sizeof(u32);
+  case CP_CMD_LOAD_XF_REG: {
+    u32 header;
+    if (!reader.try_read(header)) return false;
+    return reader.remaining() >= (((header >> 16) & 0xffff) + 1) * sizeof(u32);
+  }
+  case CP_CMD_CALL_DL:
+    return reader.remaining() >= 2 * sizeof(u32);
+  case GX_AURORA:
+    return complete_aurora_command(reader);
+  default:
+    if (cmd >= 0x80) {
+      u16 vtxCount;
+      if (!reader.try_read(vtxCount)) return false;
+      return reader.remaining() >= static_cast<u64>(vtxCount) * vertex_size(static_cast<GXVtxFmt>(cmd & CP_VAT_MASK));
+    }
+    return true;
+  }
+}
+
+ProcessResult process(const u8* data, u32 size, gfx::CommandEpoch epoch, InputMode mode) noexcept {
   const aurora::allocation::HostAllocationScope hostAllocations;
   ZoneScoped;
   ByteReader reader{{data, size}};
 
   while (!reader.empty() && epoch.current()) {
+    if (mode == InputMode::Streaming && !complete_command(reader)) {
+      return {.bytesProcessed = static_cast<u32>(reader.offset()), .drawDone = false, .incomplete = true};
+    }
     const u8 cmd = reader.read<u8>();
     u8 opcode = cmd & CP_OPCODE_MASK;
 
@@ -416,7 +513,8 @@ ProcessResult process(const u8* data, u32 size, gfx::CommandEpoch epoch) noexcep
   FATAL("draw vertex data overrun: need {} bytes at pos {}, have {}", totalVtxBytes, pos, reader.remaining());
 }
 
-static u32 calc_vtx_size(GXVtxFmt fmt) noexcept {
+static u32 vertex_size(GXVtxFmt fmt) noexcept {
+  if (g_gxState.lastVtxFmt == fmt) return g_gxState.lastVtxSize;
   u32 vtxSize = 0;
   const auto& vtxFmt = g_gxState.vtxFmts[fmt];
   for (int i = GX_VA_PNMTXIDX; i <= GX_VA_TEX7; ++i) {
@@ -437,9 +535,14 @@ static u32 calc_vtx_size(GXVtxFmt fmt) noexcept {
       break;
     }
   }
-  g_gxState.lastVtxFmt = fmt;
-  g_gxState.lastVtxSize = vtxSize;
   return vtxSize;
+}
+
+static u32 calc_vtx_size(GXVtxFmt fmt) noexcept {
+  const auto size = vertex_size(fmt);
+  g_gxState.lastVtxFmt = fmt;
+  g_gxState.lastVtxSize = size;
+  return size;
 }
 
 static void require_draw_array_spans(GXVtxFmt fmt, const u8* data, u16 vtxCount, u32 vtxSize) {

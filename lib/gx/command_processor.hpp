@@ -17,10 +17,18 @@ struct ProcessResult {
   bool tokenWrite = false;
   bool tokenInterrupt = false;
   uint16_t token = 0;
+  bool incomplete = false;
 };
 
-// Process GX FIFO commands until the next draw done event or end of buffer
-ProcessResult process(const uint8_t* data, uint32_t size, gfx::CommandEpoch epoch = {}) noexcept;
+enum class InputMode {
+  Complete,
+  Streaming,
+};
+
+// Streaming input can end inside a command. Its prefix remains unprocessed
+// until more bytes arrive; complete display lists still reject truncated data.
+ProcessResult process(const uint8_t* data, uint32_t size, gfx::CommandEpoch epoch = {},
+                      InputMode mode = InputMode::Complete) noexcept;
 void clear_draw_cache() noexcept;
 
 } // namespace aurora::gx::fifo

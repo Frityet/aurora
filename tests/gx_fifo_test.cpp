@@ -172,6 +172,47 @@ TEST_F(GXFifoTest, FixedCountDrawsNeedNoEndAcrossStateChangesAndRawWrites) {
   EXPECT_EQ(gxState().bpRegCache[0x40] & 0x1fu, 0xeu);
 }
 
+TEST_F(GXFifoTest, StreamingDrawsWaitForEveryByteOfTheirCurrentVertexLayout) {
+  namespace fifo = aurora::gx::fifo;
+  for (const bool wide : {false, true}) {
+    const auto fmt = wide ? GX_VTXFMT3 : GX_VTXFMT0;
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+    GXSetVtxAttrFmt(fmt, GX_VA_POS, GX_POS_XYZ, wide ? GX_F32 : GX_U8, 0);
+    const auto state = flush_and_capture();
+    decode_fifo(state);
+    for (int encoding = 0; encoding < 3; ++encoding) {
+      SCOPED_TRACE(wide);
+      SCOPED_TRACE(encoding);
+      const u16 indices[] = {0, 1, 2};
+      if (encoding == 2) GXBeginIndexed(fmt, 3, indices, 3);
+      else GXBegin(GX_TRIANGLES, fmt, encoding == 1 ? GX_AUTO : 3);
+      for (u8 vertex = 0; vertex < 3; ++vertex) {
+        if (wide) GXPosition3f32(vertex, vertex + 1, vertex + 2);
+        else GXPosition3u8(vertex, vertex + 1, vertex + 2);
+      }
+      GXEnd();
+      const auto command = capture_fifo();
+      const size_t headerSize = encoding == 0 ? 3 : encoding == 1 ? 8 : 16;
+      ASSERT_EQ(command.size(), headerSize + 3 * (wide ? 12 : 3));
+      aurora::gfx::g_testProcessedDrawCount.store(0, std::memory_order_relaxed);
+      const auto cachedFmt = g_gxState.lastVtxFmt;
+      for (u32 split = 1; split < command.size(); ++split) {
+        SCOPED_TRACE(split);
+        const auto result = fifo::process(command.data(), split, {}, fifo::InputMode::Streaming);
+        EXPECT_TRUE(result.incomplete);
+        EXPECT_EQ(result.bytesProcessed, 0u);
+        EXPECT_EQ(g_gxState.lastVtxFmt, cachedFmt);
+        EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(), 0u);
+      }
+      const auto result = fifo::process(command.data(), command.size(), {}, fifo::InputMode::Streaming);
+      EXPECT_FALSE(result.incomplete);
+      EXPECT_EQ(result.bytesProcessed, command.size());
+      EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(), 1u);
+    }
+  }
+}
+
 TEST_F(GXFifoTest, FixedCountDisplayListDrawsNeedNoEnd) {
   GXClearVtxDesc();
   GXSetVtxDesc(GX_VA_POS, GX_DIRECT);

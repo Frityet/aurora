@@ -161,6 +161,7 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
       if (stream->revision.load(std::memory_order_acquire) != revision) return;
       const auto floor = stream->abortFloor.load(std::memory_order_acquire);
       if (!epoch.current()) continue;
+      stream->fetched.store(std::max(floor, stream->fetched.load(std::memory_order_acquire)), std::memory_order_release);
       stream->decoded.store(std::max(floor, stream->decoded.load(std::memory_order_acquire)), std::memory_order_release);
       stream->processed.store(std::max(floor, stream->processed.load(std::memory_order_acquire)), std::memory_order_release);
       sAcknowledgedEpoch.store(epoch.value, std::memory_order_release);
@@ -177,16 +178,19 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
       if (sGPStream.load(std::memory_order_acquire) != stream ||
           stream->revision.load(std::memory_order_acquire) != revision) return;
       decoded = stream->decoded.load(std::memory_order_relaxed);
+      auto fetched = stream->fetched.load(std::memory_order_relaxed);
       const auto abortFloor = stream->abortFloor.load(std::memory_order_acquire);
       if (decoded < abortFloor) {
         decoded = abortFloor;
+        fetched = std::max(fetched, abortFloor);
+        stream->fetched.store(fetched, std::memory_order_release);
         stream->decoded.store(decoded, std::memory_order_release);
         stream->processed.store(decoded, std::memory_order_release);
         stream->processed.notify_all();
       }
       const bool breakpointEnabled = sBreakPoint.enabled &&
           sBreakPoint.revision == sBreakPointRevision.load(std::memory_order_acquire);
-      if (breakpointEnabled && decoded == sBreakPoint.cursor) {
+      if (breakpointEnabled && fetched == sBreakPoint.cursor) {
         sBreakPointHitRevision.store(sBreakPoint.revision, std::memory_order_release);
         sBreakPoint.hit = true;
         if (sBreakPoint.notified) return;
@@ -194,22 +198,23 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
         notifyBreakPoint = true;
         breakPointRevision = sBreakPoint.revision;
       } else {
-        if (decoded >= target) return;
+        if (fetched >= target) return;
         const uint64_t end = breakpointEnabled ? std::min(target, sBreakPoint.cursor) : target;
-        AURORA_ASSERT(end > decoded, "FIFO breakpoint is behind its decoder cursor");
+        AURORA_ASSERT(end > fetched, "FIFO breakpoint is behind its fetch cursor");
         std::lock_guard buffer{sBufferMutex};
         AURORA_ASSERT(decoded >= stream->bufferBase && end <= stream->written.load(std::memory_order_acquire),
                       "FIFO processing range [{}, {}) is outside buffered range [{}, {})", decoded, end,
                       stream->bufferBase, stream->written.load(std::memory_order_relaxed));
         const auto start = static_cast<uint32_t>(decoded - stream->bufferBase);
         const auto size = static_cast<uint32_t>(end - decoded);
-        result = process(stream->data + start, size, epoch);
+        result = process(stream->data + start, size, epoch, InputMode::Streaming);
         if (!epoch.current()) continue;
-        AURORA_ASSERT(result.bytesProcessed > 0 && result.bytesProcessed <= size,
+        AURORA_ASSERT((result.bytesProcessed > 0 || result.incomplete) && result.bytesProcessed <= size,
                       "FIFO processor made invalid progress: processed {} of {} remaining bytes", result.bytesProcessed,
                       size);
         decoded += result.bytesProcessed;
         stream->decoded.store(decoded, std::memory_order_release);
+        stream->fetched.store(result.incomplete ? end : decoded, std::memory_order_release);
       }
     }
     if (notifyBreakPoint) {
@@ -320,9 +325,9 @@ std::unique_lock<std::mutex> lock_execution() {
 
 void program_gp_stream(detail::CommandStream& stream, uint32_t readOffset, uint32_t writeOffset, uint32_t count) {
   const auto written = stream.written.load(std::memory_order_acquire);
-  const auto decoded = stream.decoded.load(std::memory_order_acquire);
-  if ((stream.initialReadOffset + decoded) % stream.addressSize == readOffset &&
-      (stream.initialWriteOffset + written) % stream.addressSize == writeOffset && written - decoded == count) return;
+  const auto fetched = stream.fetched.load(std::memory_order_acquire);
+  if ((stream.initialReadOffset + fetched) % stream.addressSize == readOffset &&
+      (stream.initialWriteOffset + written) % stream.addressSize == writeOffset && written - fetched == count) return;
   AURORA_ASSERT(count <= stream.addressSize, "GX FIFO replay count exceeds retained ring storage");
   std::lock_guard buffer{sBufferMutex};
   stream.revision.fetch_add(1, std::memory_order_acq_rel);
@@ -340,6 +345,7 @@ void program_gp_stream(detail::CommandStream& stream, uint32_t readOffset, uint3
   stream.initialWriteOffset = (static_cast<uint64_t>(writeOffset) + stream.addressSize - count % stream.addressSize) % stream.addressSize;
   stream.written = count;
   stream.published = count;
+  stream.fetched = 0;
   stream.decoded = 0;
   stream.processed = 0;
   stream.abortFloor = 0;
@@ -520,11 +526,11 @@ void enable_breakpoint(uint64_t generation, uint64_t readOrigin, uint32_t initia
     AURORA_ASSERT(sActive && stream && stream->id == generation, "GX breakpoint refers to a retired FIFO");
     AURORA_ASSERT(ringSize != 0 && initialReadOffset < ringSize && breakOffset < ringSize,
                   "GX breakpoint is outside its GP FIFO");
-    const uint64_t decoded = stream->decoded.load(std::memory_order_relaxed);
-    AURORA_ASSERT(decoded >= readOrigin, "GX breakpoint FIFO origin is after its read cursor");
-    const uint64_t offset = (decoded - readOrigin + initialReadOffset) % ringSize;
+    const uint64_t fetched = stream->fetched.load(std::memory_order_relaxed);
+    AURORA_ASSERT(fetched >= readOrigin, "GX breakpoint FIFO origin is after its read cursor");
+    const uint64_t offset = (fetched - readOrigin + initialReadOffset) % ringSize;
     const uint64_t distance = (static_cast<uint64_t>(breakOffset) + ringSize - offset) % ringSize;
-    sBreakPoint = {.cursor = decoded + distance, .revision = ++sBreakPointRevision, .enabled = true};
+    sBreakPoint = {.cursor = fetched + distance, .revision = ++sBreakPointRevision, .enabled = true};
   }
   wake_worker();
 }
@@ -680,7 +686,7 @@ CursorSnapshot cursor_snapshot(uint64_t streamId) {
       const auto revision = stream->revision.load(std::memory_order_acquire);
       if (revision & 1) continue;
       const auto completed = stream->processed.load(std::memory_order_acquire);
-      const auto consumed = stream->decoded.load(std::memory_order_acquire);
+      const auto consumed = stream->fetched.load(std::memory_order_acquire);
       const auto published = stream->published.load(std::memory_order_acquire);
       const auto written = stream->written.load(std::memory_order_acquire);
       const auto initialRead = stream->initialReadOffset.load(std::memory_order_relaxed);

@@ -16,6 +16,9 @@ struct CommandStream {
   uint32_t capacity = 0;
   std::atomic<uint64_t> written{0};
   std::atomic<uint64_t> published{0};
+  // Fetching can stop inside a command at a GP breakpoint. The decoder only
+  // advances over complete commands, retaining their prefixes in data.
+  std::atomic<uint64_t> fetched{0};
   std::atomic<uint64_t> decoded{0};
   std::atomic<uint64_t> processed{0};
   std::atomic<uint64_t> abortFloor{0};
@@ -150,8 +153,8 @@ using BreakPointCallback = void (*)();
 BreakPointCallback set_breakpoint_callback(BreakPointCallback callback) noexcept;
 // GP ring offsets are translated while excluding command decoding. A passed
 // address therefore refers to its next occurrence, just as on a hardware ring.
-// Breakpoints must fall between complete encoded commands; partial-command
-// fetch buffering is not implemented by this decoder.
+// A breakpoint can stop fetching inside a command; its partial prefix remains
+// buffered until fetching resumes.
 void enable_breakpoint(uint64_t generation, uint64_t readOrigin, uint32_t initialReadOffset,
                        uint32_t ringSize, uint32_t breakOffset) noexcept;
 void disable_breakpoint() noexcept;
@@ -174,8 +177,9 @@ void clear_buffer();
 
 // Logical ring addresses remain valid across decoder buffer growth and drains.
 // The counters can also be read by the original GX control/interrupt threads.
-// Consumed bytes are decoded commands, not GPU completion; completed includes
-// return from their synchronous callbacks and is what drain() waits for.
+// Consumed bytes have been fetched, including any incomplete command prefix.
+// Completed includes whole commands and return from their synchronous callbacks
+// and is what drain() waits for.
 struct CursorSnapshot {
   uint8_t* addressBase;
   uint32_t addressSize;

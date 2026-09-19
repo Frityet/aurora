@@ -8,6 +8,10 @@
 #include <future>
 #include <thread>
 
+namespace aurora::gfx {
+extern std::atomic<uint32_t> g_testProcessedDrawCount;
+}
+
 namespace {
 using namespace std::chrono_literals;
 namespace fifo = aurora::gx::fifo;
@@ -97,6 +101,32 @@ void* write_pointer() {
   void* write;
   GXGetFifoPtrs(&object, &read, &write);
   return write;
+}
+
+void* write_pointer_after(u32 bytes) {
+  GXFifoObj object;
+  if (!GXGetCPUFifo(&object)) return nullptr;
+  void* read;
+  void* write;
+  GXGetFifoPtrs(&object, &read, &write);
+  auto* base = static_cast<u8*>(GXGetFifoBase(&object));
+  const auto offset = static_cast<u8*>(write) - base;
+  return base + (offset + bytes) % GXGetFifoSize(&object);
+}
+
+void expect_stopped_at(void* expected, u32 remaining) {
+  GXFifoObj object;
+  ASSERT_TRUE(GXGetGPFifo(&object));
+  void* read;
+  void* write;
+  GXGetFifoPtrs(&object, &read, &write);
+  EXPECT_EQ(read, expected);
+  EXPECT_EQ(GXGetFifoCount(&object), remaining);
+  GXBool over, under, readIdle, commandIdle, breakpoint;
+  GXGetGPStatus(&over, &under, &readIdle, &commandIdle, &breakpoint);
+  EXPECT_TRUE(breakpoint);
+  EXPECT_FALSE(readIdle);
+  EXPECT_TRUE(commandIdle);
 }
 
 class GXFifoBreakpointTest : public GXFifoTest {
@@ -276,6 +306,246 @@ TEST_F(GXFifoBreakpointTest, PassedAddressRefersToNextLapOfSuppliedRing) {
   GXDisableBreakPt();
   fifo::drain();
   EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
+}
+
+TEST_F(GXFifoBreakpointTest, PassedAddressCanStopOneByteBeforeDrawPayloadCompletes) {
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XY, GX_F32, 0);
+  __GXSetDirtyState();
+  write_bp(0x40000011);
+  fifo::drain();
+
+  alignas(32) std::array<u8, 128> ring{};
+  GXFifoObj object;
+  GXInitFifoBase(&object, ring.data(), ring.size());
+  GXSetCPUFifo(&object);
+  GXSetGPFifo(&object);
+  write_nops(32);
+  fifo::drain();
+  // This address has passed. Its next occurrence is byte 144, which falls
+  // inside a different command even though the original occurrence was a NOP.
+  GXSetBreakPtCallback(breakpoint_callback);
+  GXEnableBreakPt(ring.data() + 16);
+  write_nops(54);
+  fifo::write_u8(static_cast<u8>(GX_TRIANGLESTRIP) | static_cast<u8>(GX_VTXFMT0));
+  fifo::write_u16(7);
+  for (u32 vertex = 0; vertex < 7; ++vertex) {
+    fifo::write_f32(static_cast<f32>(vertex));
+    fifo::write_f32(static_cast<f32>(vertex & 1));
+  }
+  write_bp(0x40000017);
+  aurora::gfx::g_testProcessedDrawCount.store(0, std::memory_order_relaxed);
+  fifo::begin_frame();
+  fifo::publish();
+
+  ASSERT_TRUE(wait_until([] { return sBreakCount.load(std::memory_order_acquire) == 1; }));
+  expect_stopped_at(ring.data() + 16, 6);
+  EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(), 0u);
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000011u);
+
+  GXDisableBreakPt();
+  fifo::drain();
+  EXPECT_EQ(aurora::gfx::g_testProcessedDrawCount.load(), 1u);
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
+  EXPECT_EQ(sBreakCount.load(), 1u);
+  ASSERT_TRUE(GXGetGPFifo(&object));
+  EXPECT_EQ(GXGetFifoCount(&object), 0u);
+}
+
+TEST_F(GXFifoBreakpointTest, SplitBpWritesHaveNoEffectBeforeTheirPayloadCompletes) {
+  constexpr std::array<u8, 5> command{GX_LOAD_BP_REG, 0x40, 0, 0, 0x17};
+  GXSetBreakPtCallback(breakpoint_callback);
+  fifo::begin_frame();
+  for (u32 split = 1; split < command.size(); ++split) {
+    SCOPED_TRACE(split);
+    write_bp(0x40000011);
+    fifo::drain();
+    sBreakCount.store(0, std::memory_order_relaxed);
+    void* stop = write_pointer_after(split);
+    GXEnableBreakPt(stop);
+    fifo::write_data(command.data(), command.size());
+    write_bp(0x41000123);
+    fifo::publish();
+
+    ASSERT_TRUE(wait_until([] { return sBreakCount.load(std::memory_order_acquire) == 1; }));
+    expect_stopped_at(stop, command.size() - split + 5);
+    EXPECT_EQ(sLastCommand.load(), 0x40000011u);
+    EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000011u);
+
+    GXDisableBreakPt();
+    fifo::drain();
+    EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
+    EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x41], 0x41000123u);
+    EXPECT_EQ(sBreakCount.load(), 1u);
+  }
+}
+
+TEST_F(GXFifoBreakpointTest, RearmingInsideTheSamePartialCommandRetainsItsPrefix) {
+  write_bp(0x40000011);
+  fifo::drain();
+  void* first = write_pointer_after(1);
+  void* second = write_pointer_after(4);
+  GXSetBreakPtCallback(breakpoint_callback);
+  GXEnableBreakPt(first);
+  write_bp(0x40000017);
+  write_bp(0x41000123);
+  fifo::begin_frame();
+  fifo::publish();
+
+  ASSERT_TRUE(wait_until([] { return sBreakCount.load(std::memory_order_acquire) == 1; }));
+  expect_stopped_at(first, 9);
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000011u);
+  GXEnableBreakPt(second);
+  ASSERT_TRUE(wait_until([] { return sBreakCount.load(std::memory_order_acquire) == 2; }));
+  expect_stopped_at(second, 6);
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000011u);
+
+  GXDisableBreakPt();
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x41], 0x41000123u);
+  EXPECT_EQ(sBreakCount.load(), 2u);
+}
+
+TEST_F(GXFifoBreakpointTest, PublicationCanPauseInsideACommandWithoutABreakpoint) {
+  write_bp(0x40000011);
+  fifo::drain();
+  const auto start = fifo::cursor_snapshot().consumed;
+  constexpr std::array<u8, 5> command{GX_LOAD_BP_REG, 0x40, 0, 0, 0x17};
+  fifo::write_data(command.data(), 3);
+  fifo::begin_frame();
+  fifo::publish();
+
+  ASSERT_TRUE(wait_until([&] { return fifo::cursor_snapshot().consumed == start + 3; }));
+  EXPECT_EQ(fifo::cursor_snapshot().completed, start);
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000011u);
+  EXPECT_EQ(sBreakCount.load(), 0u);
+
+  fifo::write_data(command.data() + 3, 2);
+  write_bp(0x41000123);
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x41], 0x41000123u);
+  EXPECT_EQ(fifo::cursor_snapshot().completed, start + 10);
+}
+
+TEST_F(GXFifoBreakpointTest, RebindingASavedReadCursorRetainsThePartialCommand) {
+  write_bp(0x40000011);
+  fifo::drain();
+  GXSetBreakPtCallback(breakpoint_callback);
+  GXEnableBreakPt(write_pointer_after(3));
+  write_bp(0x40000017);
+  write_bp(0x41000123);
+  fifo::begin_frame();
+  fifo::publish();
+  ASSERT_TRUE(wait_until([] { return sBreakCount.load(std::memory_order_acquire) == 1; }));
+  GXFifoObj saved;
+  ASSERT_TRUE(GXGetGPFifo(&saved));
+  EXPECT_EQ(GXGetFifoCount(&saved), 7u);
+
+  alignas(32) std::array<u8, 64> storage{};
+  GXFifoObj other;
+  GXInitFifoBase(&other, storage.data(), storage.size());
+  GXSetGPFifo(&other);
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000011u);
+  GXSetGPFifo(&saved);
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x41], 0x41000123u);
+  EXPECT_EQ(sBreakCount.load(), 1u);
+}
+
+TEST_F(GXFifoBreakpointTest, AbortRetiresAnIncompleteCommandPrefix) {
+  write_bp(0x40000011);
+  fifo::drain();
+  GXSetBreakPtCallback(breakpoint_callback);
+  GXEnableBreakPt(write_pointer_after(3));
+  write_bp(0x40000017);
+  fifo::begin_frame();
+  fifo::publish();
+  ASSERT_TRUE(wait_until([] { return sBreakCount.load(std::memory_order_acquire) == 1; }));
+  fifo::abort_frame();
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000011u);
+
+  write_bp(0x41000123);
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000011u);
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x41], 0x41000123u);
+  EXPECT_EQ(fifo::cursor_snapshot().completed, fifo::cursor_snapshot().consumed);
+}
+
+TEST_F(GXFifoBreakpointTest, SplitXfHeadersAndPayloadsDoNotPartiallyUpdateRegisters) {
+  constexpr std::array<u8, 13> baseline{
+      GX_LOAD_XF_REG, 0, 1, 0x10, 0x09, 0, 0, 0, 0, 0, 0, 0, 0};
+  constexpr std::array<u8, 13> command{
+      GX_LOAD_XF_REG, 0, 1, 0x10, 0x09, 0, 0, 0, 2, 0x11, 0x22, 0x33, 0x44};
+  GXSetBreakPtCallback(breakpoint_callback);
+  fifo::begin_frame();
+  for (u32 split = 1; split < command.size(); ++split) {
+    SCOPED_TRACE(split);
+    fifo::write_data(baseline.data(), baseline.size());
+    fifo::drain();
+    sBreakCount.store(0, std::memory_order_relaxed);
+    void* stop = write_pointer_after(split);
+    GXEnableBreakPt(stop);
+    fifo::write_data(command.data(), command.size());
+    write_bp(0x40000017);
+    fifo::publish();
+
+    ASSERT_TRUE(wait_until([] { return sBreakCount.load(std::memory_order_acquire) == 1; }));
+    expect_stopped_at(stop, command.size() - split + 5);
+    EXPECT_EQ(aurora::gx::g_gxState.numChans, 0u);
+    EXPECT_EQ(aurora::gx::g_gxState.xfRegCache[0x09], 0u);
+    EXPECT_EQ(aurora::gx::g_gxState.xfRegCache[0x0a], 0u);
+
+    GXDisableBreakPt();
+    fifo::drain();
+    EXPECT_EQ(aurora::gx::g_gxState.numChans, 2u);
+    EXPECT_EQ(aurora::gx::g_gxState.xfRegCache[0x09], 2u);
+    EXPECT_EQ(aurora::gx::g_gxState.xfRegCache[0x0a], 0x11223344u);
+    EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
+    EXPECT_EQ(sBreakCount.load(), 1u);
+  }
+}
+
+TEST_F(GXFifoBreakpointTest, SplitAuroraHeadersAndPointersKeepThePreviousArrayBinding) {
+  std::array<u8, 12> original{};
+  std::array<u8, 8> replacement{};
+  std::vector<u8> command{GX_AURORA, 0, GX_AURORA_LOAD_ARRAYBASE};
+  const auto address = static_cast<u64>(reinterpret_cast<uintptr_t>(replacement.data()));
+  for (int shift = 56; shift >= 0; shift -= 8) command.push_back(static_cast<u8>(address >> shift));
+  command.insert(command.end(), {0, 0, 0, static_cast<u8>(replacement.size()), 1});
+  GXSetBreakPtCallback(breakpoint_callback);
+  fifo::begin_frame();
+  for (u32 split = 1; split < command.size(); ++split) {
+    SCOPED_TRACE(split);
+    GXSetArray(GX_VA_POS, original.data(), original.size(), 3, false);
+    fifo::drain();
+    sBreakCount.store(0, std::memory_order_relaxed);
+    void* stop = write_pointer_after(split);
+    GXEnableBreakPt(stop);
+    fifo::write_data(command.data(), command.size());
+    write_bp(0x40000017);
+    fifo::publish();
+
+    ASSERT_TRUE(wait_until([] { return sBreakCount.load(std::memory_order_acquire) == 1; }));
+    expect_stopped_at(stop, command.size() - split + 5);
+    const auto& array = aurora::gx::g_gxState.arrays[GX_VA_POS];
+    EXPECT_EQ(array.data, original.data());
+    EXPECT_EQ(array.size, original.size());
+    EXPECT_FALSE(array.le);
+
+    GXDisableBreakPt();
+    fifo::drain();
+    EXPECT_EQ(array.data, replacement.data());
+    EXPECT_EQ(array.size, replacement.size());
+    EXPECT_TRUE(array.le);
+    EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
+    EXPECT_EQ(sBreakCount.load(), 1u);
+  }
 }
 
 TEST_F(GXFifoBreakpointTest, IndependentBindingsRetainPendingCommandsAndResumeTheirOwnCursor) {

@@ -200,7 +200,8 @@ void clear_buffer();
 
 // Logical ring addresses remain valid across decoder buffer growth and drains.
 // The counters can also be read by the original GX control/interrupt threads.
-// Consumed bytes have been fetched, including any incomplete command prefix.
+// Consumed bytes have been fetched (including an incomplete command prefix)
+// or discarded by GXAbortFrame's immediate logical FIFO reset.
 // Completed includes whole commands and return from their synchronous callbacks
 // and is what drain() waits for.
 struct CursorSnapshot {

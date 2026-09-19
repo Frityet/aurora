@@ -1049,6 +1049,75 @@ TEST_F(GXFifoBreakpointTest, AbortRevokesDrawCallbacksWaitingForGuestCpu) {
   EXPECT_EQ(fifo::cursor_snapshot().written, fifo::cursor_snapshot().completed);
 }
 
+TEST_F(GXFifoBreakpointTest, AlarmAbortRestoresRingCapacityBeforeInterruptRecoveryWrites) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  alignas(32) std::array<u8, 128> ring{};
+  GXFifoObj object;
+  GXInitFifoBase(&object, ring.data(), ring.size());
+  GXInitFifoLimits(&object, 64, 16);
+  GXSetCPUFifo(&object);
+  GXSetGPFifo(&object);
+  GXSetBreakPtCallback(breakpoint_callback);
+  GXSetDrawDoneCallback(interrupt_callback);
+  GXEnableBreakPt(ring.data());
+  write_nops(65);
+  fifo::publish();
+  ASSERT_TRUE(wait_until([] { return fifo::cursor_snapshot().breakpoint; }));
+  EXPECT_EQ(sBreakCount.load(), 0u); // Callback is waiting for the guest CPU.
+  {
+    const aurora::os::GuestInterruptExecutionScope interrupt;
+    GXDisableBreakPt();
+    GXAbortFrame();
+    // MainLoopFramework's watchdog emits these before leaving its ISR.
+    EXPECT_EQ(fifo::cursor_snapshot().consumed, 65u);
+    EXPECT_LT(fifo::cursor_snapshot().completed, 65u); // Worker still owns retirement.
+    GXFifoObj cleaned;
+    ASSERT_TRUE(GXGetGPFifo(&cleaned));
+    EXPECT_EQ(GXGetFifoCount(&cleaned), 0u);
+    write_bp(0x5800000f);
+    GXSetDrawDone();
+  }
+  fifo::drain();
+  EXPECT_EQ(fifo::cursor_snapshot().written, 75u);
+  EXPECT_EQ(fifo::cursor_snapshot().completed, 75u);
+  EXPECT_EQ(sBreakCount.load(), 0u);
+  EXPECT_EQ(sInterruptCallbacks.load(), 1u);
+}
+
+TEST_F(GXFifoBreakpointTest, EmptyRecordingCleanupDoesNotWaitInsideAnInterrupt) {
+  const aurora::os::GuestInterruptExecutionScope interrupt;
+  fifo::detail::discard_recording();
+  EXPECT_FALSE(fifo::detail::recording_pending());
+}
+
+TEST_F(GXFifoBreakpointTest, AlreadyRetiredFifoShutdownDoesNotWaitInsideAnInterrupt) {
+  fifo::shutdown();
+  {
+    const aurora::os::GuestInterruptExecutionScope interrupt;
+    fifo::shutdown();
+    EXPECT_FALSE(fifo::cursor_snapshot().active);
+  }
+  fifo::init();
+  GXInit(nullptr, 0);
+  fifo::clear_buffer();
+}
+
+TEST_F(GXFifoBreakpointTest, InterruptStillRejectsAProducerWriteThatReallyNeedsToWait) {
+  EXPECT_DEATH({
+    const aurora::os::GuestThreadExecutionScope execution;
+    alignas(32) u8 ring[128]{};
+    GXFifoObj object;
+    GXInitFifoBase(&object, ring, sizeof(ring));
+    GXInitFifoLimits(&object, 64, 16);
+    GXSetCPUFifo(&object);
+    GXSetGPFifo(&object);
+    GXEnableBreakPt(ring);
+    write_nops(65);
+    const aurora::os::GuestInterruptExecutionScope interrupt;
+    fifo::write_u8(GX_NOP); // No abort cleaned this full FIFO.
+  }, "blocking host wait while scheduler is disabled");
+}
+
 TEST(GXSubmissionOwnership, AbortWinsBeforeCommitAndCommittedSubmissionSurvivesAbort) {
   using namespace aurora::gfx;
   auto pending = std::make_shared<SubmissionState>();

@@ -113,7 +113,14 @@ void wake_worker() noexcept {
   sWorkerWake.notify_all();
 }
 
-void update_write_limit(detail::CommandStream& stream) {
+uint64_t fetch_cursor(const detail::CommandStream& stream) {
+  // GXAbortFrame cleans the logical GP FIFO immediately. Renderer retirement
+  // still runs on the worker, but discarded bytes no longer occupy ring space.
+  return std::max(stream.fetched.load(std::memory_order_acquire),
+                  stream.abortFloor.load(std::memory_order_acquire));
+}
+
+void update_write_limit(detail::CommandStream& stream, bool reset = false) {
   const bool linked = !sRetiringStreams.load(std::memory_order_acquire) &&
       detail::sCPUStream.load(std::memory_order_acquire) == &stream &&
       sGPStream.load(std::memory_order_acquire) == &stream;
@@ -122,14 +129,23 @@ void update_write_limit(detail::CommandStream& stream) {
   // their full size; an unread ring byte must never be overwritten.
   const auto capacity = std::min<uint64_t>(stream.addressSize,
       uint64_t{stream.highWatermark.load(std::memory_order_acquire)} + 1);
-  const auto limit = linked ? stream.fetched.load(std::memory_order_acquire) + capacity : UINT64_MAX;
-  stream.writeLimit.store(limit, std::memory_order_release);
+  const auto limit = linked ? fetch_cursor(stream) + capacity : UINT64_MAX;
+  if (reset) {
+    // Binding/limit programming and decoder fetch updates share the execution
+    // mutex. An abort interrupt holds guest CPU ownership, excluding guest
+    // binding changes, but may race an older decoder update below.
+    stream.writeLimit.store(limit, std::memory_order_release);
+  } else {
+    auto previous = stream.writeLimit.load(std::memory_order_acquire);
+    while (previous < limit && !stream.writeLimit.compare_exchange_weak(
+               previous, limit, std::memory_order_release, std::memory_order_acquire)) {}
+  }
   stream.writeLimit.notify_all();
 }
 
 void update_write_limits() {
   for (auto* stream = sStreams.load(std::memory_order_acquire); stream; stream = stream->next)
-    update_write_limit(*stream);
+    update_write_limit(*stream, true);
 }
 
 void dispatch_draw_sync(uint16_t token, bool interrupt, gfx::CommandEpoch epoch) noexcept {
@@ -298,9 +314,8 @@ void stop_worker() {
     gfx::abandon_command_epoch();
     update_write_limits();
   }
-  {
+  if (auto writers = sBlockedWriters.load(std::memory_order_acquire); writers) {
     const aurora::os::GuestThreadWaitScope wait;
-    auto writers = sBlockedWriters.load(std::memory_order_acquire);
     while (writers) {
       sBlockedWriters.wait(writers, std::memory_order_acquire);
       writers = sBlockedWriters.load(std::memory_order_acquire);
@@ -365,7 +380,7 @@ std::unique_lock<std::mutex> lock_execution() {
 
 void program_gp_stream(detail::CommandStream& stream, uint32_t readOffset, uint32_t writeOffset, uint32_t count) {
   const auto written = stream.written.load(std::memory_order_acquire);
-  const auto fetched = stream.fetched.load(std::memory_order_acquire);
+  const auto fetched = fetch_cursor(stream);
   if ((stream.initialReadOffset + fetched) % stream.addressSize == readOffset &&
       (stream.initialWriteOffset + written) % stream.addressSize == writeOffset && written - fetched == count) return;
   AURORA_ASSERT(count <= stream.addressSize, "GX FIFO replay count exceeds retained ring storage");
@@ -557,15 +572,15 @@ void write_data_throttled(const void* data, uint32_t length) {
     // producer supplies the suffix; waiting for decoded would deadlock here.
     stream->published.store(written, std::memory_order_release);
     if (kProcessingMode == ProcessingMode::Thread) wake_worker();
-    const aurora::os::GuestThreadWaitScope wait;
     while (true) {
       const auto currentLimit = stream->writeLimit.load(std::memory_order_acquire);
       const auto low = stream->lowWatermark.load(std::memory_order_acquire);
-      const auto fetched = stream->fetched.load(std::memory_order_acquire);
+      const auto fetched = fetch_cursor(*stream);
       // Hardware resumes below the low mark. A zero mark is accepted for
       // small host FIFOs and resumes only once all their bytes are fetched.
-      if (currentLimit == UINT64_MAX ||
-          (written < currentLimit && (low ? written - fetched < low : written == fetched))) break;
+      if (!epoch.current() || currentLimit == UINT64_MAX ||
+          (written < currentLimit && (fetched >= written || written - fetched < low))) break;
+      const aurora::os::GuestThreadWaitScope wait;
       if (kProcessingMode == ProcessingMode::Thread) {
         stream->writeLimit.wait(currentLimit, std::memory_order_acquire);
       } else {
@@ -585,7 +600,7 @@ void set_fifo_limits(uint64_t generation, uint32_t highWatermark, uint32_t lowWa
     if (stream->id != generation) continue;
     stream->highWatermark.store(highWatermark, std::memory_order_release);
     stream->lowWatermark.store(lowWatermark, std::memory_order_release);
-    update_write_limit(*stream);
+    update_write_limit(*stream, true);
     return;
   }
 }
@@ -636,7 +651,7 @@ void enable_breakpoint(uint64_t generation, uint64_t readOrigin, uint32_t initia
     AURORA_ASSERT(sActive && stream && stream->id == generation, "GX breakpoint refers to a retired FIFO");
     AURORA_ASSERT(ringSize != 0 && initialReadOffset < ringSize && breakOffset < ringSize,
                   "GX breakpoint is outside its GP FIFO");
-    const uint64_t fetched = stream->fetched.load(std::memory_order_relaxed);
+    const uint64_t fetched = fetch_cursor(*stream);
     AURORA_ASSERT(fetched >= readOrigin, "GX breakpoint FIFO origin is after its read cursor");
     const uint64_t offset = (fetched - readOrigin + initialReadOffset) % ringSize;
     const uint64_t distance = (static_cast<uint64_t>(breakOffset) + ringSize - offset) % ringSize;
@@ -659,6 +674,7 @@ void abort_frame() noexcept {
   stream->abortFloor.store(floor, std::memory_order_release);
   disable_breakpoint();
   gfx::abandon_command_epoch();
+  update_write_limit(*stream);
   auto published = stream->published.load(std::memory_order_relaxed);
   while (published < floor && !stream->published.compare_exchange_weak(published, floor, std::memory_order_release)) {}
   wake_worker();
@@ -803,7 +819,7 @@ CursorSnapshot cursor_snapshot(uint64_t streamId) {
       const auto revision = stream->revision.load(std::memory_order_acquire);
       if (revision & 1) continue;
       const auto completed = stream->processed.load(std::memory_order_acquire);
-      const auto consumed = stream->fetched.load(std::memory_order_acquire);
+      const auto consumed = fetch_cursor(*stream);
       const auto published = stream->published.load(std::memory_order_acquire);
       const auto written = stream->written.load(std::memory_order_acquire);
       const auto initialRead = stream->initialReadOffset.load(std::memory_order_relaxed);

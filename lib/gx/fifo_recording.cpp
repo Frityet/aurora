@@ -85,7 +85,7 @@ void detail::patch_recording_u32(uint32_t offset, uint32_t value) {
 
 void detail::discard_recording() {
   const aurora::allocation::HostAllocationScope hostAllocations;
-  {
+  if (sRecordingSubmitting.load(std::memory_order_acquire)) {
     const aurora::os::GuestThreadWaitScope wait;
     while (sRecordingSubmitting.load(std::memory_order_acquire))
       sRecordingSubmitting.wait(true, std::memory_order_acquire);

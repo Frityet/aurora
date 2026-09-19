@@ -158,6 +158,24 @@ TEST(BrlanEvaluator, SamplesGenericPaneCurvesWithoutSequenceKnowledge) {
   EXPECT_FALSE(absent.visible.has_value());
 }
 
+TEST(BrlanEvaluator, SamplesPaneSizeChannelsWithOriginalSrtOrdering) {
+  BrlanAnimation animation;
+  animation.contents = {{"Pane", {{"RLPA", {
+      hermite_target(8U, {{0.0F, 20.0F, 2.0F}, {10.0F, 40.0F, 2.0F}}),
+      hermite_target(9U, {{0.0F, 30.0F, 4.0F}, {10.0F, 70.0F, 4.0F}}),
+  }}}}};
+  const auto middle = animation.pane_frame("Pane", 5.0F);
+  ASSERT_TRUE(middle.width.has_value());
+  ASSERT_TRUE(middle.height.has_value());
+  EXPECT_FLOAT_EQ(*middle.width, 30.0F);
+  EXPECT_FLOAT_EQ(*middle.height, 50.0F);
+  EXPECT_FLOAT_EQ(*animation.pane_frame("Pane", -1.0F).width, 20.0F);
+  EXPECT_FLOAT_EQ(*animation.pane_frame("Pane", 20.0F).height, 70.0F);
+  EXPECT_FALSE(middle.translate_x.has_value());
+  EXPECT_FALSE(middle.scale_x.has_value());
+  EXPECT_FALSE(animation.pane_frame("Absent", 5.0F).width.has_value());
+}
+
 TEST(BrlanEvaluator, SamplesGenericTextureAndMaterialTargets) {
   auto animation = BrlanAnimation{};
   animation.contents = {

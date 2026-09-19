@@ -19,6 +19,8 @@ struct BrlanPaneFrame {
   std::optional<float> rotate_x;
   std::optional<float> rotate_y;
   std::optional<float> rotate_z;
+  std::optional<float> width;
+  std::optional<float> height;
   std::optional<float> alpha;
   std::optional<bool> visible;
 };

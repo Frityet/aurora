@@ -202,6 +202,12 @@ void apply_target(BrlanPaneFrame& frame_values, std::string_view kind, const Brl
     case 7U:
       frame_values.scale_y = *value;
       break;
+    case 8U:
+      frame_values.width = *value;
+      break;
+    case 9U:
+      frame_values.height = *value;
+      break;
     default:
       break;
     }

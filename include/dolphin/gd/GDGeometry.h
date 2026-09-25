@@ -2,6 +2,7 @@
 #define _DOLPHIN_GD_GEOMETRY_H_
 
 #include <dolphin/gx/GXStruct.h>
+#include <dolphin/gd/GDBase.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -520,6 +521,13 @@ void GDSetGenMode(u8 nTexGens, u8 nChans, u8 nTevs);
 void GDSetGenMode2(u8 nTexGens, u8 nChans, u8 nTevs, u8 nInds, GXCullMode cm);
 void GDSetLPSize(u8 lineWidth, u8 pointSize, GXTexOffset lineOffset, GXTexOffset pointOffset, u8 lineHalfAspect);
 void GDSetCoPlanar(u8 enable);
+
+static inline void GDBegin(GXPrimitive type, GXVtxFmt vtxfmt, u16 nverts) {
+    GDWrite_u8(vtxfmt | type);
+    GDWrite_u16(nverts);
+}
+
+static inline void GDEnd(void) {}
 
 #ifdef __cplusplus
 }

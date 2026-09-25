@@ -7,6 +7,8 @@ constexpr u32 RFL_CREATOR_LEN = 10U;
 constexpr u32 RFL_CREATEID_LEN = 8U;
 constexpr u32 RFL_DB_CHAR_MAX = 100U;
 
+struct RFLStoreData { u8 dummy[0x4C]; };
+
 using RFLCallback = void (*)(void);
 
 enum RFLDataSource {

@@ -219,13 +219,28 @@ void set_viewport_policy(AuroraViewportPolicy policy) noexcept {
 void update() noexcept {
   if (const int pending = sPendingViewportPolicy.exchange(-1, std::memory_order_acq_rel); pending != -1) {
     const auto policy = static_cast<AuroraViewportPolicy>(pending);
+    const bool changed = policy != g_gxState.viewportPolicy;
     g_gxState.viewportPolicy = policy;
     window::set_frame_buffer_aspect_fit(policy == AURORA_VIEWPORT_FIT);
+    if (changed) window::request_frame_buffer_resize();
   }
 }
 
 Vec2<uint32_t> logical_fb_size() noexcept {
-  return gfx::is_offscreen() ? gfx::get_render_target_size() : vi::configured_fb_size();
+  if (gfx::is_offscreen()) return gfx::get_render_target_size();
+  const auto efb = vi::configured_efb_size();
+  return efb.x && efb.y ? efb : vi::configured_fb_size();
+}
+
+Vec2<uint32_t> efb_render_target_size(uint32_t width, uint32_t height) noexcept {
+  const auto efb = vi::configured_efb_size();
+  const auto display = vi::configured_fb_size();
+  if (g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE || !efb.x || !efb.y || !display.x || !display.y)
+    return {width, height};
+  // VI scans a region of the EFB. Keep the unscanned rows/columns available to
+  // ordinary GX draws and texture copies at the same rendering resolution.
+  return {static_cast<uint32_t>(std::ceil(static_cast<double>(width) * efb.x / display.x)),
+          static_cast<uint32_t>(std::ceil(static_cast<double>(height) * efb.y / display.y))};
 }
 
 gfx::Viewport map_logical_viewport(const gfx::Viewport& logicalViewport) noexcept {
@@ -286,13 +301,14 @@ gfx::ClipRect map_logical_scissor(const gfx::ClipRect& logicalScissor) noexcept 
 }
 
 void set_logical_viewport(const gfx::Viewport& viewport) noexcept {
-  if (viewport.left != g_gxState.logicalViewport.left || viewport.width != g_gxState.logicalViewport.width ||
+  if (viewport.left != g_gxState.logicalViewport.left || viewport.top != g_gxState.logicalViewport.top ||
+      viewport.width != g_gxState.logicalViewport.width ||
       viewport.height != g_gxState.logicalViewport.height || viewport.znear != g_gxState.logicalViewport.znear ||
       viewport.zfar != g_gxState.logicalViewport.zfar) {
     g_gxState.dirty |= DirtyUniform;
   }
   g_gxState.logicalViewport = viewport;
-  set_render_viewport(map_logical_viewport(viewport));
+  refresh_scissor_and_viewport();
 }
 
 void set_render_viewport(const gfx::Viewport& viewport) noexcept {
@@ -306,7 +322,55 @@ void set_render_viewport(const gfx::Viewport& viewport) noexcept {
 
 void set_logical_scissor(const gfx::ClipRect& scissor) noexcept {
   g_gxState.logicalScissor = scissor;
-  set_render_scissor(map_logical_scissor(g_gxState.logicalScissor));
+  refresh_scissor_and_viewport();
+}
+
+void refresh_scissor_and_viewport() noexcept {
+  const auto& scissor = g_gxState.logicalScissor;
+  auto viewport = g_gxState.logicalViewport;
+  const auto extent = g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE
+                          ? gfx::get_render_target_size() : logical_fb_size();
+  gfx::ClipRect result{};
+  Vec2<int32_t> selectedOffset{};
+  float bestViewportArea = -1.f;
+  int64_t bestArea = -1;
+  // The rasterizer wraps scissor coordinates every 1024 pixels. As in Dolphin's
+  // BPFunctions, select the intersecting rectangle with greatest viewport area,
+  // then total area. The same selected offset must also translate the viewport.
+  if (scissor.width > 0 && scissor.height > 0) {
+    const float viewportLeft = std::min(viewport.left, viewport.left + viewport.width);
+    const float viewportRight = std::max(viewport.left, viewport.left + viewport.width);
+    const float viewportTop = std::min(viewport.top, viewport.top + viewport.height);
+    const float viewportBottom = std::max(viewport.top, viewport.top + viewport.height);
+    for (int xWrap = -4096; xWrap <= 4096; xWrap += 1024) {
+      const int xOffset = g_gxState.scissorOffset.x + xWrap;
+      const int left = std::clamp(scissor.x - xOffset, 0, static_cast<int>(extent.x));
+      const int right = std::clamp(scissor.x + scissor.width - xOffset, 0, static_cast<int>(extent.x));
+      if (left >= right) continue;
+      for (int yWrap = -4096; yWrap <= 4096; yWrap += 1024) {
+        const int yOffset = g_gxState.scissorOffset.y + yWrap;
+        const int top = std::clamp(scissor.y - yOffset, 0, static_cast<int>(extent.y));
+        const int bottom = std::clamp(scissor.y + scissor.height - yOffset, 0, static_cast<int>(extent.y));
+        if (top >= bottom) continue;
+        const float visibleWidth = std::clamp(static_cast<float>(right + xOffset), viewportLeft, viewportRight) -
+                                   std::clamp(static_cast<float>(left + xOffset), viewportLeft, viewportRight);
+        const float visibleHeight = std::clamp(static_cast<float>(bottom + yOffset), viewportTop, viewportBottom) -
+                                    std::clamp(static_cast<float>(top + yOffset), viewportTop, viewportBottom);
+        const float viewportArea = visibleWidth * visibleHeight;
+        const int64_t area = int64_t{right - left} * (bottom - top);
+        if (viewportArea > bestViewportArea || (viewportArea == bestViewportArea && area >= bestArea)) {
+          result = {left, top, right - left, bottom - top};
+          selectedOffset = {xOffset, yOffset};
+          bestViewportArea = viewportArea;
+          bestArea = area;
+        }
+      }
+    }
+  }
+  viewport.left -= selectedOffset.x;
+  viewport.top -= selectedOffset.y;
+  set_render_viewport(map_logical_viewport(viewport));
+  set_render_scissor(map_logical_scissor(result));
 }
 
 void set_render_scissor(const gfx::ClipRect& scissor) noexcept {

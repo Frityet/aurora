@@ -24,6 +24,7 @@ std::optional<GXRenderModeObj> sRenderMode;
 // The renderer/FIFO decoder reads published geometry without acquiring the
 // guest CPU: decoding can hold locks that a guest GX call also needs.
 std::atomic<uint64_t> sConfiguredFramebufferSize{(uint64_t{640} << 32) | 480};
+std::atomic<uint64_t> sConfiguredEfbSize{0};
 u32 sRetraceCount = 0;
 void* sRequestedFrameBuffer = nullptr;
 void* sNextFrameBuffer = nullptr;
@@ -180,6 +181,9 @@ void configure(const GXRenderModeObj* rm) noexcept {
   else sRenderMode = *rm;
   const auto newSize = render_mode_size();
   sConfiguredFramebufferSize.store((uint64_t{newSize.x} << 32) | newSize.y, std::memory_order_release);
+  if (sInitialized)
+    sConfiguredEfbSize.store((uint64_t{std::max(newSize.x, 640u)} << 32) | std::max(newSize.y, 528u),
+                            std::memory_order_release);
   window::set_configured_frame_buffer_size(newSize.x, newSize.y);
   if (newSize != oldSize) window::request_frame_buffer_resize();
   const u32 format = rm == nullptr ? VI_NTSC : static_cast<u32>(rm->viTVmode) >> 2U;
@@ -188,6 +192,11 @@ void configure(const GXRenderModeObj* rm) noexcept {
 
 Vec2<uint32_t> configured_fb_size() noexcept {
   const auto size = sConfiguredFramebufferSize.load(std::memory_order_acquire);
+  return {static_cast<uint32_t>(size >> 32), static_cast<uint32_t>(size)};
+}
+
+Vec2<uint32_t> configured_efb_size() noexcept {
+  const auto size = sConfiguredEfbSize.load(std::memory_order_acquire);
   return {static_cast<uint32_t>(size >> 32), static_cast<uint32_t>(size)};
 }
 
@@ -202,6 +211,8 @@ void shutdown() noexcept {
   {
     const CallbackLock callbacks;
     sInitialized = false;
+    sConfiguredEfbSize.store(0, std::memory_order_release);
+    window::request_frame_buffer_resize();
     sPreCallback = {};
     sPostCallback = {};
     sRequestedFrameBuffer = sNextFrameBuffer = sCurrentFrameBuffer = nullptr;
@@ -231,6 +242,10 @@ void VIInit() {
   sFlushPending = false;
   OSInitThreadQueue(&sRetraceQueue);
   sInitialized = true;
+  const auto size = render_mode_size();
+  sConfiguredEfbSize.store((uint64_t{std::max(size.x, 640u)} << 32) | std::max(size.y, 528u),
+                          std::memory_order_release);
+  aurora::window::request_frame_buffer_resize();
   retrace_clock().start();
 }
 void VIConfigure(const GXRenderModeObj* rm) { aurora::vi::configure(rm); }

@@ -134,6 +134,11 @@ Vec2<int> fit_frame_buffer_to_aspect(int width, int height, float aspect) {
 void resize_swapchain() noexcept {
   const auto size = get_window_size();
   if (size == g_windowSize) {
+#ifdef AURORA_ENABLE_GX
+    // VI and viewport-policy changes can resize EFB backing without changing
+    // the window or its visible content framebuffer.
+    webgpu::resize_swapchain(size.fb_width, size.fb_height, size.native_fb_width, size.native_fb_height);
+#endif
     return;
   }
   if (size.scale != g_windowSize.scale) {

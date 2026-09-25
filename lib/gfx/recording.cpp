@@ -549,12 +549,7 @@ void begin_recording(FramePacket& packet, size_t frameSlot) {
   pass.colorAttachments[SceneColorAttachmentIndex].clearValue = gx::g_gxState.clearColor;
   pass.clearDepthValue = gx::clear_depth_value();
   g_recorder.currentRenderPass = 0;
-  g_recorder.cachedViewport = gx::map_logical_viewport(gx::g_gxState.logicalViewport);
-  g_recorder.cachedScissor = gx::map_logical_scissor(gx::g_gxState.logicalScissor);
-  // Replay the mapped state into both GX's uniform sources and this recording.
-  // The caches already match, so these setters emit no duplicate commands.
-  gx::set_render_viewport(g_recorder.cachedViewport);
-  gx::set_render_scissor(g_recorder.cachedScissor);
+  gx::refresh_scissor_and_viewport();
   push_command(CommandType::SetViewport, Command::Data{.setViewport = g_recorder.cachedViewport});
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_recorder.cachedScissor});
 }
@@ -773,8 +768,10 @@ Vec2<uint32_t> get_render_target_size() noexcept {
         current_render_passes()[g_recorder.currentRenderPass].colorAttachments[SceneColorAttachmentIndex].size;
     return {size.width, size.height};
   }
+  if (webgpu::g_frameBuffer.texture)
+    return {webgpu::g_frameBuffer.size.width, webgpu::g_frameBuffer.size.height};
   const auto windowSize = window::get_window_size();
-  return {windowSize.fb_width, windowSize.fb_height};
+  return gx::efb_render_target_size(windowSize.fb_width, windowSize.fb_height);
 }
 
 void set_viewport(const Viewport& cmd) noexcept {
@@ -1152,6 +1149,7 @@ void request_depth_snapshot(uint64_t rawId) noexcept {
               .viewportFar = gx::g_gxState.logicalViewport.zfar,
           },
       .viewportPolicy = viewportPolicy,
+      .efbExtent = vi::configured_efb_size(),
   };
   if (!depth_peek::set_snapshot_info(id, capture.info)) {
     return;
@@ -1251,7 +1249,19 @@ void finish() {
     auto& frame = current_frame_packet();
     frame.uniforms.append_zeroes(gx::MaxUniformSize);
     auto& pass = frame.renderPasses[g_recorder.currentRenderPass];
-    pass.captureLegacyDepthSnapshot = depth_peek::snapshot_requested();
+    if (depth_peek::snapshot_requested()) {
+      const auto policy = gx::g_gxState.viewportPolicy;
+      auto size = vi::configured_fb_size();
+      if (policy == AURORA_VIEWPORT_NATIVE) {
+        const auto& source = pass.colorAttachments[SceneColorAttachmentIndex].size;
+        size = {source.width, source.height};
+      }
+      pass.legacyDepthSnapshot = depth_peek::SnapshotCapture{
+          .info = {.frameId = frame.frameId, .width = size.x, .height = size.y},
+          .viewportPolicy = policy,
+          .efbExtent = vi::configured_efb_size(),
+      };
+    }
     enqueue_pass(frame, g_recorder.currentRenderPass);
     g_recorder.currentRenderPass = UINT32_MAX;
   }

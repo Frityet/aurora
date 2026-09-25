@@ -9,4 +9,5 @@
 namespace aurora::vi {
 void configure(const GXRenderModeObj* rm) noexcept;
 Vec2<uint32_t> configured_fb_size() noexcept;
+Vec2<uint32_t> configured_efb_size() noexcept;
 } // namespace aurora::vi

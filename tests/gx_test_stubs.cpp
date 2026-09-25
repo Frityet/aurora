@@ -300,7 +300,7 @@ void request_snapshot() noexcept { s_snapshotRequested = true; }
 bool snapshot_requested() noexcept { return s_snapshotRequested; }
 void poll() noexcept {}
 void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
-                           wgpu::Extent3D sourceSize, uint32_t msaaSamples) noexcept {}
+                           wgpu::Extent3D sourceSize, uint32_t msaaSamples, const SnapshotCapture& capture) noexcept {}
 void encode_tagged_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
                             wgpu::Extent3D sourceSize, uint32_t msaaSamples, const SnapshotCapture& capture) noexcept {}
 void after_submit() noexcept {}

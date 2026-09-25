@@ -271,9 +271,10 @@ void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& passInfo,
   render_pass(pass, frame, passInfo);
   pass.End();
 
-  if (passInfo.captureLegacyDepthSnapshot) {
+  if (passInfo.legacyDepthSnapshot) {
     depth_peek::encode_frame_snapshot(cmd, passInfo.copySourceDepthView,
-                                      passInfo.colorAttachments[SceneColorAttachmentIndex].size, passInfo.msaaSamples);
+                                      passInfo.colorAttachments[SceneColorAttachmentIndex].size, passInfo.msaaSamples,
+                                      *passInfo.legacyDepthSnapshot);
   }
 
   if (passInfo.taggedDepthSnapshot) {

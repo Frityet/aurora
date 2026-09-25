@@ -108,14 +108,14 @@ struct RenderPass {
   bool hasStencil = false;
   bool hasDraws = false;
   bool discardable = false;
-  bool captureLegacyDepthSnapshot = false;
+  std::optional<depth_peek::SnapshotCapture> legacyDepthSnapshot;
   std::optional<depth_peek::SnapshotCapture> taggedDepthSnapshot;
   bool sealed = false;
   std::vector<tex_palette_conv::ConvRequest> paletteConvs;
 
   RenderTargetLayout target_layout() const noexcept;
   bool has_consumer() const {
-    return resolveTarget || snapshotColorDst || snapshotDepthDst || captureLegacyDepthSnapshot ||
+    return resolveTarget || snapshotColorDst || snapshotDepthDst || legacyDepthSnapshot.has_value() ||
            taggedDepthSnapshot.has_value();
   }
   bool has_content() const {

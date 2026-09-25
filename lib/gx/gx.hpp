@@ -423,6 +423,7 @@ struct GXState {
   gfx::Viewport logicalViewport{0.f, 0.f, 640.f, 480.f, 0.f, 1.f};
   gfx::Viewport renderViewport{0.f, 0.f, 640.f, 480.f, 0.f, 1.f};
   gfx::ClipRect logicalScissor{0, 0, 640, 480};
+  Vec2<int32_t> scissorOffset{0, 0};
   gfx::ClipRect renderScissor{0, 0, 640, 480};
 
   // EFB copy state
@@ -508,6 +509,8 @@ bool display_copy_size(u32* width, u32* height) noexcept;
 bool read_display_copy_rgba8(void* dst, u32 dstSize, u32* width, u32* height, u32* rowStrideOut) noexcept;
 Vec2<uint32_t> logical_fb_size() noexcept;
 gfx::Viewport map_logical_viewport(const gfx::Viewport& logicalViewport) noexcept;
+Vec2<uint32_t> efb_render_target_size(uint32_t width, uint32_t height) noexcept;
+void refresh_scissor_and_viewport() noexcept;
 gfx::ClipRect map_logical_scissor(const gfx::ClipRect& logicalScissor) noexcept;
 void set_logical_viewport(const gfx::Viewport& viewport) noexcept;
 void set_render_viewport(const gfx::Viewport& viewport) noexcept;

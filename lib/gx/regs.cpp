@@ -143,6 +143,12 @@ void bp_scissor(u8, u32) noexcept {
   set_logical_scissor({lf, tp, wd, ht});
 }
 
+void bp_scissor_offset(u8, u32 value) noexcept {
+  g_gxState.scissorOffset = {static_cast<s32>(reg_get(value, 10, 0) * 2) - 342,
+                            static_cast<s32>(reg_get(value, 10, 10) * 2) - 342};
+  refresh_scissor_and_viewport();
+}
+
 // Line/point size (0x22)
 void bp_line_point_size(u8, u32 value) noexcept {
   g_gxState.lineWidth = static_cast<u8>(reg_get(value, 8, 0));
@@ -569,6 +575,7 @@ constexpr auto kBpRegs = [] {
   regs[0x50] = {bp_clear_bg};
   regs[0x51] = {bp_clear_depth};
   regs[0x52] = {bp_efb_copy, 0, /* alwaysHandle */ true};
+  regs[0x59] = {bp_scissor_offset};
   regs[0x64] = {}; // TLUT load address; bp_tlut_load reads from shadow
   regs[0x65] = {bp_tlut_load, DirtyTextures, /* alwaysHandle */ true};
   for (u32 base : {0x80u, 0xA0u}) {

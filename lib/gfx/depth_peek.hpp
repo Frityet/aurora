@@ -16,6 +16,9 @@ void shutdown();
 struct SnapshotCapture {
   AuroraDepthSnapshotInfo info{};
   AuroraViewportPolicy viewportPolicy = AURORA_VIEWPORT_FIT;
+  // A VI display may scan only part of the physical EFB. Preserve the logical
+  // extent used by GX when this capture was recorded, before worker dispatch.
+  Vec2<uint32_t> efbExtent{};
 };
 
 AuroraDepthSnapshotId create_snapshot() noexcept;
@@ -32,7 +35,7 @@ bool snapshot_requested() noexcept;
 bool read_latest(uint16_t x, uint16_t y, uint32_t& z) noexcept;
 
 void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
-                           wgpu::Extent3D sourceSize, uint32_t msaaSamples) noexcept;
+                           wgpu::Extent3D sourceSize, uint32_t msaaSamples, const SnapshotCapture& capture) noexcept;
 void encode_tagged_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
                             wgpu::Extent3D sourceSize, uint32_t msaaSamples, const SnapshotCapture& capture) noexcept;
 void after_submit() noexcept;

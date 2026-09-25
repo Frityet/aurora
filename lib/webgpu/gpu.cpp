@@ -1133,6 +1133,9 @@ static void resize_swapchain_internal(uint32_t width, uint32_t height, uint32_t 
   if (!g_surface || !g_device || width == 0 || height == 0 || nativeHeight == 0 || nativeWidth == 0) {
     return;
   }
+  const auto efbSize = gx::efb_render_target_size(width, height);
+  width = efbSize.x;
+  height = efbSize.y;
   const bool sizeChanged = g_graphicsConfig.surfaceConfiguration.width != nativeWidth ||
                            g_graphicsConfig.surfaceConfiguration.height != nativeHeight ||
                            g_frameBuffer.size.width != width || g_frameBuffer.size.height != height;

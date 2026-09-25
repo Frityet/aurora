@@ -212,7 +212,8 @@ wgpu::BindGroupLayout create_bind_group_layout(const char* label) {
   return g_device.CreateBindGroupLayout(&descriptor);
 }
 
-Params make_params(wgpu::Extent3D sourceSize, Vec2<uint32_t> dstSize, AuroraViewportPolicy viewportPolicy) noexcept {
+Params make_params(wgpu::Extent3D sourceSize, Vec2<uint32_t> dstSize, AuroraViewportPolicy viewportPolicy,
+                   Vec2<uint32_t> efbExtent) noexcept {
   Params params{
       .dstWidth = dstSize.x,
       .dstHeight = dstSize.y,
@@ -225,6 +226,14 @@ Params make_params(wgpu::Extent3D sourceSize, Vec2<uint32_t> dstSize, AuroraView
   }
 
   if (dstSize.x == 0 || dstSize.y == 0 || sourceSize.width == 0 || sourceSize.height == 0) {
+    return params;
+  }
+
+  if (efbExtent.x != 0 && efbExtent.y != 0) {
+    // GX coordinates address the EFB directly. Unscanned rows are not a
+    // letterbox and must not be squeezed into the display-sized snapshot.
+    params.scaleX = static_cast<float>(sourceSize.width) / static_cast<float>(efbExtent.x);
+    params.scaleY = static_cast<float>(sourceSize.height) / static_cast<float>(efbExtent.y);
     return params;
   }
 
@@ -412,7 +421,7 @@ bool read_latest(uint16_t x, uint16_t y, uint32_t& z) noexcept {
 
 static void encode_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
                             wgpu::Extent3D sourceSize, uint32_t msaaSamples, Vec2<uint32_t> dstSize,
-                            AuroraViewportPolicy viewportPolicy, AuroraDepthSnapshotId snapshotId,
+                            AuroraViewportPolicy viewportPolicy, Vec2<uint32_t> efbExtent, AuroraDepthSnapshotId snapshotId,
                             uint64_t legacySequence) noexcept {
   ZoneScoped;
   const auto drop = [snapshotId] {
@@ -430,7 +439,7 @@ static void encode_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::Texture
     return;
   }
 
-  const Params params = make_params(sourceSize, dstSize, viewportPolicy);
+  const Params params = make_params(sourceSize, dstSize, viewportPolicy, efbExtent);
   wgpu::Buffer storageBuffer;
   wgpu::Buffer readbackBuffer;
   wgpu::Buffer paramsBuffer;
@@ -508,7 +517,7 @@ static void encode_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::Texture
 }
 
 void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
-                           wgpu::Extent3D sourceSize, uint32_t msaaSamples) noexcept {
+                           wgpu::Extent3D sourceSize, uint32_t msaaSamples, const SnapshotCapture& capture) noexcept {
   const aurora::allocation::HostAllocationScope hostAllocations;
   if (!g_enabled) {
     return;
@@ -526,13 +535,8 @@ void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureV
     legacySequence = g_nextLegacySequence++;
   }
 
-  auto dstSize = vi::configured_fb_size();
-  const auto viewportPolicy = gx::g_gxState.viewportPolicy;
-  if (viewportPolicy == AURORA_VIEWPORT_NATIVE) {
-    dstSize = {sourceSize.width, sourceSize.height};
-  }
-  encode_snapshot(cmd, depthView, sourceSize, msaaSamples, dstSize, viewportPolicy, AURORA_INVALID_DEPTH_SNAPSHOT_ID,
-                  legacySequence);
+  encode_snapshot(cmd, depthView, sourceSize, msaaSamples, {capture.info.width, capture.info.height},
+                  capture.viewportPolicy, capture.efbExtent, AURORA_INVALID_DEPTH_SNAPSHOT_ID, legacySequence);
 }
 
 void encode_tagged_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
@@ -543,7 +547,7 @@ void encode_tagged_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::Texture
     return;
   }
   encode_snapshot(cmd, depthView, sourceSize, msaaSamples, {capture.info.width, capture.info.height},
-                  capture.viewportPolicy, capture.info.id, 0);
+                  capture.viewportPolicy, capture.efbExtent, capture.info.id, 0);
 }
 
 void after_submit() noexcept {
@@ -612,6 +616,7 @@ AuroraDepthSnapshotId capture_efb() noexcept {
                .viewportNear = gx::g_gxState.logicalViewport.znear,
                .viewportFar = gx::g_gxState.logicalViewport.zfar},
       .viewportPolicy = policy,
+      .efbExtent = vi::configured_efb_size(),
   };
   if (!set_snapshot_info(id, capture.info)) return id;
   const auto read = [capture] {

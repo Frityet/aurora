@@ -18,10 +18,14 @@ int main() {
       {.samples = samples, .sample_rate = 4, .loop_end = 1, .pan = 0.0F},
       {.samples = samples, .sample_rate = 4, .loop_end = 1, .pan = 1.0F},
   };
+  spec.paused = true;
   const auto token = mixer.start_voice(spec);
+  std::array<float, 2> output{1.0F, 1.0F};
+  mixer.render_interleaved(output);
+  assert(output[0] == 0 && output[1] == 0 && mixer.voice_rendered_frames(token) == 0);
+  assert(mixer.voice_paused(token) == true);
   std::array<PcmLayerControls, 2> controls{{{0.25F, 1.0F}, {0.5F, 0.0F}}};
   assert(mixer.try_update_voice_controls(token, 2.0F, false, controls));
-  std::array<float, 2> output;
   mixer.render_interleaved(output);
   assert(std::abs(output[0] - 0.5F) < 0.000001F && std::abs(output[1] - 0.25F) < 0.000001F);
   assert(mixer.voice_pitch_multiplier(token) == 2.0F && mixer.active_voice_count() == 1);

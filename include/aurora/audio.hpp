@@ -75,6 +75,9 @@ struct PcmVoiceSpec {
   float pitch_multiplier = 1.0F;
   // Independent output routing gain; changing it preserves voice/stop ramps.
   float bus_gain_multiplier = 1.0F;
+  // Applied before publication to the audio callback, preserving the initial
+  // sample position when a voice is created while its owner is paused.
+  bool paused = false;
 };
 
 struct PcmLayerControls {

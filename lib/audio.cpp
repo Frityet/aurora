@@ -539,6 +539,7 @@ VoiceToken PcmAudioMixer::start_voice(const PcmVoiceSpec& spec) {
               .target = spec.gain_multiplier,
           },
       .bus_gain_multiplier = spec.bus_gain_multiplier,
+      .paused = spec.paused,
   };
   voice.layers.reserve(spec.layers.size());
   for (const auto& layer : spec.layers) {

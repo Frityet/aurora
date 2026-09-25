@@ -1,7 +1,11 @@
 #ifndef DOLPHIN_PPC_MATH_H
 #define DOLPHIN_PPC_MATH_H
 
+#ifdef __cplusplus
+#include <cmath>
+#else
 #include <math.h>
+#endif
 #include <stdint.h>
 
 // frsqrte matching courtesy of Geotale, with reference to https://achurch.org/cpu-tests/ppc750cl.s

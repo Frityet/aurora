@@ -1441,3 +1441,6 @@ void CharacterModel::draw_translucent(const RFLDrawCoreSetting& setting) const {
 }
 
 } // namespace aurora::rfl
+
+RFLCharModel::RFLCharModel() = default;
+RFLCharModel::~RFLCharModel() = default;

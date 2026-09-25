@@ -1,6 +1,9 @@
 #pragma once
 
 #include <revolution.h>
+#include <memory>
+
+namespace aurora::rfl { class CharacterModel; }
 
 constexpr u32 RFL_NAME_LEN = 10U;
 constexpr u32 RFL_CREATOR_LEN = 10U;
@@ -98,6 +101,10 @@ struct RFLCreateID {
 struct RFLMiddleDB;
 
 struct RFLCharModel {
+  RFLCharModel();
+  ~RFLCharModel();
+  RFLCharModel(const RFLCharModel&) = delete;
+  RFLCharModel& operator=(const RFLCharModel&) = delete;
   RFLDataSource source = RFLDataSource_Official;
   RFLMiddleDB* middleDB = nullptr;
   u16 index = 0U;
@@ -107,6 +114,8 @@ struct RFLCharModel {
   void* work = nullptr;
   Mtx matrix{};
   BOOL initialized = FALSE;
+  // Own native geometry, expression textures and GX resources with this model.
+  std::unique_ptr<aurora::rfl::CharacterModel> nativeModel;
 };
 
 enum RFLIconBGType { RFLIconBG_Favorite, RFLIconBG_Direct };

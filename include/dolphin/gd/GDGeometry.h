@@ -523,7 +523,7 @@ void GDSetLPSize(u8 lineWidth, u8 pointSize, GXTexOffset lineOffset, GXTexOffset
 void GDSetCoPlanar(u8 enable);
 
 static inline void GDBegin(GXPrimitive type, GXVtxFmt vtxfmt, u16 nverts) {
-    GDWrite_u8(vtxfmt | type);
+    GDWrite_u8((u8)vtxfmt | (u8)type);
     GDWrite_u16(nverts);
 }
 

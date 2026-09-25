@@ -176,6 +176,11 @@ static inline void GDPosition3f32(f32 x, f32 y, f32 z) {
     GDWrite_f32(z);
 }
 
+static inline void GDTexCoord2f32(f32 s, f32 t) {
+    GDWrite_f32(s);
+    GDWrite_f32(t);
+}
+
 static inline void GDColor4u8(u8 r, u8 g, u8 b, u8 a) {
     GDWrite_u8(r);
     GDWrite_u8(g);

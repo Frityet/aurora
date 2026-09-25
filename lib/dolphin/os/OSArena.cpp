@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <mutex>
@@ -20,8 +21,8 @@ static void* ArenaHigh;
 
 namespace {
 std::mutex mem2_mutex;
-std::uintptr_t mem2_begin;
-std::uintptr_t mem2_end;
+std::atomic<std::uintptr_t> mem2_begin;
+std::atomic<std::uintptr_t> mem2_end;
 std::uintptr_t mem2_low;
 std::uintptr_t mem2_high;
 }
@@ -29,11 +30,13 @@ std::uintptr_t mem2_high;
 void aurora::bind_mem2_arena(void* memory, std::size_t size) {
   const std::lock_guard lock(mem2_mutex);
   const auto begin = reinterpret_cast<std::uintptr_t>(memory);
-  if (mem2_begin != 0 || begin == 0 || (begin & 31) != 0 || size == 0 || size > UINTPTR_MAX - begin) {
+  if (mem2_begin.load(std::memory_order_relaxed) != 0 || begin == 0 || (begin & 31) != 0 || size == 0 || size > UINTPTR_MAX - begin) {
     aurora::throw_host_exception<std::invalid_argument>("MEM2 requires one aligned, caller-owned arena");
   }
-  mem2_begin = mem2_low = begin;
-  mem2_end = mem2_high = begin + size;
+  mem2_low = begin;
+  mem2_high = begin + size;
+  mem2_end.store(begin + size, std::memory_order_relaxed);
+  mem2_begin.store(begin, std::memory_order_release);
 }
 
 void aurora::unbind_mem2_arena(void* memory) {
@@ -41,16 +44,24 @@ void aurora::unbind_mem2_arena(void* memory) {
   std::size_t size;
   {
     const std::lock_guard lock(mem2_mutex);
-    if (reinterpret_cast<std::uintptr_t>(memory) != mem2_begin) {
+    if (reinterpret_cast<std::uintptr_t>(memory) != mem2_begin.load(std::memory_order_relaxed)) {
       aurora::throw_host_exception<std::logic_error>("MEM2 arena release does not match its owner");
     }
-    size = mem2_end - mem2_begin;
+    size = mem2_end.load(std::memory_order_relaxed) - mem2_begin.load(std::memory_order_relaxed);
   }
   // A callback may wait in an SDK queue and query these watermarks. Do not
   // keep the native arena mutex locked while waiting for callback retirement.
   release_aram_mem2_owner(memory, size);
   const std::lock_guard lock(mem2_mutex);
-  mem2_begin = mem2_end = mem2_low = mem2_high = 0;
+  mem2_begin.store(0, std::memory_order_release);
+  mem2_end.store(0, std::memory_order_relaxed);
+  mem2_low = mem2_high = 0;
+}
+
+bool aurora::contains_mem2_address(const void* memory) noexcept {
+  const auto address = reinterpret_cast<std::uintptr_t>(memory);
+  const auto begin = mem2_begin.load(std::memory_order_acquire);
+  return begin != 0 && begin <= address && address < mem2_end.load(std::memory_order_relaxed);
 }
 
 void* OSGetMEM2ArenaLo() {
@@ -64,7 +75,7 @@ void* OSGetMEM2ArenaHi() {
 void OSSetMEM2ArenaLo(void* memory) {
   const std::lock_guard lock(mem2_mutex);
   const auto value = reinterpret_cast<std::uintptr_t>(memory);
-  if (mem2_begin == 0 || value < mem2_begin || value > mem2_high) {
+  if (mem2_begin.load(std::memory_order_relaxed) == 0 || value < mem2_begin.load(std::memory_order_relaxed) || value > mem2_high) {
     aurora::throw_host_exception<std::out_of_range>("MEM2 low watermark exceeds its retained arena");
   }
   mem2_low = value;
@@ -72,7 +83,7 @@ void OSSetMEM2ArenaLo(void* memory) {
 void OSSetMEM2ArenaHi(void* memory) {
   const std::lock_guard lock(mem2_mutex);
   const auto value = reinterpret_cast<std::uintptr_t>(memory);
-  if (mem2_begin == 0 || value < mem2_low || value > mem2_end) {
+  if (mem2_begin.load(std::memory_order_relaxed) == 0 || value < mem2_low || value > mem2_end.load(std::memory_order_relaxed)) {
     aurora::throw_host_exception<std::out_of_range>("MEM2 high watermark exceeds its retained arena");
   }
   mem2_high = value;

@@ -22,7 +22,6 @@
 using _GXColor = GXColor;
 using _GXTexFmt = GXTexFmt;
 using _GXTlut = GXTlut;
-using _GXTlutFmt = GXTlutFmt;
 using _GXTexMapID = GXTexMapID;
 using _GXTexWrapMode = GXTexWrapMode;
 using _GXTexFilter = GXTexFilter;

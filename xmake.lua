@@ -194,6 +194,14 @@ target("aurora-nw4r")
     add_cxxflags("-ffp-contract=off", {tools = {"clang", "clangxx", "gcc", "gxx"}})
     add_cxxflags("/fp:strict", {tools = "cl"})
 
+target("aurora-msl")
+    set_kind("static")
+    add_includedirs("include", {public = true})
+    add_files("lib/MSL_C/printf.cpp")
+    add_headerfiles("include/(MSL_C/**.h)")
+    -- The provider uses native numeric conversions and must not force-include
+    -- the original-client MSL_C/stdio.h declaration boundary.
+
 target("aurora-base")
     set_kind("static")
     add_aurora_common_settings(true)

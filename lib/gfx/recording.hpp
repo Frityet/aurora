@@ -4,11 +4,16 @@
 #include "command_epoch.hpp"
 
 #include <cstddef>
+#include <mutex>
 #include <string_view>
 
 namespace aurora::gfx::detail {
 
 struct FramePacket;
+
+// Serialize recorder publication/retirement with the FIFO decoder. The render
+// worker must not take this lock: recording may wait for its queued work.
+std::unique_lock<std::recursive_mutex> lock_recording();
 
 struct RecordedFrame {
   FramePacket* packet;

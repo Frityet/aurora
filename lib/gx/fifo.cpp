@@ -187,6 +187,9 @@ void dispatch_breakpoint(uint64_t revision) noexcept {
 void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revision, std::memory_order order) noexcept {
   const aurora::allocation::HostAllocationScope hostAllocations;
   while (true) {
+    // Frame boundaries and ordinary decoded draws share recorder ownership.
+    // Control-register locks are nested inside this gate, never vice versa.
+    auto recording = gfx::detail::lock_recording();
     if (stream->revision.load(std::memory_order_acquire) != revision) return;
     const gfx::CommandEpoch epoch;
     if (sAcknowledgedEpoch.load(std::memory_order_acquire) != epoch.value) {
@@ -283,6 +286,9 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
         }
       }
     }
+    // Guest callbacks can sleep or issue GX commands. Release recorder
+    // ownership before dispatch; complete_draw takes its own bounded borrow.
+    recording.unlock();
     if (notifyBreakPoint) {
       dispatch_breakpoint(breakPointRevision);
       continue;

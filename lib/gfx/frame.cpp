@@ -658,6 +658,7 @@ bool begin_frame() {
     return false;
   }
 
+  const auto recording = lock_recording();
   auto& frame = g_framePackets[frameSlot];
   frame = {};
   frame.submission = std::make_shared<SubmissionState>();
@@ -681,14 +682,16 @@ bool begin_frame() {
     mapBuffer(frame.textureUpload, TextureUploadSize);
   }
 
-  begin_recording(frame, frameSlot);
-  begin_pipeline_frame();
+  // The decoder may submit a prefix as soon as recording is published. Its
+  // encoder creation must already precede that work in the renderer queue.
   render_worker::enqueue_begin_frame(frame.frameId, [frameSlot, epoch = frame.epoch] {
     if (!epoch.current()) return;
     constexpr wgpu::CommandEncoderDescriptor EncoderDescriptor{.label = "Redraw encoder"};
     g_framePackets[frameSlot].encoder = g_device.CreateCommandEncoder(&EncoderDescriptor);
     webgpu::gpu_prof::frame_begin(g_framePackets[frameSlot].encoder);
   });
+  begin_recording(frame, frameSlot);
+  begin_pipeline_frame();
   g_cpuFrameStart = PresentClock::now();
   return true;
 }
@@ -795,6 +798,7 @@ void detail::abandon_frame_packet(FramePacket& frame) {
 
 void end_frame(const EndFrameCallback& callback) {
   const aurora::allocation::HostAllocationScope hostAllocations;
+  const auto recording = lock_recording();
   ZoneScoped;
   if (g_cpuFrameStart.time_since_epoch().count() != 0) {
     const auto cpuFrameTime = PresentClock::now() - g_cpuFrameStart;

@@ -8,14 +8,18 @@
 #include "../lib/webgpu/map_future.hpp"
 
 #include <array>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -304,6 +308,49 @@ void prove_offscreen_token_order() {
   GXSetDrawSyncCallback(nullptr);
 }
 
+void prove_concurrent_frame_completion() {
+  std::mutex mutex;
+  std::condition_variable_any changed;
+  size_t requested = 0;
+  size_t completed = 0;
+  std::jthread completion([&](std::stop_token stop) {
+    std::unique_lock lock(mutex);
+    while (changed.wait(lock, stop, [&] { return requested != completed; })) {
+      const auto request = requested;
+      lock.unlock();
+      // A second completion producer can race frame publication/retirement.
+      // Only the main thread emits guest GX commands.
+      aurora::gfx::complete_draw();
+      lock.lock();
+      completed = request;
+      changed.notify_all();
+    }
+  });
+  const auto request_completion = [&] {
+    std::lock_guard lock(mutex);
+    ++requested;
+    changed.notify_all();
+  };
+  const auto wait_completion = [&] {
+    std::unique_lock lock(mutex);
+    require(changed.wait_for(lock, std::chrono::seconds(10), [&] { return completed == requested; }),
+            "concurrent GPU completion must retire without deadlocking frame ownership");
+  };
+  for (size_t frame = 0; frame < 12; ++frame) {
+    aurora_update();
+    request_completion();
+    require(aurora_begin_frame(), "concurrent completion must not prevent acquiring a frame");
+    wait_completion();
+    configure_draw_state();
+    draw_fullscreen(-0.375F, GXColor{232, 24, 24, 255});
+    GXCopyDisp(nullptr, GX_TRUE);
+    request_completion();
+    aurora_end_frame();
+    wait_completion();
+  }
+  aurora::gfx::synchronize();
+}
+
 void prove_gpu_continuation() {
   AuroraConfig config{};
   config.appName = "Aurora draw-sync pass continuation proof";
@@ -343,6 +390,7 @@ void prove_gpu_continuation() {
   prove_discarded_attachment_continuation();
   aurora_end_frame();
   aurora::gfx::synchronize();
+  prove_concurrent_frame_completion();
 }
 } // namespace
 
@@ -351,6 +399,7 @@ int main() {
     prove_gpu_continuation();
     std::cout << "[ok] offscreen draw-sync callback observes preceding EFB GPU depth\n";
     std::cout << "[ok] GPU completion preserves color, depth and stencil across final-discard pass splits\n";
+    std::cout << "[ok] 24 concurrent GPU completions survive 12 frame publication/retirement cycles\n";
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << "[fail] draw-sync pass continuation: " << exception.what() << '\n';

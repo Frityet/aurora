@@ -286,6 +286,10 @@ void end_frame() noexcept {
   ZoneScoped;
 #ifdef AURORA_ENABLE_GX
   gx::fifo::drain();
+  // Drain is a cursor snapshot, not decoder exclusion. Keep the final pass,
+  // recorder close and queued packet retirement in one ownership interval.
+  // Never wait for a FIFO drain while holding this gate.
+  const auto recording = gfx::detail::lock_recording();
   gx::fifo::end_frame();
   gx::texture::end_frame();
   gfx::finish();

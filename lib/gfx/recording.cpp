@@ -1,4 +1,5 @@
 #include <aurora/allocation.hpp>
+#include <aurora/guest_thread.hpp>
 
 #include "recording.hpp"
 
@@ -27,6 +28,7 @@
 #include <optional>
 #include <ranges>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -70,6 +72,7 @@ struct FrameRecorder {
 };
 
 FrameRecorder g_recorder;
+std::recursive_mutex g_recordingMutex;
 
 std::string pass_label(std::string_view kind) {
 #ifdef AURORA_GFX_DEBUG_GROUPS
@@ -533,8 +536,20 @@ void enqueue_pass(FramePacket& frame, uint32_t passIndex) {
 
 namespace detail {
 
+std::unique_lock<std::recursive_mutex> lock_recording() {
+  std::unique_lock lock{g_recordingMutex, std::defer_lock};
+  while (!lock.try_lock()) {
+    // A decoder callback can need the guest CPU. Restore CPU ownership before
+    // acquiring the recorder, never while already holding it.
+    const aurora::os::GuestThreadWaitScope wait;
+    std::this_thread::yield();
+  }
+  return lock;
+}
+
 void begin_recording(FramePacket& packet, size_t frameSlot) {
   const aurora::allocation::HostAllocationScope hostAllocations;
+  const auto recording = lock_recording();
   CHECK(!g_recorder.active(), "A recording session is already active");
   g_recorder.packet = &packet;
   g_recorder.frameSlot = frameSlot;
@@ -556,6 +571,7 @@ void begin_recording(FramePacket& packet, size_t frameSlot) {
 
 RecordedFrame end_recording() {
   const aurora::allocation::HostAllocationScope hostAllocations;
+  const auto recording = lock_recording();
   CHECK(g_recorder.active(), "No active recording session");
   AURORA_ASSERT(!g_recorder.inOffscreen, "end_frame called while offscreen rendering is active");
   AURORA_ASSERT(g_recorder.currentRenderPass == UINT32_MAX,
@@ -1069,6 +1085,7 @@ std::shared_ptr<SubmissionState> current_submission() {
 
 void abandon_recording() {
   const aurora::allocation::HostAllocationScope hostAllocations;
+  const auto recording = lock_recording();
   if (g_recorder.active()) {
     auto& frame = current_frame_packet();
     std::optional<RenderPass> continuation;
@@ -1097,6 +1114,7 @@ void abandon_recording() {
 
 void complete_draw() {
   const aurora::allocation::HostAllocationScope hostAllocations;
+  const auto recording = lock_recording();
   if (!g_recorder.active()) {
     gpu_synchronize();
     return;
@@ -1241,6 +1259,7 @@ PipelineRef pipeline_ref(const rmlui::PipelineConfig& config) {
 
 void finish() {
   ZoneScoped;
+  const auto recording = lock_recording();
   if (!g_recorder.active()) {
     return;
   }

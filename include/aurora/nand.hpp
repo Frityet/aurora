@@ -53,9 +53,36 @@ struct NandOperationTrace {
   u32 free_inodes = 0U;
 };
 
+// Optional application storage/serialization boundary. With no callbacks the
+// SDK operates on this filesystem's raw bytes. No game formats live here.
+struct NandIoCallbacks {
+  void* context = nullptr;
+  std::optional<std::vector<u8>> (*read)(void*, std::string_view) = nullptr;
+  void (*commit)(void*, std::string_view, std::span<const u8>, u8, u8) = nullptr;
+  s32 (*create)(void*, std::string_view, u8, u8) = nullptr;
+  s32 (*move)(void*, std::string_view, std::string_view) = nullptr;
+  bool (*erase)(void*, std::string_view) = nullptr;
+};
+
 class NandFileSystem final {
 public:
-  [[nodiscard]] static std::string title_data_root();
+  explicit NandFileSystem(std::string_view titleDataRoot = "/");
+  ~NandFileSystem();
+  NandFileSystem(const NandFileSystem&) = delete;
+  NandFileSystem& operator=(const NandFileSystem&) = delete;
+
+  // Storage transactions copy bytes, metadata, quotas and trace only. The
+  // clone is inactive; swapping leaves each owner's root, SDK activation,
+  // descriptors and callbacks in place. Serialize with other storage access.
+  [[nodiscard]] NandFileSystem clone_storage() const;
+  void swap_storage(NandFileSystem&) noexcept;
+
+  // The caller stops SDK workers before deactivation/destruction. Open writes
+  // publish only through NANDClose; abandoned descriptors are discarded.
+  void activate_sdk(NandIoCallbacks callbacks = {});
+  void deactivate_sdk() noexcept;
+  static void retire_thread_files(const OSThread*) noexcept;
+  [[nodiscard]] const std::string& title_data_root() const noexcept;
   [[nodiscard]] static std::string rfl_db_path();
   [[nodiscard]] static std::string file_name(std::string_view path);
 
@@ -75,6 +102,21 @@ public:
   void clear_trace();
 
 private:
+  friend struct NandSdkAccess;
+  struct StorageCopyTag {};
+  NandFileSystem(const NandFileSystem&, StorageCopyTag);
+  struct OpenFile {
+    std::string path;
+    std::vector<u8> bytes;
+    std::size_t position = 0;
+    u8 access = NAND_ACCESS_NONE;
+    bool dirty = false;
+    const OSThread* thread = nullptr;
+  };
+  std::string m_titleDataRoot = "/";
+  std::map<s32, OpenFile> m_openFiles;
+  NandIoCallbacks m_io;
+
   struct StoredFile {
     std::vector<std::uint8_t> bytes;
     u8 permission = 0x3CU;

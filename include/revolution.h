@@ -1,6 +1,7 @@
 #pragma once
 
 #include <revolution/types.h>
+#include <revolution/nand.h>
 
 #include <dolphin/dvd.h>
 #include <dolphin/gd.h>
@@ -83,25 +84,7 @@ constexpr u32 KPAD_BUTTON_RPT = 0x80000000;
 constexpr s32 WPAD_ERR_NONE = 0;
 constexpr s32 WPAD_ERR_NO_CONTROLLER = -1;
 
-constexpr s32 NAND_RESULT_OK = 0;
-constexpr s32 NAND_RESULT_ACCESS = -1;
-constexpr s32 NAND_RESULT_ALLOC_FAILED = -2;
-constexpr s32 NAND_RESULT_BUSY = -3;
-constexpr s32 NAND_RESULT_CORRUPT = -4;
-constexpr s32 NAND_RESULT_ECC_CRIT = -5;
-constexpr s32 NAND_RESULT_EXISTS = -6;
-constexpr s32 NAND_RESULT_INVALID = -8;
-constexpr s32 NAND_RESULT_MAXBLOCKS = -9;
-constexpr s32 NAND_RESULT_MAXFD = -10;
-constexpr s32 NAND_RESULT_MAXFILES = -11;
-constexpr s32 NAND_RESULT_NOEXISTS = -12;
-constexpr s32 NAND_RESULT_NOTEMPTY = -13;
-constexpr s32 NAND_RESULT_OPENFD = -14;
-constexpr s32 NAND_RESULT_AUTHENTICATION = -15;
-constexpr s32 NAND_RESULT_MAXDEPTH = -16;
-constexpr s32 NAND_RESULT_UNKNOWN = -64;
-constexpr s32 NAND_RESULT_FATAL_ERROR = -128;
-constexpr u32 NAND_MAX_PATH = 64U;
+
 
 struct KPADVec2 {
     f32 x;

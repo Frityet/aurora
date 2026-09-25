@@ -277,7 +277,7 @@ target("aurora-os")
               "lib/dolphin/AR.cpp", "lib/dolphin/PPCArch.cpp", "lib/nand.cpp", "lib/sysconf.cpp",
               "lib/dolphin/sc/SCSystem.cpp", "lib/dolphin/sc/SCapi.cpp", "lib/dolphin/sc/SCProductInfo.cpp")
     add_headerfiles("include/(aurora/nand.hpp)", "include/(aurora/sysconf.hpp)",
-                    "include/(aurora/system_config.hpp)", "include/(revolution/sc.h)")
+                    "include/(aurora/system_config.hpp)", "include/(revolution/sc.h)", "include/(revolution/nand.h)")
     add_deps("aurora-base")
 
 target("aurora-si")

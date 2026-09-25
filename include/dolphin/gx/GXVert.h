@@ -7,6 +7,9 @@
 extern "C" {
 #endif
 
+#ifndef TARGET_PC
+// Native callers must submit vertices through the GX entry points below.
+// Exposing the Wii FIFO lvalue on PC turns untranslated stores into crashes.
 #define GXFIFO_ADDR 0xCC008000
 
 typedef union {
@@ -26,6 +29,7 @@ typedef union {
 volatile PPCWGPipe GXWGFifo : GXFIFO_ADDR;
 #else
 #define GXWGFifo (*(volatile PPCWGPipe*)GXFIFO_ADDR)
+#endif
 #endif
 
 #ifdef TARGET_PC

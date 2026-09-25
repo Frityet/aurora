@@ -1,4 +1,5 @@
 #include <aurora/wpad.hpp>
+#include <revolution/sc.h>
 
 #include <algorithm>
 #include <cmath>
@@ -525,6 +526,15 @@ extern "C" s32 WPADControlSpeaker(s32 channel, u32 command, WPADCallback callbac
                      : command == 0 ? WPAD_ERR_NONE : WPAD_ERR_INVALID;
   if (callback) callback(channel, result);
   return result;
+}
+
+extern "C" BOOL WPADIsSpeakerEnabled(s32) {
+  // WPADControlSpeaker cannot enable a speaker on the current host devices.
+  return FALSE;
+}
+
+extern "C" u8 WPADGetSpeakerVolume(void) {
+  return SCGetWpadSpeakerVolume();
 }
 
 extern "C" void WPADStartFastSimpleSync() {}

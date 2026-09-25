@@ -113,6 +113,11 @@ void wake_worker() noexcept {
   sWorkerWake.notify_all();
 }
 
+void notify_completion(detail::CommandStream& stream) noexcept {
+  stream.completionSequence.fetch_add(1, std::memory_order_release);
+  stream.completionSequence.notify_all();
+}
+
 uint64_t fetch_cursor(const detail::CommandStream& stream) {
   // GXAbortFrame cleans the logical GP FIFO immediately. Renderer retirement
   // still runs on the worker, but discarded bytes no longer occupy ring space.
@@ -210,7 +215,7 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
       update_write_limit(*stream);
       sAcknowledgedEpoch.store(epoch.value, std::memory_order_release);
       sAcknowledgedEpoch.notify_all();
-      stream->processed.notify_all();
+      notify_completion(*stream);
       continue;
     }
     ProcessResult result{};
@@ -231,7 +236,7 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
         stream->decoded.store(decoded, std::memory_order_release);
         stream->processed.store(decoded, std::memory_order_release);
         update_write_limit(*stream);
-        stream->processed.notify_all();
+        notify_completion(*stream);
       }
       if (stream->displayListEpoch != epoch.value) {
         stream->displayList.clear();
@@ -303,7 +308,7 @@ void process_to(detail::CommandStream* stream, uint64_t target, uint64_t revisio
       if (!epoch.current() || stream->revision.load(std::memory_order_acquire) != revision) continue;
       if (stream->displayList.empty()) {
         stream->processed.store(decoded, order);
-        stream->processed.notify_all();
+        notify_completion(*stream);
       }
     }
   }
@@ -440,7 +445,9 @@ void program_gp_stream(detail::CommandStream& stream, uint32_t readOffset, uint3
   stream.abortFloor = 0;
   stream.displayList.clear();
   stream.displayListOffset = 0;
+  stream.storageRevision.fetch_add(1, std::memory_order_release);
   stream.revision.fetch_add(1, std::memory_order_release);
+  notify_completion(stream);
 }
 
 uint64_t bind_stream(bool cpu, void* base, uint32_t size, uint32_t readOffset, uint32_t writeOffset, uint32_t count) {
@@ -792,6 +799,7 @@ void drain() {
       sAcknowledgedEpoch.load(std::memory_order_acquire) == gfx::CommandEpoch{}.value) return;
 
   ZoneScoped;
+  const uint64_t storageRevision = stream->storageRevision.load(std::memory_order_acquire);
   const uint64_t target = stream->written.load(std::memory_order_acquire);
 
   switch (kProcessingMode) {
@@ -812,13 +820,15 @@ void drain() {
         acknowledged = sAcknowledgedEpoch.load(std::memory_order_acquire);
       } while (acknowledged != gfx::CommandEpoch{}.value);
     }
-    uint64_t processed = stream->processed.load(std::memory_order_acquire);
-    if (processed < target) {
+    auto completion = stream->completionSequence.load(std::memory_order_acquire);
+    if (stream->storageRevision.load(std::memory_order_acquire) == storageRevision &&
+        stream->processed.load(std::memory_order_acquire) < target) {
       const aurora::os::GuestThreadWaitScope wait;
-      do {
-        stream->processed.wait(processed, std::memory_order_acquire);
-        processed = stream->processed.load(std::memory_order_acquire);
-      } while (processed < target);
+      while (stream->storageRevision.load(std::memory_order_acquire) == storageRevision &&
+             stream->processed.load(std::memory_order_acquire) < target) {
+        stream->completionSequence.wait(completion, std::memory_order_acquire);
+        completion = stream->completionSequence.load(std::memory_order_acquire);
+      }
     }
     break;
   }
@@ -826,6 +836,10 @@ void drain() {
 
   {
     std::lock_guard lock{sBufferMutex};
+    // A GP reprogram can replace this cursor domain while the wait yields,
+    // including after completion but before guest CPU reacquisition. Never
+    // compact the replacement buffer using an old domain's absolute cursor.
+    if (stream->storageRevision.load(std::memory_order_acquire) != storageRevision) return;
     // Waiting yields guest CPU ownership. Another drain can finish and retire
     // a later prefix before this caller reacquires it; those bytes are already
     // gone, and the earlier snapshot must not move the storage cursor back.

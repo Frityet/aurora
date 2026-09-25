@@ -25,6 +25,10 @@ struct CommandStream {
   std::atomic<uint64_t> processed{0};
   std::atomic<uint64_t> abortFloor{0};
   std::atomic<uint64_t> revision{0};
+  // Reprogramming the GP replaces its cursor domain. Waiters distinguish this
+  // from CPU write-pointer changes, which preserve the buffered commands.
+  std::atomic<uint64_t> storageRevision{0};
+  std::atomic<uint64_t> completionSequence{0};
   std::atomic<uint64_t> writeLimit{UINT64_MAX};
   std::atomic<uint32_t> highWatermark{0};
   std::atomic<uint32_t> lowWatermark{0};

@@ -1014,6 +1014,80 @@ TEST_F(GXFifoBreakpointTest, OlderDrainCanResumeAfterANewerDrainRetiresItsStorag
   EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000019u);
 }
 
+TEST_F(GXFifoBreakpointTest, CompletedDrainCannotRetireReprogrammedStorage) {
+  std::future<void> olderDrain;
+  {
+    const aurora::os::GuestThreadExecutionScope execution;
+    GXSetBreakPtCallback(breakpoint_callback);
+    GXEnableBreakPt(write_pointer());
+    write_bp(0x40000011);
+    fifo::begin_frame();
+    olderDrain = std::async(std::launch::async, [] {
+      const aurora::os::GuestThreadExecutionScope execution;
+      fifo::drain();
+    });
+    {
+      const aurora::os::GuestThreadWaitScope wait;
+      ASSERT_TRUE(wait_until([] {
+        return fifo::cursor_snapshot().published == 5 && sBreakCount.load(std::memory_order_acquire) == 1;
+      }));
+    }
+    GXDisableBreakPt();
+    ASSERT_TRUE(wait_until([] { return fifo::cursor_snapshot().completed == 5; }));
+    // Let the completed drain reach guest CPU reacquisition while this thread
+    // retains ownership, then replace the ring's logical cursor/storage.
+    std::this_thread::sleep_for(10ms);
+    GXFifoObj ring;
+    ASSERT_TRUE(GXGetGPFifo(&ring));
+    auto* base = GXGetFifoBase(&ring);
+    GXInitFifoPtrs(&ring, base, base);
+    GXSetGPFifo(&ring);
+    GXSetCPUFifo(&ring);
+    write_nops(1);
+  }
+  ASSERT_EQ(olderDrain.wait_for(2s), std::future_status::ready);
+  olderDrain.get();
+  EXPECT_EQ(fifo::get_buffer_size(), 1u);
+  EXPECT_EQ(fifo::cursor_snapshot().written, 1u);
+  fifo::drain();
+  EXPECT_EQ(fifo::cursor_snapshot().completed, 1u);
+}
+
+TEST_F(GXFifoBreakpointTest, ReprogrammingWakesDrainWhoseOldCursorNeverCompleted) {
+  std::future<void> olderDrain;
+  {
+    const aurora::os::GuestThreadExecutionScope execution;
+    GXSetBreakPtCallback(breakpoint_callback);
+    GXEnableBreakPt(write_pointer());
+    write_bp(0x40000011);
+    fifo::begin_frame();
+    olderDrain = std::async(std::launch::async, [] {
+      const aurora::os::GuestThreadExecutionScope execution;
+      fifo::drain();
+    });
+    {
+      const aurora::os::GuestThreadWaitScope wait;
+      ASSERT_TRUE(wait_until([] {
+        return fifo::cursor_snapshot().published == 5 && sBreakCount.load(std::memory_order_acquire) == 1;
+      }));
+    }
+    // Neither incarnation advances processed past zero. Notification must
+    // identify replacement, rather than waiting for the discarded cursor.
+    GXFifoObj ring;
+    ASSERT_TRUE(GXGetGPFifo(&ring));
+    auto* base = GXGetFifoBase(&ring);
+    GXInitFifoPtrs(&ring, base, base);
+    GXSetGPFifo(&ring);
+    GXSetCPUFifo(&ring);
+  }
+  ASSERT_EQ(olderDrain.wait_for(2s), std::future_status::ready);
+  olderDrain.get();
+  EXPECT_EQ(fifo::cursor_snapshot().completed, 0u);
+  write_bp(0x40000019);
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000019u);
+}
+
 TEST_F(GXFifoBreakpointTest, AllCallbacksEnterWithInterruptsDisabledAndRestoreWorkerState) {
   GXSetDrawSyncCallback(interrupt_token_callback);
   GXSetDrawDoneCallback(interrupt_callback);

@@ -16,6 +16,7 @@ add_library(aurora_os STATIC lib/dolphin/os/OSInit.cpp
         lib/dolphin/os/OSAddress.cpp
         lib/dolphin/os/OSReport.cpp
         lib/dolphin/AR.cpp
+        lib/dolphin/PPCArch.cpp
         lib/nand.cpp
         lib/sysconf.cpp
         lib/dolphin/sc/SCSystem.cpp

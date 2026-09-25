@@ -6,6 +6,7 @@
 #include <aurora/exception.hpp>
 #include <aurora/guest_thread.hpp>
 
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <stdexcept>

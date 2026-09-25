@@ -57,6 +57,12 @@ void request_depth_snapshot(uint64_t id) noexcept { depth_peek::drop_snapshot(id
 
 // --- GPU resources (default-constructed, not used in tests) ---
 namespace aurora::gfx::detail {
+std::unique_lock<std::recursive_mutex> lock_recording() {
+  // These fixtures have no renderer or competing frame-recorder owner.
+  static std::recursive_mutex mutex;
+  return std::unique_lock{mutex};
+}
+
 Resources& resources() noexcept {
   static Resources resources;
   return resources;
@@ -78,6 +84,7 @@ wgpu::Instance g_instance;
 namespace aurora::gx {
 GXState g_gxState{};
 void set_viewport_policy(AuroraViewportPolicy policy) noexcept {}
+void refresh_scissor_and_viewport() noexcept {}
 } // namespace aurora::gx
 
 namespace aurora::vi {

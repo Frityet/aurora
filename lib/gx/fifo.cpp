@@ -826,9 +826,15 @@ void drain() {
 
   {
     std::lock_guard lock{sBufferMutex};
-    const uint32_t retired = static_cast<uint32_t>(target - stream->bufferBase);
-    AURORA_ASSERT(retired <= stream->size, "GX drain retired beyond its FIFO storage");
-    const uint32_t remaining = stream->size - retired;
+    // Waiting yields guest CPU ownership. Another drain can finish and retire
+    // a later prefix before this caller reacquires it; those bytes are already
+    // gone, and the earlier snapshot must not move the storage cursor back.
+    if (target <= stream->bufferBase) return;
+    const uint64_t retired = target - stream->bufferBase;
+    AURORA_ASSERT(retired <= stream->size,
+                  "GX drain retired beyond its FIFO storage (target {}, base {}, size {})",
+                  target, stream->bufferBase, stream->size);
+    const uint32_t remaining = stream->size - static_cast<uint32_t>(retired);
     std::memmove(stream->data, stream->data + retired, remaining);
     stream->bufferBase = target;
     stream->size = remaining;

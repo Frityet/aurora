@@ -975,6 +975,45 @@ TEST_F(GXFifoBreakpointTest, GuestUnregisterYieldsWhileCallbackSleepsOnAFullSdkQ
   EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000017u);
 }
 
+TEST_F(GXFifoBreakpointTest, OlderDrainCanResumeAfterANewerDrainRetiresItsStorage) {
+  std::future<void> olderDrain;
+  {
+    const aurora::os::GuestThreadExecutionScope execution;
+    GXSetBreakPtCallback(breakpoint_callback);
+    GXEnableBreakPt(write_pointer());
+    write_bp(0x40000011);
+    fifo::begin_frame();
+    olderDrain = std::async(std::launch::async, [] {
+      const aurora::os::GuestThreadExecutionScope execution;
+      fifo::drain();
+    });
+    {
+      const aurora::os::GuestThreadWaitScope wait;
+      ASSERT_TRUE(wait_until([] {
+        return fifo::cursor_snapshot().published == 5 && sBreakCount.load(std::memory_order_acquire) == 1;
+      }));
+    }
+
+    // The older drain now waits for its five-byte prefix. Keep guest CPU
+    // ownership while the GP consumes both writes: the older caller cannot
+    // return from its wait until this newer drain has compacted the storage.
+    write_bp(0x40000017);
+    GXDisableBreakPt();
+    fifo::publish();
+    ASSERT_TRUE(wait_until([] { return fifo::cursor_snapshot().completed == 10; }));
+    fifo::drain();
+    EXPECT_EQ(fifo::get_buffer_size(), 0u);
+  }
+  ASSERT_EQ(olderDrain.wait_for(2s), std::future_status::ready);
+  olderDrain.get();
+  EXPECT_EQ(fifo::get_buffer_size(), 0u);
+  EXPECT_EQ(fifo::cursor_snapshot().written, 10u);
+  EXPECT_EQ(fifo::cursor_snapshot().completed, 10u);
+  write_bp(0x40000019);
+  fifo::drain();
+  EXPECT_EQ(aurora::gx::g_gxState.bpRegCache[0x40], 0x40000019u);
+}
+
 TEST_F(GXFifoBreakpointTest, AllCallbacksEnterWithInterruptsDisabledAndRestoreWorkerState) {
   GXSetDrawSyncCallback(interrupt_token_callback);
   GXSetDrawDoneCallback(interrupt_callback);

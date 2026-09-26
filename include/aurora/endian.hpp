@@ -53,12 +53,12 @@ inline void write_u16(void* destination, std::uint16_t value) noexcept { write_b
 
 // Word-addressed CPU writes into a byte buffer must produce the same bytes as a
 // Wii store. No alignment is required, and no native-endian word aliases the data.
-template <std::unsigned_integral T>
+template <Scalar T>
 struct BigEndian {
   std::uint8_t bytes[sizeof(T)];
 
   operator T() const noexcept { return read_big<T>(bytes); }
-  BigEndian& operator=(T value) noexcept {
+  BigEndian& operator=(T value) noexcept requires std::unsigned_integral<T> {
     write_big(bytes, value);
     return *this;
   }

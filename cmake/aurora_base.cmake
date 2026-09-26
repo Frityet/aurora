@@ -1,10 +1,6 @@
 add_library(aurora_base STATIC
         lib/runtime_state.cpp
         lib/compat.cpp
-        lib/audio.cpp
-        lib/j_audio_sound_archive.cpp
-        lib/j_audio_stream.cpp
-        lib/j_audio_sound_params.cpp
         lib/device.cpp
         lib/device.hpp
         lib/input.cpp

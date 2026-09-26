@@ -205,12 +205,11 @@ target("aurora-msl")
 target("aurora-base")
     set_kind("static")
     add_aurora_common_settings(true)
-    add_files("lib/runtime_state.cpp", "lib/compat.cpp", "lib/audio.cpp", "lib/j_audio_sound_archive.cpp",
-              "lib/j_audio_stream.cpp", "lib/j_audio_dsp.cpp", "lib/audio_dma.cpp", "lib/j_audio_sound_params.cpp", "lib/device.cpp", "lib/input.cpp", "lib/logging.cpp",
+    add_files("lib/runtime_state.cpp", "lib/compat.cpp",
+              "lib/j_audio_dsp.cpp", "lib/audio_dma.cpp", "lib/device.cpp", "lib/input.cpp", "lib/logging.cpp",
               "lib/system_info.cpp", "lib/io.cpp", "lib/thread.cpp", "lib/time.cpp",
               "lib/rfl/ResourceArchive.cpp")
-    add_headerfiles("include/(aurora/audio.hpp)", "include/(aurora/j_audio_sound_archive.hpp)",
-                    "include/(aurora/j_audio_stream.hpp)", "include/(aurora/rfl/ResourceArchive.hpp)")
+    add_headerfiles("include/(aurora/rfl/ResourceArchive.hpp)")
     add_packages("fmt", "libsdl3", "xxhash", {public = true})
     add_packages("abseil", "sqlite3", "tracy")
     if is_plat("macosx", "iphoneos") then

@@ -12,10 +12,13 @@ public:
   explicit DmaAudioOutput(int sample_rate);
   ~DmaAudioOutput();
   void submit(std::span<const std::int16_t> stereo);
+  void set_gain(float gain);
+  std::uint64_t queued_frames() const;
   std::uint64_t submitted_frames() const;
   std::uint64_t nonzero_samples() const;
+
 private:
   struct Impl;
   std::unique_ptr<Impl> m_impl;
 };
-}
+} // namespace aurora::audio

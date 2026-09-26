@@ -11,7 +11,8 @@ struct DmaAudioOutput::Impl {
   std::uint64_t frames = 0;
   std::uint64_t nonzero = 0;
   ~Impl() {
-    if (stream) SDL_DestroyAudioStream(stream);
+    if (stream)
+      SDL_DestroyAudioStream(stream);
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
   }
 };
@@ -27,12 +28,23 @@ DmaAudioOutput::DmaAudioOutput(int sample_rate) : m_impl(std::make_unique<Impl>(
     aurora::throw_host_exception<std::runtime_error>(SDL_GetError());
 }
 DmaAudioOutput::~DmaAudioOutput() = default;
+void DmaAudioOutput::set_gain(float gain) {
+  if (!SDL_SetAudioStreamGain(m_impl->stream, gain))
+    aurora::throw_host_exception<std::runtime_error>(SDL_GetError());
+}
 void DmaAudioOutput::submit(std::span<const std::int16_t> stereo) {
-  if (stereo.size() % 2 || !SDL_PutAudioStreamData(m_impl->stream, stereo.data(), static_cast<int>(stereo.size_bytes())))
+  if (stereo.size() % 2 ||
+      !SDL_PutAudioStreamData(m_impl->stream, stereo.data(), static_cast<int>(stereo.size_bytes())))
     aurora::throw_host_exception<std::runtime_error>("Audio DMA submission failed: " + std::string(SDL_GetError()));
   m_impl->frames += stereo.size() / 2;
   m_impl->nonzero += std::ranges::count_if(stereo, [](auto sample) { return sample != 0; });
 }
+std::uint64_t DmaAudioOutput::queued_frames() const {
+  const int bytes = SDL_GetAudioStreamQueued(m_impl->stream);
+  if (bytes < 0)
+    aurora::throw_host_exception<std::runtime_error>(SDL_GetError());
+  return static_cast<std::uint64_t>(bytes) / (2 * sizeof(std::int16_t));
+}
 std::uint64_t DmaAudioOutput::submitted_frames() const { return m_impl->frames; }
 std::uint64_t DmaAudioOutput::nonzero_samples() const { return m_impl->nonzero; }
-}
+} // namespace aurora::audio

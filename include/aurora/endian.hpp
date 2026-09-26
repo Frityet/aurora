@@ -64,6 +64,12 @@ struct BigEndian {
   }
 };
 
+template <Scalar T>
+struct alignas(T) AlignedBigEndian {
+  std::uint8_t bytes[sizeof(T)];
+  operator T() const noexcept { return read_big<T>(bytes); }
+};
+
 static_assert(sizeof(BigEndian<std::uint16_t>) == sizeof(std::uint16_t));
 static_assert(alignof(BigEndian<std::uint16_t>) == 1);
 } // namespace aurora::endian

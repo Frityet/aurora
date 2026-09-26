@@ -168,6 +168,8 @@ void WPADSetAutoSamplingBuf(s32 channel, void *buffer, u32 length);
 void WPADControlMotor(s32 channel, u32 command);
 BOOL WPADSupportsRumble(s32 channel);
 s32 WPADControlSpeaker(s32 channel, u32 command, WPADCallback callback);
+BOOL WPADCanSendStreamData(s32 channel);
+s32 WPADSendStreamData(s32 channel, void* data, u16 size);
 BOOL WPADIsSpeakerEnabled(s32 channel);
 u8 WPADGetSpeakerVolume(void);
 void WPADStartFastSimpleSync(void);

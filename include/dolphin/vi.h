@@ -37,6 +37,7 @@ void* VIGetNextFrameBuffer(void);
 void VISetNextFrameBuffer(void *fb);
 void VISetBlack(BOOL black);
 BOOL VIEnableDimming(BOOL enabled);
+u32 VIGetDimmingCount(void);
 BOOL VIResetDimmingCount(void);
 
 VIRetraceCallback VISetPreRetraceCallback(VIRetraceCallback cb);

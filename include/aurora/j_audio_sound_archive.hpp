@@ -87,6 +87,9 @@ public:
   // Validated native-endian BSTN words; offsets and string bytes remain resource-relative.
   // The returned owner must outlive SDK tables borrowing its data. No playback device is opened.
   [[nodiscard]] std::vector<std::uint8_t> native_sound_name_table() const;
+  // Native BST/BSTN/BSC tables for the original SDK owners. BMS bytecode,
+  // IBNK/WSYS records and BAA commands retain their encoded byte order.
+  [[nodiscard]] std::vector<std::uint8_t> native_runtime_archive() const;
   [[nodiscard]] std::optional<std::uint32_t> find_sound_id(std::string_view name) const;
   [[nodiscard]] std::optional<JAudioSoundMetadata> resolve_sound(std::string_view name) const;
   [[nodiscard]] JAudioSoundMetadata resolve_sound(std::uint32_t sound_id) const;

@@ -33,6 +33,7 @@ BOOL sRequestedBlack = TRUE;
 BOOL sNextBlack = TRUE;
 BOOL sBlack = TRUE;
 BOOL sDimmingEnabled = TRUE;
+u32 sDimmingIdleCount = 0;
 bool sFlushPending = false;
 bool sInitialized = false;
 OSThreadQueue sRetraceQueue{};
@@ -127,6 +128,8 @@ private:
         if (sInitialized) {
           const BOOL enabled = OSDisableInterrupts();
           ++sRetraceCount;
+          if (sDimmingEnabled && sDimmingIdleCount != UINT32_MAX) ++sDimmingIdleCount;
+          else if (!sDimmingEnabled) sDimmingIdleCount = 0;
           invoke(sPreCallback);
           if (sFlushPending) {
             sCurrentFrameBuffer = sNextFrameBuffer;
@@ -237,6 +240,7 @@ void VIInit() {
   sRequestedFrameBuffer = sNextFrameBuffer = sCurrentFrameBuffer = nullptr;
   sRequestedBlack = sNextBlack = sBlack = TRUE;
   sDimmingEnabled = TRUE;
+  sDimmingIdleCount = 0;
   sPreCallback = {};
   sPostCallback = {};
   sFlushPending = false;
@@ -328,7 +332,16 @@ BOOL VIEnableDimming(BOOL enabled) {
   aurora::vi::sDimmingEnabled = enabled != FALSE ? TRUE : FALSE;
   return previous;
 }
-BOOL VIResetDimmingCount() { return TRUE; }
+u32 VIGetDimmingCount() {
+  const aurora::os::GuestThreadExecutionScope execution;
+  const u32 threshold = VIGetTvFormat() == VI_PAL ? 15000 : 18000;
+  return threshold - std::min(threshold, aurora::vi::sDimmingIdleCount);
+}
+BOOL VIResetDimmingCount() {
+  const aurora::os::GuestThreadExecutionScope execution;
+  aurora::vi::sDimmingIdleCount = 0;
+  return TRUE;
+}
 VIRetraceCallback VISetPreRetraceCallback(VIRetraceCallback cb) { return aurora::vi::replace_callback(aurora::vi::sPreCallback, cb); }
 VIRetraceCallback VISetPostRetraceCallback(VIRetraceCallback cb) { return aurora::vi::replace_callback(aurora::vi::sPostCallback, cb); }
 }

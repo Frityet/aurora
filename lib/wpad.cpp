@@ -1,3 +1,4 @@
+#include <dolphin/vi.h>
 #include <aurora/wpad.hpp>
 #include <revolution/sc.h>
 
@@ -484,6 +485,9 @@ extern "C" s32 KPADRead(s32 channel, KPADStatus sampling_bufs[], u32 length) {
   sampling_bufs[0].dist = state->distance_to_display;
   sampling_bufs[0].wpad_err = WPAD_ERR_NONE;
   sampling_bufs[0].dpd_valid_fg = state->pointer.valid ? 2 : 0;
+  if (sampling_bufs[0].hold || sampling_bufs[0].release || sampling_bufs[0].acc_speed > 0.01f ||
+      sampling_bufs[0].speed > 0.001f || std::hypot(state->sub_stick.x, state->sub_stick.y) > 0.01f)
+    VIResetDimmingCount();
   return 1;
 }
 
@@ -586,4 +590,11 @@ extern "C" void KPADSetBtnRepeat(s32 channel, f32 delay, f32 pulse) {
 }
 extern "C" void KPADSetSensorHeight(s32 channel, f32 height) {
   aurora::wpad_service().set_sensor_height(channel, height);
+}
+
+extern "C" BOOL WPADCanSendStreamData(s32) {
+  return FALSE; // Current native devices do not expose a remote speaker.
+}
+extern "C" s32 WPADSendStreamData(s32 channel, void*, u16) {
+  return aurora::wpad_service().is_connected(channel) ? WPAD_ERR_INVALID : WPAD_ERR_NO_CONTROLLER;
 }

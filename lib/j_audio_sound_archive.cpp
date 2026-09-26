@@ -347,6 +347,73 @@ struct JAudioSoundArchive::Impl {
     return result;
   }
 
+  [[nodiscard]] std::vector<std::uint8_t> native_runtime_archive() const {
+    auto result = baa;
+    const auto names = native_sound_name_table();
+    std::copy(names.begin(), names.end(), result.begin() + bstn.offset);
+    for (const auto segment : {bst, bsc}) {
+      const auto reader = Reader{baa, segment.offset, segment.size};
+      const auto base = segment.offset;
+      const auto word = [&](std::size_t offset) {
+        const auto value = reader.u32(offset, "truncated runtime table word");
+        std::memcpy(result.data() + offset, &value, sizeof(value));
+        return value;
+      };
+      const auto half = [&](std::size_t offset) {
+        const auto value = reader.u16(offset, "truncated runtime table halfword");
+        std::memcpy(result.data() + offset, &value, sizeof(value));
+        return value;
+      };
+      if (base == bsc.offset) {
+        const auto groups = half(base + 2);
+        word(base + 4);
+        require_table(reader, base + 8, groups, 4, "truncated BSC groups");
+        for (std::size_t i = 0; i < groups; ++i) {
+          const auto group = relative(base, word(base + 8 + i * 4), reader, "invalid BSC group");
+          const auto count = word(group);
+          require_table(reader, group + 4, count, 4, "truncated BSC sounds");
+          for (std::size_t j = 0; j < count; ++j) {
+            const auto offset = word(group + 4 + j * 4);
+            if (offset) reader.require(base + offset, 1, "BSC sound outside collection");
+          }
+        }
+        continue;
+      }
+      word(base); word(base + 4); word(base + 8);
+      const auto root = relative(base, word(base + 12), reader, "invalid BST root");
+      const auto sections = word(root);
+      require_table(reader, root + 4, sections, 4, "truncated BST sections");
+      for (std::size_t i = 0; i < sections; ++i) {
+        const auto sectionOffset = word(root + 4 + i * 4);
+        if (!sectionOffset) continue;
+        const auto section = relative(base, sectionOffset, reader, "invalid BST section");
+        const auto groups = word(section);
+        require_table(reader, section + 4, groups, 4, "truncated BST groups");
+        for (std::size_t j = 0; j < groups; ++j) {
+          const auto groupOffset = word(section + 4 + j * 4);
+          if (!groupOffset) continue;
+          const auto group = relative(base, groupOffset, reader, "invalid BST group");
+          const auto count = word(group);
+          word(group + 4);
+          require_table(reader, group + 8, count, 4, "truncated BST items");
+          for (std::size_t k = 0; k < count; ++k) {
+            const auto entry = word(group + 8 + k * 4);
+            if (!(entry & 0xffffffU)) continue;
+            const auto item = relative(base, entry & 0xffffffU, reader, "invalid BST item");
+            half(item + 2);
+            switch ((entry >> 24) & 0xf0) {
+            case 0x50: half(item + 4); break;
+            case 0x60: half(item + 4); half(item + 6); break;
+            case 0x70: word(item + 4); break;
+            default: malformed("unsupported BST runtime item type");
+            }
+          }
+        }
+      }
+    }
+    return result;
+  }
+
   [[nodiscard]] std::optional<std::uint32_t> find_sound_id(std::string_view wanted) const {
     const auto reader = Reader{baa, bstn.offset, bstn.size};
     const auto base = bstn.offset;
@@ -1641,6 +1708,10 @@ JAudioSoundArchive& JAudioSoundArchive::operator=(JAudioSoundArchive&&) noexcept
 
 std::vector<std::uint8_t> JAudioSoundArchive::native_sound_name_table() const {
   return _impl->native_sound_name_table();
+}
+
+std::vector<std::uint8_t> JAudioSoundArchive::native_runtime_archive() const {
+  return _impl->native_runtime_archive();
 }
 
 std::optional<std::uint32_t> JAudioSoundArchive::find_sound_id(std::string_view name) const {

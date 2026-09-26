@@ -22,10 +22,10 @@ typedef u32 OSTick;
 #define OS_TICKS_TO_NSEC(x) (((x) * 8000) / (OS_TIME_SPEED / 125000))
 
 // Real time -> OS time
-#define OS_SEC_TO_TICKS(x) ((x) * (OS_TIME_SPEED))
-#define OS_MSEC_TO_TICKS(x) ((x) * (OS_TIME_SPEED / 1000))
-#define OS_USEC_TO_TICKS(x) ((x) * (OS_TIME_SPEED / 125000) / 8)
-#define OS_NSEC_TO_TICKS(x) ((x) * (OS_TIME_SPEED / 125000) / 8000)
+#define OS_SEC_TO_TICKS(x) ((OSTime)(x) * (OS_TIME_SPEED))
+#define OS_MSEC_TO_TICKS(x) ((OSTime)(x) * (OS_TIME_SPEED / 1000))
+#define OS_USEC_TO_TICKS(x) ((OSTime)(x) * (OS_TIME_SPEED / 125000) / 8)
+#define OS_NSEC_TO_TICKS(x) ((OSTime)(x) * (OS_TIME_SPEED / 125000) / 8000)
 
 #define USEC_MAX 1000
 #define MSEC_MAX 1000

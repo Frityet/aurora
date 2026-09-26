@@ -1,3 +1,4 @@
+#include <revolution/sc.h>
 #include "internal.hpp"
 
 #include <dolphin/os.h>
@@ -15,4 +16,8 @@ void OSInit() {
   AuroraFillBootInfo();
   AuroraInitClock();
   AuroraInitArena();
+}
+
+extern "C" u32 OSGetSoundMode(void) {
+  return SCGetSoundMode() == SC_SOUND_MODE_MONO ? 0 : 1;
 }

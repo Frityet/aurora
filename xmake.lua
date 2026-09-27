@@ -214,6 +214,8 @@ target("aurora-base")
     if is_plat("macosx", "iphoneos") then
         add_files("lib/system_info_mac.mm")
         add_frameworks("Foundation")
+    elseif is_plat("windows", "mingw", "msys") then
+        add_syslinks("dxgi", "wbemuuid")
     end
 
 target("aurora-platform")

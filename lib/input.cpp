@@ -5,7 +5,6 @@
 
 #include "magic_enum.hpp"
 
-#include <SDL3/SDL_haptic.h>
 #include <SDL3/SDL.h>
 #include <absl/container/flat_hash_map.h>
 #include <algorithm>
@@ -450,9 +449,9 @@ void persist_controller_for_player(uint32_t player, const GameController* contro
 }
 
 void initialize() noexcept {
-  /* Make sure we initialize everything input related now, this will automatically add all of the connected controllers
-   * as expected */
-  AURORA_ASSERT(SDL_Init(SDL_INIT_HAPTIC | SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD | SDL_INIT_SENSOR),
+  // Gamepad rumble uses the joystick subsystem; the separate haptic-device
+  // API is unused and must not make keyboard/mouse startup depend on it.
+  AURORA_ASSERT(SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD | SDL_INIT_SENSOR),
                 "Failed to initialize SDL subsystems: {}", SDL_GetError());
 }
 

@@ -116,6 +116,7 @@ private:
   };
   std::string m_titleDataRoot = "/";
   std::map<s32, OpenFile> m_openFiles;
+  std::map<std::string, NandFileMetadata, std::less<>> m_directories;
   NandIoCallbacks m_io;
 
   struct StoredFile {

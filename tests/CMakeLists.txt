@@ -4,6 +4,10 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/AuroraCopyRuntimeDLLs.cmake)
 
 set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
 
+add_executable(pointer_slots_test pointer_slots_test.cpp)
+target_include_directories(pointer_slots_test PRIVATE ../include)
+add_test(NAME pointer_slots COMMAND pointer_slots_test)
+
 add_executable(functional_test functional_test.cpp)
 target_include_directories(functional_test PRIVATE ../include)
 add_test(NAME functional COMMAND functional_test)

@@ -32,7 +32,7 @@ NandFileSystem::NandFileSystem(std::string_view root) {
 NandFileSystem::~NandFileSystem() { deactivate_sdk(); }
 
 NandFileSystem::NandFileSystem(const NandFileSystem& source, StorageCopyTag)
-: m_titleDataRoot(source.m_titleDataRoot), m_files(source.m_files),
+: m_titleDataRoot(source.m_titleDataRoot), m_directories(source.m_directories), m_files(source.m_files),
   m_quotaBlocks(source.m_quotaBlocks), m_quotaInodes(source.m_quotaInodes), m_trace(source.m_trace) {}
 
 NandFileSystem NandFileSystem::clone_storage() const {
@@ -42,6 +42,7 @@ NandFileSystem NandFileSystem::clone_storage() const {
 
 void NandFileSystem::swap_storage(NandFileSystem& other) noexcept {
   m_files.swap(other.m_files);
+  m_directories.swap(other.m_directories);
   std::swap(m_quotaBlocks, other.m_quotaBlocks);
   std::swap(m_quotaInodes, other.m_quotaInodes);
   m_trace.swap(other.m_trace);
@@ -198,6 +199,9 @@ std::size_t NandFileSystem::erase_subtree(std::string_view path) {
     it = m_files.erase(it);
     ++removed;
   }
+  removed += std::erase_if(m_directories, [&](const auto& entry) {
+    return entry.first == normalized || entry.first.starts_with(prefix);
+  });
   return removed;
 }
 
@@ -256,7 +260,8 @@ std::optional<NandFileMetadata> NandFileSystem::metadata(std::string_view path) 
   const auto normalized = normalize_path(path);
   const auto it = m_files.find(normalized);
   if (it == m_files.end()) {
-    return std::nullopt;
+    const auto directory = m_directories.find(normalized);
+    return directory == m_directories.end() ? std::nullopt : std::optional(directory->second);
   }
 
   return NandFileMetadata{
@@ -277,6 +282,9 @@ NandUsage NandFileSystem::usage(std::string_view root) const {
       ++result.inodes;
     }
   }
+  for (const auto& [path, directory] : m_directories) {
+    if (path == normalized || path.starts_with(prefix)) ++result.inodes;
+  }
   return result;
 }
 
@@ -284,6 +292,7 @@ std::span<const NandOperationTrace> NandFileSystem::trace() const { return m_tra
 
 void NandFileSystem::clear() {
   m_files.clear();
+  m_directories.clear();
   clear_trace();
 }
 
@@ -299,7 +308,7 @@ u32 NandFileSystem::used_blocks() const {
   return blocks;
 }
 
-u32 NandFileSystem::used_inodes() const { return static_cast<u32>(m_files.size()); }
+u32 NandFileSystem::used_inodes() const { return static_cast<u32>(m_files.size() + m_directories.size()); }
 
 } // namespace aurora
 
@@ -309,10 +318,26 @@ namespace aurora {
 struct NandSdkAccess {
   using OpenFile = NandFileSystem::OpenFile;
   static auto& files(NandFileSystem& fs) { return fs.m_openFiles; }
+  static bool directory(NandFileSystem& fs, std::string_view path) {
+    const auto normalized = fs.normalize_path(path);
+    if (normalized == "/" || fs.m_directories.contains(normalized)) return true;
+    const auto prefix = normalized + '/';
+    const auto entry = fs.m_files.lower_bound(prefix);
+    return entry != fs.m_files.end() && entry->first.starts_with(prefix);
+  }
+  static s32 create_directory(NandFileSystem& fs, std::string_view path, u8 permission, u8 attribute) {
+    const auto normalized = fs.normalize_path(path);
+    if (directory(fs, normalized) || metadata(fs, normalized)) return NAND_RESULT_EXISTS;
+    const auto capacity = fs.check(0, 1);
+    if (capacity.result != NAND_RESULT_OK) return capacity.result;
+    fs.m_directories.emplace(normalized, NandFileMetadata{normalized, permission, attribute, 0});
+    return NAND_RESULT_OK;
+  }
   static std::optional<std::vector<u8>> read(NandFileSystem& fs, std::string_view path) {
     return fs.m_io.read ? fs.m_io.read(fs.m_io.context, path) : fs.read_file(path);
   }
   static s32 create(NandFileSystem& fs, std::string_view path, u8 permission, u8 attribute) {
+    if (directory(fs, path)) return NAND_RESULT_EXISTS;
     if (fs.m_io.create) return fs.m_io.create(fs.m_io.context, path, permission, attribute);
     if (fs.exists(path)) return NAND_RESULT_EXISTS;
     const auto capacity = fs.check(0, 1);
@@ -334,6 +359,19 @@ struct NandSdkAccess {
   }
   static s32 move(NandFileSystem& fs, std::string_view from, std::string_view to) {
     return fs.m_io.move ? fs.m_io.move(fs.m_io.context, from, to) : fs.rename(from, to);
+  }
+  static s32 delete_path(NandFileSystem& fs, std::string_view path) {
+    const auto normalized = fs.normalize_path(path);
+    if (directory(fs, normalized)) {
+      const auto prefix = normalized == "/" ? normalized : normalized + '/';
+      const auto file = fs.m_files.lower_bound(prefix);
+      const auto child = fs.m_directories.lower_bound(prefix);
+      if ((file != fs.m_files.end() && file->first.starts_with(prefix)) ||
+          (child != fs.m_directories.end() && child->first.starts_with(prefix))) return NAND_RESULT_NOTEMPTY;
+      if (normalized == "/") return NAND_RESULT_ACCESS;
+      return fs.m_directories.erase(normalized) ? NAND_RESULT_OK : NAND_RESULT_NOEXISTS;
+    }
+    return erase(fs, path) ? NAND_RESULT_OK : NAND_RESULT_NOEXISTS;
   }
   static bool erase(NandFileSystem& fs, std::string_view path) {
     return fs.m_io.erase ? fs.m_io.erase(fs.m_io.context, path) : fs.erase(path);
@@ -527,6 +565,43 @@ extern "C" {
       return NAND_RESULT_OK;
     }
 
+    s32 NANDPrivateCreateDirAsync(const char* path, u8 permission, u8 attribute, NANDCallback callback,
+                                  NANDCommandBlock* block) {
+      bool accepted = false;
+      const auto result = invoke([&] {
+        if (!valid_path(path) || !block || !callback || (permission & ~0x3fU) || !s_activeNand)
+          return s32{!s_activeNand ? NAND_RESULT_FATAL_ERROR : NAND_RESULT_INVALID};
+        const auto normalized = active_nand().normalize_path(path);
+        if (normalized.size() >= NAND_MAX_PATH) return s32{NAND_RESULT_INVALID};
+        accepted = true;
+        block->callback = reinterpret_cast<void*>(callback);
+        std::memset(block->absPath, 0, sizeof(block->absPath));
+        std::memcpy(block->absPath, normalized.c_str(), normalized.size() + 1);
+        return Access::create_directory(active_nand(), normalized, permission, attribute);
+      });
+      if (!accepted) return result;
+      complete_async(callback, block, result);
+      return NAND_RESULT_OK;
+    }
+
+    s32 NANDPrivateDeleteAsync(const char* path, NANDCallback callback, NANDCommandBlock* block) {
+      if (!valid_path(path) || !callback || !block) return NAND_RESULT_INVALID;
+      block->callback = reinterpret_cast<void*>(callback);
+      const auto result = NANDDelete(path);
+      complete_async(callback, block, result);
+      return NAND_RESULT_OK;
+    }
+
+    s32 NANDWriteAsync(NANDFileInfo* info, const void* source, u32 size, NANDCallback callback,
+                       NANDCommandBlock* block) {
+      if (!info || !block || !callback || (!source && size)) return NAND_RESULT_INVALID;
+      block->callback = reinterpret_cast<void*>(callback);
+      block->fileInfo = info;
+      const auto result = NANDWrite(info, source, size);
+      complete_async(callback, block, result);
+      return NAND_RESULT_OK;
+    }
+
     s32 NANDOpen(const char* path, NANDFileInfo* info, u8 access) {
         return invoke([&] {
             if (!valid_path(path) || !info || access < NAND_ACCESS_READ || access > NAND_ACCESS_RW) return s32{NAND_RESULT_INVALID};
@@ -534,6 +609,7 @@ extern "C" {
             const auto normalized = nand.normalize_path(path);
             if (normalized.size() >= NAND_MAX_PATH) return s32{NAND_RESULT_INVALID};
             if (is_open(normalized)) return s32{NAND_RESULT_OPENFD};
+            if (Access::directory(nand, normalized)) return s32{NAND_RESULT_INVALID};
             const auto metadata = Access::metadata(nand, normalized);
             if (metadata && (((access & NAND_ACCESS_READ) && !(metadata->permission & NAND_PERM_RUSR)) ||
                              ((access & NAND_ACCESS_WRITE) && !(metadata->permission & NAND_PERM_WUSR)))) return s32{NAND_RESULT_ACCESS};
@@ -869,7 +945,7 @@ extern "C" {
             const auto normalized = nand.normalize_path(path);
             if (normalized.size() >= NAND_MAX_PATH) return s32{NAND_RESULT_INVALID};
             if (is_open(normalized)) return s32{NAND_RESULT_OPENFD};
-            return s32{Access::erase(nand, path) ? NAND_RESULT_OK : NAND_RESULT_NOEXISTS};
+            return Access::delete_path(nand, path);
         });
     }
 

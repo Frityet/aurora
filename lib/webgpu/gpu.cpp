@@ -63,6 +63,7 @@ bool g_astcTexturesSupported = false;
 bool g_textureComponentSwizzleSupported = false;
 static std::atomic_bool g_initialized = false;
 static std::atomic_bool g_vsyncEnabled = true;
+static std::atomic<uint64_t> g_lastPresentSourceSize{(uint64_t{640} << 32) | 480};
 
 namespace {
 
@@ -370,6 +371,16 @@ Viewport calculate_present_viewport(uint32_t surface_width, uint32_t surface_hei
       .znear = 0.f,
       .zfar = 1.f,
   };
+}
+
+void set_last_present_source_size(uint32_t width, uint32_t height) noexcept {
+  if (width != 0 && height != 0)
+    g_lastPresentSourceSize.store((uint64_t{width} << 32) | height, std::memory_order_release);
+}
+
+Vec2<uint32_t> last_present_source_size() noexcept {
+  const auto size = g_lastPresentSourceSize.load(std::memory_order_acquire);
+  return {static_cast<uint32_t>(size >> 32), static_cast<uint32_t>(size)};
 }
 
 static TextureWithSampler create_depth_texture(uint32_t width, uint32_t height) {

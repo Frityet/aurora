@@ -201,6 +201,13 @@ void GXAuroraReleaseDepthSnapshot(AuroraDepthSnapshotId id);
 void AuroraSetViewportPolicy(AuroraViewportPolicy policy);
 
 /**
+ * Returns the normalized presentation rectangle in client-window coordinates.
+ * When VI aspect lock is active this is the centered fitted rectangle; otherwise
+ * it is the full client area used by the default stretch presentation path.
+ */
+void AuroraGetPresentationViewport(f32* left, f32* top, f32* width, f32* height);
+
+/**
  * Retrieves the current content framebuffer size.
  */
 void AuroraGetRenderSize(u32* width, u32* height);

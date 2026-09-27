@@ -44,6 +44,7 @@ wgpu::BindGroupLayout sSamplerBindGroupLayout;
 wgpu::PipelineLayout sPipelineLayout;
 
 std::atomic<int> sPendingViewportPolicy{-1};
+std::atomic<AuroraViewportPolicy> sViewportPolicy{AURORA_VIEWPORT_FIT};
 
 template <typename T>
 T round_away_from_zero(float value) noexcept {
@@ -213,14 +214,18 @@ wgpu::PrimitiveState to_primitive_state(GXCullMode gx_cullMode) {
 } // namespace
 
 void set_viewport_policy(AuroraViewportPolicy policy) noexcept {
+  sViewportPolicy.store(policy, std::memory_order_release);
   sPendingViewportPolicy.store(policy, std::memory_order_release);
 }
+
+AuroraViewportPolicy viewport_policy() noexcept { return sViewportPolicy.load(std::memory_order_acquire); }
 
 void update() noexcept {
   if (const int pending = sPendingViewportPolicy.exchange(-1, std::memory_order_acq_rel); pending != -1) {
     const auto policy = static_cast<AuroraViewportPolicy>(pending);
     const bool changed = policy != g_gxState.viewportPolicy;
     g_gxState.viewportPolicy = policy;
+    sViewportPolicy.store(policy, std::memory_order_release);
     window::set_frame_buffer_aspect_fit(policy == AURORA_VIEWPORT_FIT);
     if (changed) window::request_frame_buffer_resize();
   }

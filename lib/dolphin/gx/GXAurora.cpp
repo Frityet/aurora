@@ -5,6 +5,8 @@
 #include "__gx.h"
 #include "gx.hpp"
 #include "../../window.hpp"
+#include "../vi/vi_internal.hpp"
+#include "../../webgpu/gpu.hpp"
 
 #include "../../gfx/recording.hpp"
 #include "../../gfx/depth_peek.hpp"
@@ -36,6 +38,36 @@ void GXInsertDebugMarker(const char* label) {
 
 void AuroraSetViewportPolicy(AuroraViewportPolicy policy) {
   aurora::gx::set_viewport_policy(policy);
+}
+
+void AuroraGetPresentationViewport(f32* left, f32* top, f32* width, f32* height) {
+  const auto size = aurora::window::get_window_size();
+  const auto ratio = aurora::vi::locked_aspect_ratio();
+  float x = 0.0F;
+  float y = 0.0F;
+  float w = 1.0F;
+  float h = 1.0F;
+  if (ratio.x && ratio.y && size.native_fb_width && size.native_fb_height) {
+    const auto viewport = aurora::webgpu::calculate_present_viewport(
+        size.native_fb_width, size.native_fb_height, ratio.x, ratio.y);
+    x = viewport.left / static_cast<float>(size.native_fb_width);
+    y = viewport.top / static_cast<float>(size.native_fb_height);
+    w = viewport.width / static_cast<float>(size.native_fb_width);
+    h = viewport.height / static_cast<float>(size.native_fb_height);
+  } else if (aurora::gx::viewport_policy() != AURORA_VIEWPORT_STRETCH &&
+             size.native_fb_width && size.native_fb_height) {
+    const auto sourceSize = aurora::webgpu::last_present_source_size();
+    const auto viewport = aurora::webgpu::calculate_present_viewport(size.native_fb_width, size.native_fb_height,
+                                                                     sourceSize.x, sourceSize.y);
+    x = viewport.left / static_cast<float>(size.native_fb_width);
+    y = viewport.top / static_cast<float>(size.native_fb_height);
+    w = viewport.width / static_cast<float>(size.native_fb_width);
+    h = viewport.height / static_cast<float>(size.native_fb_height);
+  }
+  if (left) *left = x;
+  if (top) *top = y;
+  if (width) *width = w;
+  if (height) *height = h;
 }
 
 void AuroraGetRenderSize(u32* width, u32* height) {

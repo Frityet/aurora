@@ -6,6 +6,7 @@
 #endif
 #include "input.hpp"
 #include "internal.hpp"
+#include "dolphin/vi/vi_internal.hpp"
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>
@@ -484,16 +485,28 @@ AuroraWindowSize get_window_size() {
 
   int fb_w = native_fb_w;
   int fb_h = native_fb_h;
+  const auto lockedAspect = aurora::vi::locked_aspect_ratio();
+  const float targetAspect = lockedAspect.x && lockedAspect.y
+                                 ? static_cast<float>(lockedAspect.x) / static_cast<float>(lockedAspect.y)
+                                 : static_cast<float>(fb_w) / static_cast<float>(std::max(fb_h, 1));
   if (g_frameBufferScale > 0.f) {
     const auto [scaledW, scaledH] =
         scale_frame_buffer_to_aspect(static_cast<int>(g_configuredFrameBufferWidth),
                                      static_cast<int>(g_configuredFrameBufferHeight), g_frameBufferScale,
-                                     static_cast<float>(fb_w) / static_cast<float>(fb_h));
+                                     targetAspect);
     fb_w = scaledW;
     fb_h = scaledH;
+  } else if (lockedAspect.x && lockedAspect.y) {
+    const auto [fitW, fitH] = fit_frame_buffer_to_aspect(fb_w, fb_h, targetAspect);
+    fb_w = fitW;
+    fb_h = fitH;
   }
   if (g_frameBufferAspectFit) {
-    if (g_configuredFrameBufferWidth > 0 && g_configuredFrameBufferHeight > 0) {
+    if (lockedAspect.x && lockedAspect.y) {
+      const auto [fitW, fitH] = fit_frame_buffer_to_aspect(fb_w, fb_h, targetAspect);
+      fb_w = fitW;
+      fb_h = fitH;
+    } else if (g_configuredFrameBufferWidth > 0 && g_configuredFrameBufferHeight > 0) {
       const auto [fitW, fitH] =
           fit_frame_buffer_to_aspect(fb_w, fb_h, static_cast<float>(g_configuredFrameBufferWidth) /
                                                      static_cast<float>(g_configuredFrameBufferHeight));

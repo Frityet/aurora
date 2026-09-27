@@ -25,6 +25,7 @@ std::optional<GXRenderModeObj> sRenderMode;
 // guest CPU: decoding can hold locks that a guest GX call also needs.
 std::atomic<uint64_t> sConfiguredFramebufferSize{(uint64_t{640} << 32) | 480};
 std::atomic<uint64_t> sConfiguredEfbSize{0};
+std::atomic<uint64_t> sLockedAspectRatio{0};
 u32 sRetraceCount = 0;
 void* sRequestedFrameBuffer = nullptr;
 void* sNextFrameBuffer = nullptr;
@@ -203,6 +204,18 @@ Vec2<uint32_t> configured_efb_size() noexcept {
   return {static_cast<uint32_t>(size >> 32), static_cast<uint32_t>(size)};
 }
 
+Vec2<uint32_t> locked_aspect_ratio() noexcept {
+  const auto ratio = sLockedAspectRatio.load(std::memory_order_acquire);
+  return {static_cast<uint32_t>(ratio >> 32), static_cast<uint32_t>(ratio)};
+}
+
+void set_locked_aspect_ratio(uint32_t width, uint32_t height) noexcept {
+  const uint64_t ratio = width != 0 && height != 0 ? (uint64_t{width} << 32) | height : 0;
+  if (sLockedAspectRatio.exchange(ratio, std::memory_order_acq_rel) != ratio) {
+    window::request_frame_buffer_resize();
+  }
+}
+
 ScanoutState scanout_state() noexcept {
   const os::GuestThreadExecutionScope execution;
   return {sInitialized, sBlack != FALSE, sCurrentFrameBuffer};
@@ -253,6 +266,11 @@ void VIInit() {
   retrace_clock().start();
 }
 void VIConfigure(const GXRenderModeObj* rm) { aurora::vi::configure(rm); }
+void VILockAspectRatio(int width, int height) {
+  if (width > 0 && height > 0)
+    aurora::vi::set_locked_aspect_ratio(static_cast<u32>(width), static_cast<u32>(height));
+}
+void VIUnlockAspectRatio() { aurora::vi::set_locked_aspect_ratio(0, 0); }
 void VIConfigurePan(u16 xOrg, u16 yOrg, u16 width, u16 height) {
   using namespace aurora::vi;
   const aurora::os::GuestThreadExecutionScope execution;

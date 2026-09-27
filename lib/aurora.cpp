@@ -14,6 +14,7 @@
 #include "imgui.hpp"
 #include "webgpu/gpu.hpp"
 #include "webgpu/gpu_prof.hpp"
+#include "dolphin/vi/vi_internal.hpp"
 #include <webgpu/webgpu_cpp.h>
 #endif
 
@@ -304,10 +305,16 @@ void end_frame() noexcept {
   if (selection.copy.handle) {
     presentSource = make_present_source(selection.copy.handle);
   }
-  auto viewport = webgpu::calculate_present_viewport(webgpu::g_graphicsConfig.surfaceConfiguration.width,
-                                                     webgpu::g_graphicsConfig.surfaceConfiguration.height,
-                                                     presentSource.size.width, presentSource.size.height);
-  if (gx::g_gxState.viewportPolicy == AURORA_VIEWPORT_STRETCH) {
+  webgpu::set_last_present_source_size(presentSource.size.width, presentSource.size.height);
+  const auto aspectLock = vi::locked_aspect_ratio();
+  auto viewport = aspectLock.x && aspectLock.y
+                      ? webgpu::calculate_present_viewport(
+                            webgpu::g_graphicsConfig.surfaceConfiguration.width,
+                            webgpu::g_graphicsConfig.surfaceConfiguration.height, aspectLock.x, aspectLock.y)
+                      : webgpu::calculate_present_viewport(webgpu::g_graphicsConfig.surfaceConfiguration.width,
+                                                           webgpu::g_graphicsConfig.surfaceConfiguration.height,
+                                                           presentSource.size.width, presentSource.size.height);
+  if (!aspectLock.x && gx::viewport_policy() == AURORA_VIEWPORT_STRETCH) {
     viewport = {
         .left = 0.f,
         .top = 0.f,

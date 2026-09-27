@@ -5,6 +5,7 @@
 #include <dolphin/vi.h>
 
 #include "../lib/gfx/recording.hpp"
+#include "../lib/webgpu/gpu.hpp"
 #include "../lib/webgpu/map_future.hpp"
 
 #include <array>
@@ -351,6 +352,24 @@ void prove_concurrent_frame_completion() {
   aurora::gfx::synchronize();
 }
 
+void prove_locked_presentation_aspect() {
+  const auto letterbox = aurora::webgpu::calculate_present_viewport(1920, 1200, 16, 9);
+  require(letterbox.left == 0.f && letterbox.top == 60.f && letterbox.width == 1920.f && letterbox.height == 1080.f,
+          "16:9 presentation must letterbox a 16:10 surface");
+  const auto pillarbox = aurora::webgpu::calculate_present_viewport(2560, 1080, 16, 9);
+  require(pillarbox.left == 320.f && pillarbox.top == 0.f && pillarbox.width == 1920.f && pillarbox.height == 1080.f,
+          "16:9 presentation must pillarbox an ultrawide surface");
+
+  VILockAspectRatio(16, 9);
+  aurora_update();
+  f32 left = 0.f, top = 0.f, width = 0.f, height = 0.f;
+  AuroraGetPresentationViewport(&left, &top, &width, &height);
+  require(left == 0.f && width == 1.f && top > 0.f && height < 1.f,
+          "presentation viewport accessor must expose locked aspect in client-relative coordinates");
+  VIUnlockAspectRatio();
+  aurora_update();
+}
+
 void prove_gpu_continuation() {
   AuroraConfig config{};
   config.appName = "Aurora draw-sync pass continuation proof";
@@ -380,6 +399,7 @@ void prove_gpu_continuation() {
   renderMode.xFBmode = VI_XFBMODE_SF;
   VIConfigure(&renderMode);
   aurora_update();
+  prove_locked_presentation_aspect();
   require(aurora_begin_frame(), "Aurora must acquire a GPU frame");
   GXSetCopyClear(GXColor{16, 16, 16, 255}, GX_MAX_Z24);
   GXSetDispCopySrc(0, 0, Width, Height);

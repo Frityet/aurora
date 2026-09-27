@@ -487,6 +487,7 @@ void initialize() noexcept;
 void shutdown() noexcept;
 void update() noexcept;
 void set_viewport_policy(AuroraViewportPolicy policy) noexcept;
+AuroraViewportPolicy viewport_policy() noexcept;
 void clear_static_texture_cache() noexcept;
 void clear_copy_texture_cache() noexcept;
 void trim_copy_texture_cache() noexcept;

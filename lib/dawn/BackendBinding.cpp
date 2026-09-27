@@ -30,11 +30,20 @@ std::shared_ptr<wgpu::ChainedStruct> SetupWindowAndGetSurfaceDescriptor(SDL_Wind
   return std::move(desc);
 #elif defined(SDL_PLATFORM_LINUX)
   const char* driver = SDL_GetCurrentVideoDriver();
+  if (driver == nullptr) {
+    return nullptr;
+  }
   if (SDL_strcmp(driver, "wayland") == 0) {
     std::shared_ptr<wgpu::SurfaceSourceWaylandSurface> desc = std::make_shared<wgpu::SurfaceSourceWaylandSurface>();
     desc->display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, nullptr);
     desc->surface = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr);
     return std::move(desc);
+  }
+  if (SDL_strcmp(driver, "x11") == 0) {
+    auto desc = std::make_shared<wgpu::SurfaceSourceXlibWindow>();
+    desc->display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
+    desc->window = static_cast<uint64_t>(SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0));
+    return desc;
   }
 #endif
   return nullptr;

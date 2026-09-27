@@ -123,7 +123,8 @@ add_requires("sqlite3 3.53.0+0")
 add_requires("tracy v0.11.1", {configs = {cmake = false, tracy_enable = false}})
 add_requires(sdl3_require, {
     system = provider("aurora_sdl3_provider") == "system",
-    configs = {shared = shared_linkage("aurora_sdl3_linkage"), x11 = false, wayland = is_plat("linux"), wayland_shared = true},
+    configs = {shared = shared_linkage("aurora_sdl3_linkage"), x11 = is_plat("linux"), x11_shared = true,
+               wayland = is_plat("linux"), wayland_shared = true},
 })
 
 if has_config("aurora_enable_gx") then

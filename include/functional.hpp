@@ -66,6 +66,47 @@ struct LegacySecondArgument<Result (Object::*)(Argument) const noexcept>
 
 namespace std {
 
+// libc++ removes these MSL-era adapters in C++17. Other host libraries still
+// provide them, and libc++ can explicitly enable its own legacy definitions.
+#if defined(_LIBCPP_VERSION) && __cplusplus >= 201703L && !defined(_LIBCPP_ENABLE_CXX17_REMOVED_BINDERS)
+template <typename Argument, typename Result>
+class pointer_to_unary_function {
+public:
+  using argument_type = Argument;
+  using result_type = Result;
+
+  explicit pointer_to_unary_function(Result (*function)(Argument)) : function_(function) {}
+  Result operator()(Argument argument) const { return function_(argument); }
+
+private:
+  Result (*function_)(Argument);
+};
+
+template <typename First, typename Second, typename Result>
+class pointer_to_binary_function {
+public:
+  using first_argument_type = First;
+  using second_argument_type = Second;
+  using result_type = Result;
+
+  explicit pointer_to_binary_function(Result (*function)(First, Second)) : function_(function) {}
+  Result operator()(First first, Second second) const { return function_(first, second); }
+
+private:
+  Result (*function_)(First, Second);
+};
+
+template <typename Argument, typename Result>
+pointer_to_unary_function<Argument, Result> ptr_fun(Result (*function)(Argument)) {
+  return pointer_to_unary_function<Argument, Result>(function);
+}
+
+template <typename First, typename Second, typename Result>
+pointer_to_binary_function<First, Second, Result> ptr_fun(Result (*function)(First, Second)) {
+  return pointer_to_binary_function<First, Second, Result>(function);
+}
+#endif
+
 template <typename MemberPointer>
 constexpr auto mem_func(MemberPointer member) {
   return aurora::compat::LegacyMemberFunction<MemberPointer>{member};

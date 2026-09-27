@@ -27,6 +27,10 @@ struct Area {
   bool contains(const Point& point) const { return point.x < limit; }
   int& value() { return limit; }
 };
+
+bool unused(const Area* area) { return area->updates == 0; }
+int& pointValue(Point& point) { return point.x; }
+int pointDifference(const Point& first, const Point& second) { return first.x - second.x; }
 } // namespace
 
 int main() {
@@ -49,5 +53,16 @@ int main() {
   static_assert(std::is_same_v<decltype(std::mem_func(&Area::value)(&first)), int&>);
   std::mem_func(&Area::value)(&first) = 9;
   require(first.limit == 9);
-  std::cout << "[ok] MSL member adapters and reference-preserving bind2nd\n";
+
+  // Preserve the original pointer predicate's base/const conversion inside an
+  // algorithm, plus noncopyable reference arguments and reference results.
+  last.updates = 0;
+  const auto predicate = std::ptr_fun(&unused);
+  require(std::find_if(areas.begin(), areas.end(), predicate) == areas.begin() + 1);
+  const auto value = std::ptr_fun(&pointValue);
+  static_assert(std::is_same_v<decltype(value(point)), int&>);
+  value(point) = 5;
+  Point another{2};
+  require(std::ptr_fun(&pointDifference)(point, another) == 3);
+  std::cout << "[ok] MSL member adapters, reference-preserving bind2nd and ptr_fun\n";
 }

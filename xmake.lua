@@ -2,7 +2,7 @@ set_project("aurora")
 set_xmakever("3.0.0")
 set_languages("c11", "c++20")
 
-add_rules("mode.debug", "mode.release")
+add_rules("mode.debug", "mode.release", "mode.releasedbg")
 add_repositories("pc-port-local $(projectdir)/..")
 
 option("aurora_enable_gx")

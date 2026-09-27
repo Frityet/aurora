@@ -399,6 +399,7 @@ if (AURORA_ENABLE_GX)
     ../lib/gx/command_processor.cpp
     ../lib/gx/regs.cpp
     ../lib/gfx/texture_convert.cpp
+    ../lib/gfx/render_worker.cpp
     ../lib/thread.cpp
     # Display list reader/optimizer
     ../lib/gx/attr_fmt.cpp

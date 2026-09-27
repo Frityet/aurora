@@ -10,6 +10,7 @@
 #include "command_processor.hpp"
 #include "../gfx/recording.hpp"
 #include "../gfx/depth_peek.hpp"
+#include "../gfx/command_epoch.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -534,6 +535,53 @@ void init() {
   }
 
   start_worker();
+}
+
+void reset_bindings() {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+  AURORA_ASSERT(sActive.load(std::memory_order_acquire), "GX FIFO reset requires an initialized command processor");
+  AURORA_ASSERT(!detail::recording_pending(), "GX FIFO reset inside patchable recording");
+  AURORA_ASSERT(!detail::sInDisplayList, "GX FIFO reset inside display-list recording");
+  AURORA_ASSERT(sBlockedWriters.load(std::memory_order_acquire) == 0,
+                "GX FIFO reset during a blocked producer write");
+
+  // GXInit's SDK __GXFifoInit discards CPU/GP cursor bookkeeping before the
+  // FIFO object is rebuilt. Invalidate native work first so callbacks or
+  // renderer submissions from the old cursor domain cannot escape the reset.
+  gfx::abandon_command_epoch();
+  auto recording = gfx::detail::lock_recording();
+  auto execution = lock_execution();
+  detail::sCPUStream.store(nullptr, std::memory_order_release);
+  sGPStream.store(nullptr, std::memory_order_release);
+  for (auto* stream = sStreams.load(std::memory_order_acquire); stream; stream = stream->next) {
+    stream->revision.fetch_add(1, std::memory_order_acq_rel);
+    stream->storageRevision.fetch_add(1, std::memory_order_acq_rel);
+    {
+      std::lock_guard buffer{sBufferMutex};
+      stream->size = 0;
+      stream->bufferBase = 0;
+      stream->displayList.clear();
+      stream->displayListOffset = 0;
+      stream->displayListEpoch = 0;
+    }
+    stream->written.store(0, std::memory_order_release);
+    stream->published.store(0, std::memory_order_release);
+    stream->fetched.store(0, std::memory_order_release);
+    stream->decoded.store(0, std::memory_order_release);
+    stream->processed.store(0, std::memory_order_release);
+    stream->abortFloor.store(0, std::memory_order_release);
+    stream->initialReadOffset.store(0, std::memory_order_release);
+    stream->initialWriteOffset.store(0, std::memory_order_release);
+    stream->revision.fetch_add(1, std::memory_order_release);
+    notify_completion(*stream);
+  }
+  sBreakPointRevision.fetch_add(1, std::memory_order_acq_rel);
+  sBreakPoint = {};
+  sBreakPointHitRevision.store(0, std::memory_order_release);
+  sFrameActive = false;
+  sPendingDraws = 0;
+  update_write_limits();
+  wake_worker();
 }
 
 void shutdown() {

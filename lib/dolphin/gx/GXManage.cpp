@@ -34,6 +34,7 @@ GXFifoObj* GXInit(void* base, u32 size) {
 
   // Initialize FIFO subsystem
   aurora::gx::initialize_destruction_state();
+  aurora::gx::fifo::reset_bindings();
   GXInitFifoBase(&sFifoObj, base, size);
   GXSetCPUFifo(&sFifoObj);
   GXSetGPFifo(&sFifoObj);

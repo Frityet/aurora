@@ -78,6 +78,9 @@ enum class ProcessingMode : uint8_t {
 ProcessingMode processing_mode() noexcept;
 
 void init();
+// Reset the SDK-owned CPU/GP FIFO bookkeeping when GXInit is called again.
+// The next GXInitFifoBase/GXSetCPUFifo/GXSetGPFifo sequence binds a fresh cursor.
+void reset_bindings();
 void shutdown();
 
 void begin_frame() noexcept;

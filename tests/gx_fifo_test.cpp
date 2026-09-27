@@ -66,6 +66,20 @@ std::atomic<bool> sDrawDoneCallbackSawProcessedCommand{false};
 std::atomic<bool> sBlockingCallbackEntered{false};
 std::atomic<bool> sBlockingCallbackMayReturn{false};
 std::atomic<bool> sBlockingCallbackReturned{false};
+std::atomic<uint32_t> sReinitializeDrawDoneCalls{0};
+
+void reset_fifo_from_draw_done_callback() {
+  if (sReinitializeDrawDoneCalls.fetch_add(1, std::memory_order_acq_rel) != 0) return;
+  // Model the abort alarm's post-floor cleanup tail. It is published after the
+  // first DrawDone command has been decoded but before GXInit resets the FIFO.
+  GXAbortFrame();
+  const std::array<u8, 5> cleanupWrite{GX_LOAD_BP_REG, 0x41, 0x12, 0x34, 0x56};
+  aurora::gx::fifo::write_data(cleanupWrite.data(), cleanupWrite.size());
+  GXSetDrawDone();
+  GXInit(nullptr, 0);
+  const std::array<u8, 5> freshWrite{GX_LOAD_BP_REG, 0x41, 0x65, 0x43, 0x21};
+  aurora::gx::fifo::write_data(freshWrite.data(), freshWrite.size());
+}
 
 void draw_done_callback() {
   sDrawDoneCallbackSawProcessedCommand.store(g_gxState.bpRegValid.test(0x41), std::memory_order_relaxed);
@@ -506,6 +520,23 @@ TEST_F(GXFifoTest, DrawDoneProcessesPublishedAndUnpublishedTailBeforeCallback) {
   EXPECT_TRUE(sDrawDoneCallbackSawProcessedCommand.load(std::memory_order_relaxed));
   GXSetDrawDoneCallback(nullptr);
   aurora::gx::fifo::end_frame();
+}
+
+TEST_F(GXFifoTest, GXInitResetsPendingAbortTailAndRetiresItsCallbacks) {
+  using namespace aurora::gx::fifo;
+  sReinitializeDrawDoneCalls.store(0, std::memory_order_relaxed);
+  GXSetDrawDoneCallback(reset_fifo_from_draw_done_callback);
+
+  // The callback runs on the FIFO worker at the initial DrawDone marker. Its
+  // abort and cleanup commands are queued behind the drain's original target;
+  // GXInit must perform the SDK FIFO reset before the stale tail can dispatch.
+  GXSetDrawDone();
+  drain();
+  drain();
+
+  EXPECT_EQ(sReinitializeDrawDoneCalls.load(std::memory_order_acquire), 1u);
+  EXPECT_EQ(g_gxState.bpRegCache[0x41], 0x41654321u);
+  GXSetDrawDoneCallback(nullptr);
 }
 
 TEST_F(GXFifoTest, SetDrawDonePublishesTailWithoutDraining) {

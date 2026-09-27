@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <stdexcept>
@@ -197,6 +198,57 @@ void begin_frame() {
 void finish_frame() {
   GXCopyDisp(nullptr, GX_TRUE);
   aurora_end_frame();
+}
+
+void bind_color_texture(const GXTexObj& texture) {
+  GXLoadTexObj(const_cast<GXTexObj*>(&texture), GX_TEXMAP0);
+  GXSetNumTexGens(1);
+  GXSetTexCoordGen2(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY, GX_FALSE, GX_PTIDENTITY);
+  GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
+  GXSetTevOp(GX_TEVSTAGE0, GX_REPLACE);
+}
+
+void prove_aborted_static_texture_upload() {
+  // RGBA8 is encoded as a tiled alpha/red plane followed by a green/blue
+  // plane. Distinctive texels make a lost first upload visible in the final
+  // sampled frame.
+  GXTexObj texture{};
+  {
+    std::array<u8, 64> source{};
+    for (unsigned i = 0; i < 32; i += 2) {
+      source[i] = 0xe7;       // alpha
+      source[i + 1] = 0xa5;   // red
+      source[32 + i] = 0x19;  // green
+      source[33 + i] = 0xd3;  // blue
+    }
+    GXInitTexObj(&texture, source.data(), 4, 4, GX_TF_RGBA8, GX_CLAMP, GX_CLAMP, GX_FALSE);
+    GXInitTexObjLOD(&texture, GX_NEAR, GX_NEAR, 0.0F, 0.0F, 0.0F, GX_FALSE, GX_FALSE, GX_ANISO_1);
+
+    begin_frame();
+    bind_color_texture(texture);
+    draw_fullscreen(-0.5F, GXColor{255, 255, 255, 255});
+    GXFlush();
+    AuroraGXSync();
+    GXAbortFrame();
+    GXDrawDone();
+    aurora_end_frame();
+  }
+
+  // The original client bytes have left scope. A later cache hit must use an
+  // upload owned independently of the aborted frame and of that host buffer.
+  begin_frame();
+  bind_color_texture(texture);
+  draw_fullscreen(-0.5F, GXColor{255, 255, 255, 255});
+  GXDrawDone();
+  finish_frame();
+  const auto pixels = synchronize_display_copy();
+  const auto pixelOffset = (static_cast<size_t>(Height / 2) * Width + Width / 2) * 4;
+  const std::array<u8, 4> actual{pixels[pixelOffset], pixels[pixelOffset + 1], pixels[pixelOffset + 2],
+                                 pixels[pixelOffset + 3]};
+  const auto close = [](u8 observed, u8 expected) { return std::abs(int(observed) - int(expected)) <= 4; };
+  require(close(actual[0], 0xa5) && close(actual[1], 0x19) && close(actual[2], 0xd3),
+          "a cached static texture must retain its original pixels after its upload frame is aborted");
+  std::cout << "[ok] aborted static texture upload survives cache reuse and source-buffer retirement\n";
 }
 
 enum class SampleMode { Normal, NoTexture, NoTexGens, LastStageDisabled, LastStageEnabled, LastOfTwoEnabled, Swapped };
@@ -438,6 +490,7 @@ void prove_z_texture() {
   };
   for (const auto& test : cases)
     run_case(test);
+  prove_aborted_static_texture_upload();
   Texture texture;
   texture.init(GX_TF_RGBA8);
   prove_state_boundaries(texture);

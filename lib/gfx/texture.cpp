@@ -7,6 +7,7 @@
 #include "../webgpu/gpu.hpp"
 #include "aurora/aurora.h"
 #include "texture.hpp"
+#include "render_worker.hpp"
 #include "texture_convert.hpp"
 #include "../gx/gx_fmt.hpp"
 
@@ -14,6 +15,7 @@
 #include <cstdint>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include <fmt/format.h>
 #include <tracy/Tracy.hpp>
@@ -141,15 +143,19 @@ TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mi
         .texture = ref.texture,
         .mipLevel = mip,
     };
-    if constexpr (UseTextureBuffer) {
-      queue_texture_upload_data(data.data() + offset, bytesPerRow, heightBlocks, std::move(dstView), physicalSize);
-    } else {
-      const wgpu::TexelCopyBufferLayout dataLayout{
-          .bytesPerRow = bytesPerRow,
-          .rowsPerImage = heightBlocks,
-      };
-      g_queue.WriteTexture(&dstView, data.data() + offset, dataSize, &dataLayout, &physicalSize);
-    }
+    // This initializes a new immutable resource, rather than changing GX
+    // memory. Keep it outside the cancellable frame: GXAbortFrame may discard
+    // that frame while the texture/content caches still retain this handle.
+    const wgpu::TexelCopyBufferLayout dataLayout{
+        .bytesPerRow = bytesPerRow,
+        .rowsPerImage = heightBlocks,
+    };
+    // Queue access is owned by the render worker. Own the pixels until it runs;
+    // the caller's source (including converted scratch storage) may go away.
+    render_worker::enqueue_work([dstView, dataLayout, physicalSize,
+                                 pixels = std::vector<uint8_t>(data.data() + offset, data.data() + offset + dataSize)] {
+      g_queue.WriteTexture(&dstView, pixels.data(), pixels.size(), &dataLayout, &physicalSize);
+    });
     offset += dataSize;
   }
   if (data.size() != UINT32_MAX && offset < data.size()) {

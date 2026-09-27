@@ -439,14 +439,14 @@ bool initialize() {
   /* We don't want to initialize anything input related here, otherwise the add events will get lost to the void */
   TRY(SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight"), "Error setting {}: {}", SDL_HINT_ORIENTATIONS,
       SDL_GetError());
+#if defined(SDL_PLATFORM_LINUX)
+  // Prefer native Wayland with system SDL builds too; explicit environment hints retain precedence.
+  SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland");
+#endif
   TRY(SDL_InitSubSystem(SDL_INIT_EVENTS | SDL_INIT_VIDEO), "Error initializing SDL: {}", SDL_GetError());
   time::internal::set_pause_reason(time::internal::PauseReason::Surface,
                                    !g_surfaceReady.load(std::memory_order_acquire));
 
-#if !defined(_WIN32) && !defined(__APPLE__)
-  TRY(SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0"), "Error setting {}: {}",
-      SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, SDL_GetError());
-#endif
   TRY(SDL_SetHint(SDL_HINT_SCREENSAVER_INHIBIT_ACTIVITY_NAME, g_config.appName), "Error setting {}: {}",
       SDL_HINT_SCREENSAVER_INHIBIT_ACTIVITY_NAME, SDL_GetError());
   TRY(SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_GAMECUBE_RUMBLE_BRAKE, "1"), "Error setting {}: {}",

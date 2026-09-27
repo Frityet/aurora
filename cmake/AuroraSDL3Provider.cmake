@@ -137,6 +137,11 @@ elseif (_aurora_sdl3_provider STREQUAL "vendor")
     if (WIN32)
       set(SDL_LIBC ON CACHE BOOL "Use the system C library" FORCE)
     endif ()
+    if (CMAKE_SYSTEM_NAME STREQUAL Linux)
+      set(SDL_X11 OFF CACHE BOOL "Build the X11 video backend" FORCE)
+      set(SDL_WAYLAND ON CACHE BOOL "Build the Wayland video backend" FORCE)
+      set(SDL_WAYLAND_SHARED ON CACHE BOOL "Dynamically load Wayland libraries" FORCE)
+    endif ()
 
     include(FetchContent)
     FetchContent_Declare(SDL

@@ -7,6 +7,7 @@
 #include "../../gfx/texture.hpp"
 #include "../../gfx/recording.hpp"
 #include "../../gfx/frame.hpp"
+#include "../../gfx/render_worker.hpp"
 #include "../../gx/fifo.hpp"
 #include "../../window.hpp"
 #include "../../gfx/clear.hpp"
@@ -162,7 +163,9 @@ bool display_copy_size(u32* width, u32* height) noexcept {
   return true;
 }
 
-bool read_display_copy_rgba8(void* dst, u32 dstSize, u32* width, u32* height, u32* rowStrideOut) noexcept {
+namespace {
+bool read_display_copy_rgba8_on_render_worker(void* dst, u32 dstSize, u32* width, u32* height,
+                                             u32* rowStrideOut) noexcept {
   const aurora::allocation::HostAllocationScope hostAllocations;
   if (gpu_copy_ready()) {
     gfx::gpu_synchronize();
@@ -176,7 +179,10 @@ bool read_display_copy_rgba8(void* dst, u32 dstSize, u32* width, u32* height, u3
     return false;
   }
 
-  const auto& handle = displayCopy->handle;
+  // Keep the GPU texture alive through command submission and asynchronous
+  // mapping even if its cache entry is retired while this readback is active.
+  const auto handle = displayCopy->handle;
+  const auto format = handle->format;
   const u32 copyWidth = handle->size.width;
   const u32 copyHeight = handle->size.height;
   const u32 tightRowStride = copyWidth * 4u;
@@ -257,8 +263,8 @@ bool read_display_copy_rgba8(void* dst, u32 dstSize, u32* width, u32* height, u3
   }
 
   auto* dstBytes = static_cast<u8*>(dst);
-  const bool needsBgraSwizzle = handle->format == wgpu::TextureFormat::BGRA8Unorm ||
-                               handle->format == wgpu::TextureFormat::BGRA8UnormSrgb;
+  const bool needsBgraSwizzle = format == wgpu::TextureFormat::BGRA8Unorm ||
+                               format == wgpu::TextureFormat::BGRA8UnormSrgb;
   for (u32 y = 0; y < copyHeight; ++y) {
     const auto* srcRow = mappedBytes + static_cast<size_t>(y) * readbackRowPitch;
     auto* dstRow = dstBytes + static_cast<size_t>(y) * tightRowStride;
@@ -277,6 +283,22 @@ bool read_display_copy_rgba8(void* dst, u32 dstSize, u32* width, u32* height, u3
   }
   readbackBuffer.Unmap();
   return true;
+}
+} // namespace
+
+bool read_display_copy_rgba8(void* dst, u32 dstSize, u32* width, u32* height, u32* rowStrideOut) noexcept {
+  if (gfx::render_worker::is_worker_thread()) {
+    return read_display_copy_rgba8_on_render_worker(dst, dstSize, width, height, rowStrideOut);
+  }
+
+  // Keep WebGPU submission and mapping serialized with ordinary Aurora frame
+  // submissions. The caller remains blocked, so output pointers stay valid.
+  bool succeeded = false;
+  gfx::render_worker::enqueue_work([&] {
+    succeeded = read_display_copy_rgba8_on_render_worker(dst, dstSize, width, height, rowStrideOut);
+  });
+  gfx::render_worker::synchronize();
+  return succeeded;
 }
 
 void copy_tex(const void* dest, GXBool clear) noexcept {

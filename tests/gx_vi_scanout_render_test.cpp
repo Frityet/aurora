@@ -6,6 +6,7 @@
 #include "gx/gx.hpp"
 #include "gfx/texture.hpp"
 #include "gfx/frame.hpp"
+#include "gfx/render_worker.hpp"
 #include "gx/fifo.hpp"
 #include "webgpu/gpu.hpp"
 #include <array>
@@ -14,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 constexpr u16 CopyWidth = 128;
@@ -139,6 +141,28 @@ void expect_texture_color(const aurora::gfx::TextureHandle& texture, GXColor exp
   require(matches, "GX destination must retain its own copied pixels");
 }
 
+bool latest_display_copy_readback_matches(GXColor expected) {
+  const auto* latest = aurora::gx::latest_display_copy();
+  if (!latest || !latest->handle) return false;
+  const auto width = latest->handle->size.width;
+  const auto height = latest->handle->size.height;
+  std::vector<u8> pixels(static_cast<size_t>(width) * height * 4);
+  u32 readWidth = 0;
+  u32 readHeight = 0;
+  u32 rowStride = 0;
+  if (AuroraReadDisplayCopyRGBA8(pixels.data(), static_cast<u32>(pixels.size()), &readWidth, &readHeight,
+                                 &rowStride) != TRUE) return false;
+  if (readWidth != width || readHeight != height || rowStride != width * 4) return false;
+  const auto* pixel = pixels.data() + static_cast<size_t>(height / 2) * rowStride + static_cast<size_t>(width / 2) * 4;
+  const auto close = [](u8 a, u8 b) { return int(a) >= int(b) - 2 && int(a) <= int(b) + 2; };
+  return close(pixel[0], expected.r) && close(pixel[1], expected.g) && close(pixel[2], expected.b);
+}
+
+void expect_latest_display_copy_readback(GXColor expected) {
+  require(latest_display_copy_readback_matches(expected),
+          "public screenshot readback must return the latest display-copy pixels and dimensions");
+}
+
 void expect_color(GXColor expected, u32 width = CopyWidth, u32 height = CopyHeight) {
   const auto selection = selected();
   require(selection.supported && selection.drawVideo && selection.copy.handle,
@@ -210,6 +234,16 @@ void prove_scanout() {
   GXSetTexCopyDst(CopyWidth, CopyHeight, GX_TF_RGBA8, GX_FALSE);
   GXCopyTex(textureCopy.data(), GX_TRUE);
   aurora_end_frame();
+  for (u32 readback = 0; readback < 3; ++readback) {
+    expect_latest_display_copy_readback(green);
+  }
+  bool workerInlineReadbackSucceeded = false;
+  aurora::gfx::render_worker::enqueue_work([&] {
+    workerInlineReadbackSucceeded = latest_display_copy_readback_matches(green);
+  });
+  aurora::gfx::render_worker::synchronize();
+  require(workerInlineReadbackSucceeded,
+          "screenshot readback from the render worker must complete inline without deadlocking");
   require(!selected().drawVideo, "unconfigured black VI output must suppress both actual copies");
 
   VISetNextFrameBuffer(a.data());
@@ -305,6 +339,7 @@ void prove_scanout() {
     configure_draw_state();
     copy(b.data(), green);
     aurora_end_frame();
+    expect_latest_display_copy_readback(green);
     expect_color(green, scaledWidth + delta, scaledHeight + delta);
     require(aurora::gx::g_gxState.copyTextureCache.size() <= 2,
             "new size may add one reusable allocation until the next resize");
@@ -369,6 +404,7 @@ void prove_scanout() {
   require(aurora_begin_frame(), "buffer reuse frame must begin");
   copy(b.data(), blue);
   aurora_end_frame();
+  expect_latest_display_copy_readback(blue);
   expect_color(blue);
   VISetNextFrameBuffer(a.data());
   VIFlush();

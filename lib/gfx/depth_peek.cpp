@@ -600,9 +600,7 @@ void abandon_unsubmitted() noexcept {
 }
 
 void wait_for_readbacks(CommandEpoch epoch) noexcept {
-  while (epoch.current() && !g_mapFutures.retire_ready()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds{1});
-  }
+  while (epoch.current() && !g_mapFutures.wait_for_one()) {}
 }
 
 AuroraDepthSnapshotId capture_efb() noexcept {

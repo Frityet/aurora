@@ -16,6 +16,7 @@
 #include "gx/shader_info.hpp"
 #include "internal.hpp"
 #include "webgpu/gpu.hpp"
+#include "../lib/dolphin/vi/vi_internal.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -68,6 +69,8 @@ Resources& resources() noexcept {
   return resources;
 }
 
+uint64_t efb_generation() noexcept { return 0; }
+
 void increment_merged_draw_count() noexcept {}
 } // namespace aurora::gfx::detail
 
@@ -75,6 +78,8 @@ namespace aurora::webgpu {
 bool g_bcTexturesSupported = false;
 bool g_textureComponentSwizzleSupported = false;
 GraphicsConfig g_graphicsConfig{};
+TextureWithSampler g_frameBuffer{};
+TextureWithSampler g_frameBufferResolved{};
 wgpu::Device g_device;
 wgpu::Queue g_queue;
 wgpu::Instance g_instance;
@@ -89,6 +94,7 @@ void refresh_scissor_and_viewport() noexcept {}
 
 namespace aurora::vi {
 Vec2<uint32_t> configured_fb_size() noexcept { return {640, 480}; }
+Vec2<uint32_t> configured_efb_size() noexcept { return {640, 480}; }
 void configure(const GXRenderModeObj*) noexcept {}
 } // namespace aurora::vi
 

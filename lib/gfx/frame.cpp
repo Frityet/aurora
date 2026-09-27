@@ -168,8 +168,7 @@ void wait_for_submitted_work(CommandEpoch epoch = {}) {
       wgpu::CallbackMode::WaitAnyOnly, [](wgpu::QueueWorkDoneStatus status, wgpu::StringView message) {
         AURORA_ASSERT(status == wgpu::QueueWorkDoneStatus::Success, "GX GPU completion failed: {}", message);
       });
-  while (epoch.current() && !webgpu::complete_future(future, false)) {
-    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  while (epoch.current() && !webgpu::complete_future_for(future, webgpu::kFutureWaitQuantumNs)) {
   }
   if (future.id != 0) g_completionFutures.add(future);
   g_completionFutures.retire_ready();

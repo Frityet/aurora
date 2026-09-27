@@ -576,46 +576,81 @@ static u32 calc_vtx_size(GXVtxFmt fmt) noexcept {
 }
 
 static void require_draw_array_spans(GXVtxFmt fmt, const u8* data, u16 vtxCount, u32 vtxSize) {
+  if (vtxCount == 0) {
+    return;
+  }
+
   const auto& vtxFmt = g_gxState.vtxFmts[fmt];
   std::array<u64, MaxVtxAttr> requiredEnds{};
+  struct IndexedAttrLayout {
+    GXAttr attr;
+    u32 offset;
+    u32 indexWidth;
+    u32 stride;
+    u32 componentSize;
+    u32 elementSize;
+    u32 sliceCount;
+  };
+  std::array<IndexedAttrLayout, MaxVtxAttr> indexedAttrs{};
+  size_t indexedAttrCount = 0;
+  u32 vertexOffset = 0;
+
+  for (int i = GX_VA_PNMTXIDX; i <= GX_VA_TEX7; ++i) {
+    const auto attr = static_cast<GXAttr>(i);
+    const auto type = g_gxState.vtxDesc[i];
+    switch (type) {
+    case GX_NONE:
+      break;
+    case GX_DIRECT: {
+      const auto& attrFmt = vtxFmt.attrs[i];
+      vertexOffset += comp_type_size(attr, attrFmt.type) * comp_cnt_count(attr, attrFmt.cnt);
+      break;
+    }
+    case GX_INDEX8:
+    case GX_INDEX16: {
+      const auto& attrFmt = vtxFmt.attrs[i];
+      const u32 componentSize = comp_type_size(attr, attrFmt.type);
+      const bool nbt3 = attr == GX_VA_NRM && attrFmt.cnt == GX_NRM_NBT3;
+      const u32 sliceCount = nbt3 ? 3u : 1u;
+      const u32 indexWidth = type == GX_INDEX8 ? 1u : 2u;
+      const u32 elementSize = nbt3 ? 3u * componentSize
+                                   : componentSize * comp_cnt_count(attr, attrFmt.cnt);
+      indexedAttrs[indexedAttrCount++] = {
+          .attr = attr,
+          .offset = vertexOffset,
+          .indexWidth = indexWidth,
+          .stride = g_gxState.arrays[i].stride,
+          .componentSize = componentSize,
+          .elementSize = elementSize,
+          .sliceCount = sliceCount,
+      };
+      vertexOffset += indexWidth * sliceCount;
+      break;
+    }
+    }
+  }
+  AURORA_ASSERT(vertexOffset == vtxSize, "indexed draw vertex layout mismatch");
 
   for (u32 vertex = 0; vertex < vtxCount; ++vertex) {
-    const u8* cursor = data + vertex * vtxSize;
-    for (int i = GX_VA_PNMTXIDX; i <= GX_VA_TEX7; ++i) {
-      const auto attr = static_cast<GXAttr>(i);
-      const auto type = g_gxState.vtxDesc[i];
-      switch (type) {
-      case GX_NONE:
-        break;
-      case GX_DIRECT:
-        cursor += comp_type_size(attr, vtxFmt.attrs[i].type) * comp_cnt_count(attr, vtxFmt.attrs[i].cnt);
-        break;
-      case GX_INDEX8:
-      case GX_INDEX16: {
-        const auto& attrFmt = vtxFmt.attrs[i];
-        const u32 componentSize = comp_type_size(attr, attrFmt.type);
-        const bool nbt3 = attr == GX_VA_NRM && attrFmt.cnt == GX_NRM_NBT3;
-        const u32 indexCount = nbt3 ? 3u : 1u;
-        const u32 elementSize = nbt3 ? 3u * componentSize
-                                     : componentSize * comp_cnt_count(attr, attrFmt.cnt);
-        const auto& array = g_gxState.arrays[i];
-        for (u32 slice = 0; slice < indexCount; ++slice) {
-          u32 index;
-          if (type == GX_INDEX8) {
-            index = *cursor++;
-          } else {
-            index = read_bits<u16>(cursor);
-            cursor += sizeof(u16);
-          }
-          const u64 within = nbt3 ? static_cast<u64>(slice) * 3u * componentSize : 0u;
-          const u64 end = static_cast<u64>(index) * array.stride + within + elementSize;
-          requiredEnds[i] = std::max(requiredEnds[i], end);
+    const u8* const vertexData = data + static_cast<size_t>(vertex) * vtxSize;
+    for (size_t attrIndex = 0; attrIndex < indexedAttrCount; ++attrIndex) {
+      const auto& layout = indexedAttrs[attrIndex];
+      const u8* cursor = vertexData + layout.offset;
+      for (u32 slice = 0; slice < layout.sliceCount; ++slice) {
+        u32 index;
+        if (layout.indexWidth == sizeof(u8)) {
+          index = *cursor++;
+        } else {
+          index = read_bits<u16>(cursor);
+          cursor += sizeof(u16);
         }
-        break;
-      }
+        const u64 within = layout.sliceCount == 3
+                               ? static_cast<u64>(slice) * 3u * layout.componentSize
+                               : 0u;
+        const u64 end = static_cast<u64>(index) * layout.stride + within + layout.elementSize;
+        requiredEnds[layout.attr] = std::max(requiredEnds[layout.attr], end);
       }
     }
-    AURORA_ASSERT(cursor == data + (vertex + 1) * vtxSize, "indexed draw vertex layout mismatch");
   }
 
   for (int i = GX_VA_POS; i <= GX_VA_TEX7; ++i) {

@@ -7,6 +7,7 @@
 #include "gx_test_common.hpp"
 #include "gx/fifo_recording.hpp"
 #include "gfx/depth_snapshot_store.hpp"
+#include <aurora/guest_thread.hpp>
 #include "__gx.h"
 #include <revolution/gx/GXRegs.h>
 
@@ -524,6 +525,9 @@ TEST_F(GXFifoTest, DrawDoneProcessesPublishedAndUnpublishedTailBeforeCallback) {
 
 TEST_F(GXFifoTest, GXInitResetsPendingAbortTailAndRetiresItsCallbacks) {
   using namespace aurora::gx::fifo;
+  // Model the game's serialized guest producer while drain yields the CPU to
+  // the draw-done callback that reinitializes GX and writes the replacement FIFO.
+  const aurora::os::GuestThreadExecutionScope guestExecution;
   sReinitializeDrawDoneCalls.store(0, std::memory_order_relaxed);
   GXSetDrawDoneCallback(reset_fifo_from_draw_done_callback);
 
@@ -1877,6 +1881,34 @@ static std::vector<u8> record_indexed_pos_draw(const void* data, u8 stride, u8 i
 
 static std::vector<u8> indexed_pos_draw(u8 index) { return {GX_TRIANGLES, 0, 1, index}; }
 
+static std::vector<u8> record_indexed_nbt3_draw(const void* positions, const void* normals) {
+  std::array<u8, 1024> displayList{};
+  GXBeginDisplayList(displayList.data(), displayList.size());
+  GXClearVtxDesc();
+  GXSetVtxDesc(GX_VA_POS, GX_INDEX16);
+  GXSetVtxDesc(GX_VA_NRM, GX_INDEX8);
+  GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_NBT3, GX_S16, 0);
+  GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+  GXSetArray(GX_VA_POS, positions, 16);
+  GXSetArray(GX_VA_NRM, normals, 36);
+  GXBegin(GX_TRIANGLES, GX_VTXFMT0, 2);
+  GXPosition1x16(2);
+  GXNormal1x8(0);
+  GXNormal1x8(1);
+  GXNormal1x8(2);
+  GXTexCoord2f32(0.25f, 0.5f);
+  GXPosition1x16(4);
+  GXNormal1x8(3);
+  GXNormal1x8(2);
+  GXNormal1x8(1);
+  GXTexCoord2f32(0.75f, 1.0f);
+  GXEnd();
+  const u32 written = GXEndDisplayList();
+  return {displayList.begin(), displayList.begin() + written};
+}
+
 TEST_F(GXFifoTest, RetailEnumTagsRemainAvailable) {
   _GXAttr attr = GX_VA_POS;
   _GXTlutSize tlutSize = GX_TLUT_256;
@@ -1905,6 +1937,21 @@ TEST_F(GXFifoTest, SetArray_RetailDerivesNativeHostSpanFromDraw) {
   ASSERT_EQ(aurora::gfx::g_lastStorageUpload.size(), 36u);
   EXPECT_TRUE(std::equal(aurora::gfx::g_lastStorageUpload.begin(), aurora::gfx::g_lastStorageUpload.end(),
                          reinterpret_cast<const u8*>(positions.data())));
+}
+
+TEST_F(GXFifoTest, SetArray_MixedIndex16AndNbt3SpansUsePackedOffsetsAcrossVertices) {
+  std::array<u8, 5 * 16> positions{};
+  std::array<u8, 4 * 36> normals{};
+  const auto bytes = record_indexed_nbt3_draw(positions.data(), normals.data());
+
+  reset_gx_state();
+  decode_fifo(bytes);
+
+  // Position uses the second vertex's INDEX16 value (4) and a 12-byte XYZ
+  // element at stride 16. NBT3 uses three INDEX8 values per vertex; its first
+  // basis vector has the largest required end (index 3 * stride 36 + 6).
+  EXPECT_EQ(gxState().arrays[GX_VA_POS].requiredSize, 76u);
+  EXPECT_EQ(gxState().arrays[GX_VA_NRM].requiredSize, 114u);
 }
 
 TEST_F(GXFifoTest, SetArray_SizedKeepsExplicitBigEndianResourceContract) {

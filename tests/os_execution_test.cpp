@@ -570,6 +570,56 @@ TEST(OSExecutionTest, CancellationWaitsForNoexceptSchedulerYieldGuard) {
   EXPECT_EQ(result, reinterpret_cast<void*>(~uintptr_t{0}));
 }
 
+TEST(OSExecutionTest, NativeWaitRestoresOwnershipBeforeDeliveringCancellation) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  struct State {
+    std::atomic<bool> enteredWait{false};
+    std::atomic<bool> leaveWait{false};
+    std::atomic<bool> destructorReturned{false};
+    std::atomic<bool> receiveReturned{false};
+    OSMessageQueue queue{};
+    OSMessage storage[1]{};
+  } state;
+  struct NativeResource {
+    State& state;
+    ~NativeResource() noexcept {
+      {
+        const aurora::os::GuestThreadWaitScope waiting;
+        state.enteredWait.store(true, std::memory_order_release);
+        while (!state.leaveWait.load(std::memory_order_acquire)) std::this_thread::yield();
+      }
+      state.destructorReturned.store(true, std::memory_order_release);
+    }
+  };
+  OSInitMessageQueue(&state.queue, state.storage, 1);
+  ManagedTestThread worker([](void* argument) -> void* {
+    auto& state = *static_cast<State*>(argument);
+    { NativeResource resource{state}; }
+    OSReceiveMessage(&state.queue, nullptr, OS_MESSAGE_BLOCK);
+    state.receiveReturned.store(true, std::memory_order_release);
+    return reinterpret_cast<void*>(uintptr_t{7});
+  }, &state, 16);
+  OSResumeThread(&worker.thread);
+  OSYieldThread();
+  ASSERT_TRUE(state.enteredWait.load(std::memory_order_acquire));
+
+  std::thread canceller([&] {
+    const BOOL interrupts = OSDisableInterrupts();
+    state.leaveWait.store(true, std::memory_order_release);
+    OSCancelThread(&worker.thread);
+    OSRestoreInterrupts(interrupts);
+  });
+  {
+    const aurora::os::GuestThreadWaitScope waiting;
+    canceller.join();
+  }
+  EXPECT_TRUE(state.destructorReturned.load(std::memory_order_acquire));
+  EXPECT_FALSE(state.receiveReturned.load(std::memory_order_acquire));
+  void* result = nullptr;
+  EXPECT_TRUE(OSJoinThread(&worker.thread, &result));
+  EXPECT_EQ(result, reinterpret_cast<void*>(~uintptr_t{0}));
+}
+
 TEST(OSExecutionTest, CancellationWakesAndTerminatesBlockingMessageReceiver) {
   const aurora::os::GuestThreadExecutionScope execution;
   BlockingReceiveState state;

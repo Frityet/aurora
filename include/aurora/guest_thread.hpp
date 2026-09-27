@@ -44,10 +44,12 @@ private:
 // Use only around a blocking native wait that cannot execute guest code on
 // this thread. Let SDK threads and callbacks run while the host worker finishes,
 // then restore this caller's CPU ownership, nesting and interrupt state.
+// Restoration defers pending cancellation until an explicit SDK control
+// checkpoint, allowing native resource destructors to complete their cleanup.
 class GuestThreadWaitScope final {
 public:
   GuestThreadWaitScope();
-  ~GuestThreadWaitScope() noexcept(false);
+  ~GuestThreadWaitScope() noexcept;
   GuestThreadWaitScope(const GuestThreadWaitScope&) = delete;
   GuestThreadWaitScope& operator=(const GuestThreadWaitScope&) = delete;
 

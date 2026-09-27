@@ -37,18 +37,18 @@ OSThread* sLastGuestThread = nullptr;
 OSContext* sLastGuestContext = nullptr;
 void check_thread_control(bool defer_cancellation = false);
 bool current_thread_cancelled();
-void reschedule();
+void reschedule(bool defer_cancellation = false);
 void yield_guest_cpu();
 u32 sReschedule = 0;
 
 s32 scheduler_count() { return std::bit_cast<s32>(sReschedule); }
 
-void acquire_cpu(bool interrupt = false) {
+void acquire_cpu(bool interrupt = false, bool defer_cancellation = false) {
   if (!sOwnsCpu) {
     sCpuGate.lock();
     sOwnsCpu = true;
     if (!interrupt) {
-      check_thread_control();
+      check_thread_control(defer_cancellation);
       sLastGuestThread = OSGetCurrentThread();
       sLastGuestContext = sCurrentContext != nullptr ? sCurrentContext : &sLastGuestThread->context;
     }
@@ -156,7 +156,7 @@ void make_runnable(OSThread* thread) {
   sThreadWake.notify_all();
 }
 
-void reschedule() {
+void reschedule(bool defer_cancellation) {
   if (scheduler_count() > 0 || sRunQueue.head == nullptr) return;
   auto* current = OSGetCurrentThread();
   // Exiting threads publish their completed state before waking joiners.
@@ -165,7 +165,7 @@ void reschedule() {
   if (current->priority <= priority) return;
   current->state = OS_THREAD_STATE_READY;
   make_runnable(current);
-  check_thread_control();
+  check_thread_control(defer_cancellation);
 }
 
 void yield_guest_cpu() {
@@ -538,10 +538,13 @@ GuestThreadWaitScope::GuestThreadWaitScope() : owned_(sOwnsCpu) {
   release_cpu();
 }
 
-GuestThreadWaitScope::~GuestThreadWaitScope() noexcept(false) {
+GuestThreadWaitScope::~GuestThreadWaitScope() noexcept {
   if (owned_) {
-    acquire_cpu();
-    reschedule();
+    // A native resource destructor may wait for GPU or host work. Restoring
+    // its CPU borrow is not a safe place to unwind that enclosing destructor.
+    // Retain cancellation until the next explicit SDK control checkpoint.
+    acquire_cpu(false, true);
+    reschedule(true);
   }
 }
 } // namespace aurora::os

@@ -1,6 +1,8 @@
 #ifndef _DOLPHIN_OS_H_
 #define _DOLPHIN_OS_H_
 
+#include <stdarg.h>
+
 #ifdef __cplusplus
 #include <cstdio>
 #else

@@ -339,15 +339,6 @@ if (AURORA_ENABLE_GX)
   endif ()
   set_tests_properties(gx_copy_alpha_render PROPERTIES LABELS gpu RUN_SERIAL TRUE)
 
-  add_executable(rfl_character_resource_tests
-    rfl_character_resource_test.cpp
-    ../lib/rfl/CharacterResource.cpp
-  )
-  target_include_directories(rfl_character_resource_tests PRIVATE ../include ../lib)
-  target_compile_definitions(rfl_character_resource_tests PRIVATE AURORA TARGET_PC)
-  target_link_libraries(rfl_character_resource_tests PRIVATE gtest gtest_main)
-  gtest_discover_tests(rfl_character_resource_tests)
-
   # GX FIFO round-trip tests
   # Compile GX sources directly to avoid pulling in the full renderer/WebGPU runtime
   add_executable(gx_fifo_tests

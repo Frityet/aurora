@@ -14,6 +14,7 @@ struct FramePacket;
 // Serialize recorder publication/retirement with the FIFO decoder. The render
 // worker must not take this lock: recording may wait for its queued work.
 std::unique_lock<std::recursive_mutex> lock_recording();
+uint64_t efb_generation() noexcept;
 
 struct RecordedFrame {
   FramePacket* packet;

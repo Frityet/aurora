@@ -58,6 +58,7 @@ struct NandOperationTrace {
 struct NandIoCallbacks {
   void* context = nullptr;
   std::optional<std::vector<u8>> (*read)(void*, std::string_view) = nullptr;
+  std::optional<NandFileMetadata> (*metadata)(void*, std::string_view) = nullptr;
   void (*commit)(void*, std::string_view, std::span<const u8>, u8, u8) = nullptr;
   s32 (*create)(void*, std::string_view, u8, u8) = nullptr;
   s32 (*move)(void*, std::string_view, std::string_view) = nullptr;

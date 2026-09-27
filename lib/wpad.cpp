@@ -500,6 +500,15 @@ extern "C" s32 WPADProbe(s32 channel, u32* type) {
   return connected ? WPAD_ERR_NONE : WPAD_ERR_NO_CONTROLLER;
 }
 
+extern "C" s32 WPADReadFaceData(s32 channel, void*, u32, u32,
+                                  WPADCallback) {
+  // Face data is stored in a Wii Remote's private flash memory. The native
+  // keyboard/mouse device has no such storage, so do not fabricate an empty
+  // Mii buffer or report a successful transfer.
+  return aurora::wpad_service().is_connected(channel) ? WPAD_ERR_TRANSFER
+                                                       : WPAD_ERR_NO_CONTROLLER;
+}
+
 extern "C" void WPADDisconnect(s32 channel) { aurora::wpad_service().set_connected(channel, false); }
 
 extern "C" void WPADEnableURCC(BOOL) {}

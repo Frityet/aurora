@@ -16,10 +16,13 @@
 #include "../vi/vi_internal.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <atomic>
+#include <cstdint>
 #include <cstring>
 #include <thread>
+#include <vector>
 
 namespace {
 aurora::Vec2<uint32_t> scale_copy_dst(u32 logicalWidth, u32 logicalHeight) {
@@ -91,6 +94,166 @@ aurora::gfx::CopyFilter current_copy_filter() noexcept {
 } // namespace
 
 namespace aurora::gx {
+namespace {
+struct EfbColorPeekCache {
+  uint64_t generation = 0;
+  u32 width = 0;
+  u32 height = 0;
+  u32 efbWidth = 0;
+  u32 efbHeight = 0;
+  std::uintptr_t textureIdentity = 0;
+  AuroraViewportPolicy viewportPolicy = AURORA_VIEWPORT_FIT;
+  wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
+  std::vector< u8 > rgba;
+
+  ~EfbColorPeekCache() {
+    const aurora::allocation::HostAllocationScope hostAllocations;
+    rgba.clear();
+    rgba.shrink_to_fit();
+  }
+};
+
+EfbColorPeekCache g_efbColorPeekCache;
+
+bool peek_efb_rgba8_on_render_worker(u16 x, u16 y, std::array< u8, 4 >& rgba) {
+  const aurora::allocation::HostAllocationScope hostAllocations;
+
+  // GXPeekARGB reads the current EFB, not the last VI display copy. Resolve
+  // MSAA first by reading the same texture used as the scene pass resolve view.
+  const auto& source = webgpu::g_graphicsConfig.msaaSamples > 1 ? webgpu::g_frameBufferResolved : webgpu::g_frameBuffer;
+  const auto texture = source.texture;
+  const auto size = source.size;
+  const auto format = source.format;
+  if (!gpu_copy_ready() || !texture || size.width == 0 || size.height == 0) {
+    return false;
+  }
+
+  const auto efbSize = vi::configured_efb_size();
+  const auto viewportPolicy = g_gxState.viewportPolicy;
+  const auto textureIdentity = reinterpret_cast< std::uintptr_t >(texture.Get());
+  if (viewportPolicy != AURORA_VIEWPORT_NATIVE &&
+      (efbSize.x == 0 || efbSize.y == 0 || x >= efbSize.x || y >= efbSize.y)) {
+    return false;
+  }
+
+  const auto generation = gfx::detail::efb_generation();
+  if (g_efbColorPeekCache.generation != generation || g_efbColorPeekCache.width != size.width ||
+      g_efbColorPeekCache.height != size.height || g_efbColorPeekCache.efbWidth != efbSize.x ||
+      g_efbColorPeekCache.efbHeight != efbSize.y || g_efbColorPeekCache.textureIdentity != textureIdentity ||
+      g_efbColorPeekCache.viewportPolicy != viewportPolicy ||
+      g_efbColorPeekCache.format != format ||
+      g_efbColorPeekCache.rgba.size() != static_cast< size_t >(size.width) * size.height * 4U) {
+    if (format != wgpu::TextureFormat::BGRA8Unorm && format != wgpu::TextureFormat::BGRA8UnormSrgb &&
+        format != wgpu::TextureFormat::RGBA8Unorm && format != wgpu::TextureFormat::RGBA8UnormSrgb) {
+      return false;
+    }
+
+    const u32 tightRowStride = size.width * 4U;
+    const u32 readbackRowPitch = align_copy_row_pitch(tightRowStride);
+    const u64 readbackSize = static_cast< u64 >(readbackRowPitch) * size.height;
+    const wgpu::BufferDescriptor readbackDescriptor{
+        .label = "GXPeekARGB EFB snapshot readback",
+        .usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst,
+        .size = readbackSize,
+    };
+    auto readbackBuffer = webgpu::g_device.CreateBuffer(&readbackDescriptor);
+    if (!readbackBuffer) {
+      return false;
+    }
+
+    const wgpu::CommandEncoderDescriptor encoderDescriptor{
+        .label = "GXPeekARGB EFB snapshot encoder",
+    };
+    auto encoder = webgpu::g_device.CreateCommandEncoder(&encoderDescriptor);
+    const wgpu::TexelCopyTextureInfo copySource{
+        .texture = texture,
+    };
+    const wgpu::TexelCopyBufferInfo copyDestination{
+        .layout = {.bytesPerRow = readbackRowPitch, .rowsPerImage = size.height},
+        .buffer = readbackBuffer,
+    };
+    const wgpu::Extent3D copyExtent{.width = size.width, .height = size.height, .depthOrArrayLayers = 1};
+    encoder.CopyTextureToBuffer(&copySource, &copyDestination, &copyExtent);
+    const auto commandBuffer = encoder.Finish();
+    webgpu::g_queue.Submit(1, &commandBuffer);
+
+    std::atomic_bool mapped{false};
+    std::atomic_bool mapSucceeded{false};
+    readbackBuffer.MapAsync(wgpu::MapMode::Read, 0, readbackSize, wgpu::CallbackMode::AllowSpontaneous,
+                            [&](wgpu::MapAsyncStatus status, wgpu::StringView) {
+                              mapSucceeded.store(status == wgpu::MapAsyncStatus::Success, std::memory_order_release);
+                              mapped.store(true, std::memory_order_release);
+                            });
+    while (!mapped.load(std::memory_order_acquire)) {
+      webgpu::g_instance.ProcessEvents();
+      std::this_thread::yield();
+    }
+    if (!mapSucceeded.load(std::memory_order_acquire)) {
+      return false;
+    }
+
+    const auto* mappedBytes = static_cast< const u8* >(readbackBuffer.GetConstMappedRange(0, readbackSize));
+    if (mappedBytes == nullptr) {
+      readbackBuffer.Unmap();
+      return false;
+    }
+
+    g_efbColorPeekCache.rgba.resize(static_cast< size_t >(size.width) * size.height * 4U);
+    for (u32 row = 0; row < size.height; ++row) {
+      const auto* sourceRow = mappedBytes + static_cast< size_t >(row) * readbackRowPitch;
+      auto* targetRow = g_efbColorPeekCache.rgba.data() + static_cast< size_t >(row) * tightRowStride;
+      if (format == wgpu::TextureFormat::BGRA8Unorm || format == wgpu::TextureFormat::BGRA8UnormSrgb) {
+        for (u32 column = 0; column < size.width; ++column) {
+          const auto* sourcePixel = sourceRow + static_cast< size_t >(column) * 4U;
+          auto* targetPixel = targetRow + static_cast< size_t >(column) * 4U;
+          targetPixel[0] = sourcePixel[2];
+          targetPixel[1] = sourcePixel[1];
+          targetPixel[2] = sourcePixel[0];
+          targetPixel[3] = sourcePixel[3];
+        }
+      } else {
+        std::memcpy(targetRow, sourceRow, tightRowStride);
+      }
+    }
+    readbackBuffer.Unmap();
+
+    g_efbColorPeekCache.generation = generation;
+    g_efbColorPeekCache.width = size.width;
+    g_efbColorPeekCache.height = size.height;
+    g_efbColorPeekCache.efbWidth = efbSize.x;
+    g_efbColorPeekCache.efbHeight = efbSize.y;
+    g_efbColorPeekCache.textureIdentity = textureIdentity;
+    g_efbColorPeekCache.viewportPolicy = viewportPolicy;
+    g_efbColorPeekCache.format = format;
+  }
+
+  u32 sourceX = x;
+  u32 sourceY = y;
+  if (viewportPolicy != AURORA_VIEWPORT_NATIVE) {
+    sourceX = static_cast< u32 >((static_cast< double >(x) + 0.5) * size.width / efbSize.x);
+    sourceY = static_cast< u32 >((static_cast< double >(y) + 0.5) * size.height / efbSize.y);
+  }
+  if (sourceX >= size.width || sourceY >= size.height) {
+    return false;
+  }
+
+  const auto* sourcePixel = g_efbColorPeekCache.rgba.data() + (static_cast< size_t >(sourceY) * size.width + sourceX) * 4U;
+  std::copy_n(sourcePixel, rgba.size(), rgba.data());
+  return true;
+}
+} // namespace
+
+bool peek_efb_rgba8(u16 x, u16 y, std::array< u8, 4 >& rgba) {
+  if (gfx::render_worker::is_worker_thread()) {
+    return peek_efb_rgba8_on_render_worker(x, y, rgba);
+  }
+
+  bool succeeded = false;
+  gfx::render_worker::enqueue_work([&] { succeeded = peek_efb_rgba8_on_render_worker(x, y, rgba); });
+  gfx::render_worker::synchronize();
+  return succeeded;
+}
+
 const GXState::CopyTextureRef* latest_display_copy() noexcept {
   if (!g_gxState.frameDisplayCopyValid) {
     return nullptr;

@@ -1,5 +1,6 @@
 find_package(Threads REQUIRED)
-add_library(aurora_os STATIC lib/dolphin/os/OSInit.cpp
+add_library(aurora_os STATIC lib/dolphin/mem/mem_expHeap.c
+        lib/dolphin/mem/mem_heapCommon.c lib/dolphin/mem/mem_list.c lib/dolphin/os/OSInit.cpp
         lib/dolphin/os/OSMemory.cpp
         lib/dolphin/os/internal.hpp
         lib/dolphin/os/OSBootInfo.cpp

@@ -19,9 +19,6 @@ struct DmaAudioOutput::Impl {
 DmaAudioOutput::DmaAudioOutput(int sample_rate) : m_impl(std::make_unique<Impl>()) {
   if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
     aurora::throw_host_exception<std::runtime_error>(SDL_GetError());
-  const std::string driver = SDL_GetCurrentAudioDriver();
-  if (driver == "dummy" || driver == "disk")
-    aurora::throw_host_exception<std::runtime_error>("Audio DMA requires an audible playback device");
   const SDL_AudioSpec spec{SDL_AUDIO_S16, 2, sample_rate};
   m_impl->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
   if (!m_impl->stream || !SDL_ResumeAudioStreamDevice(m_impl->stream))

@@ -175,6 +175,39 @@ std::array<u8, 4> pixel(const std::vector<u8>& pixels, u32 x, u32 y) {
   return {pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]};
 }
 
+struct PeekResult {
+  u16 token = 0;
+  u32 color = 0;
+  u32 repeated = 0;
+  u32 alpha00 = 0;
+  u32 alphaFF = 0;
+};
+
+std::array< PeekResult, 3 > sPeekResults{};
+size_t sPeekResultCount = 0;
+
+void peek_draw_sync_callback(u16 token) {
+  if (sPeekResultCount >= sPeekResults.size()) {
+    return;
+  }
+
+  auto& result = sPeekResults[sPeekResultCount++];
+  result.token = token;
+  GXPokeAlphaRead(GX_READ_NONE);
+  GXPeekARGB(Width / 4, Height / 2, &result.color);
+  GXPeekARGB(Width / 4, Height / 2, &result.repeated);
+  GXPokeAlphaRead(GX_READ_00);
+  GXPeekARGB(Width / 4, Height / 2, &result.alpha00);
+  GXPokeAlphaRead(GX_READ_FF);
+  GXPeekARGB(Width / 4, Height / 2, &result.alphaFF);
+  GXPokeAlphaRead(GX_READ_NONE);
+}
+
+std::array<u8, 4> unpack_argb(u32 color) {
+  return {static_cast<u8>(color >> 16), static_cast<u8>(color >> 8), static_cast<u8>(color),
+          static_cast<u8>(color >> 24)};
+}
+
 void begin_frame() {
   aurora_update();
   require(aurora_begin_frame(), "Aurora must acquire a real render frame");
@@ -283,6 +316,41 @@ void prove_fragment_alpha() {
   require_color(pixel(unblended, 3 * Width / 4, 2), {0, 252, 0, 212}, "alpha-only draw preserves right RGB");
 }
 
+void prove_efb_peek_cache() {
+  alignas(32) std::array<u8, Stride * Height> destination{};
+  sPeekResults = {};
+  sPeekResultCount = 0;
+  GXSetDrawSyncCallback(peek_draw_sync_callback);
+
+  begin_frame();
+  draw_fullscreen({252, 0, 0, 84});
+  GXSetDrawSync(0xA101);
+
+  // GXCopyTex(clear=true) clears the EFB using GXSetCopyClear after copying.
+  // The second callback must read the new clear result, not the first token's
+  // cached scene pass.
+  GXSetCopyClear({16, 252, 48, 168}, GX_MAX_Z24);
+  GXCopyTex(destination.data(), GX_TRUE);
+  GXSetDrawSync(0xA102);
+
+  // A later draw in the same frame creates another EFB generation.
+  draw_fullscreen({0, 0, 252, 212});
+  GXSetDrawSync(0xA103);
+  aurora_end_frame();
+  aurora::gfx::synchronize();
+  GXSetDrawSyncCallback(nullptr);
+
+  require(sPeekResultCount == sPeekResults.size(), "all three GX draw-sync callbacks must complete");
+  require(sPeekResults[0].token == 0xA101 && sPeekResults[1].token == 0xA102 && sPeekResults[2].token == 0xA103,
+          "draw-sync peeks must retain command-stream token order");
+  require_color(unpack_argb(sPeekResults[0].color), {252, 0, 0, 84}, "GX_READ_NONE returns current alpha");
+  require_color(unpack_argb(sPeekResults[0].repeated), {252, 0, 0, 84}, "repeated peeks share one pixel result");
+  require_color(unpack_argb(sPeekResults[0].alpha00), {252, 0, 0, 0}, "GX_READ_00 forces peek alpha to zero");
+  require_color(unpack_argb(sPeekResults[0].alphaFF), {252, 0, 0, 255}, "GX_READ_FF forces peek alpha to 255");
+  require_color(unpack_argb(sPeekResults[1].color), {16, 252, 48, 168}, "copy-clear invalidates the prior EFB snapshot");
+  require_color(unpack_argb(sPeekResults[2].color), {0, 0, 252, 212}, "redraw invalidates the prior EFB snapshot");
+}
+
 void prove_destination_alpha(std::string_view mode) {
   AuroraConfig config{};
   config.appName = "Aurora GX destination-alpha render proof";
@@ -320,6 +388,7 @@ void prove_destination_alpha(std::string_view mode) {
 
   if (mode != "--draw-only") prove_copy_preservation();
   if (mode != "--copy-only") prove_fragment_alpha();
+  prove_efb_peek_cache();
 }
 } // namespace
 

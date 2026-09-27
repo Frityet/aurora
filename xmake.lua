@@ -207,9 +207,7 @@ target("aurora-base")
     add_aurora_common_settings(true)
     add_files("lib/runtime_state.cpp", "lib/compat.cpp",
               "lib/j_audio_dsp.cpp", "lib/audio_dma.cpp", "lib/device.cpp", "lib/input.cpp", "lib/logging.cpp",
-              "lib/system_info.cpp", "lib/io.cpp", "lib/thread.cpp", "lib/time.cpp",
-              "lib/rfl/ResourceArchive.cpp")
-    add_headerfiles("include/(aurora/rfl/ResourceArchive.hpp)")
+              "lib/system_info.cpp", "lib/io.cpp", "lib/thread.cpp", "lib/time.cpp")
     add_packages("fmt", "libsdl3", "xxhash", {public = true})
     add_packages("abseil", "sqlite3", "tracy")
     if is_plat("macosx", "iphoneos") then
@@ -251,7 +249,7 @@ target("aurora-core")
     add_aurora_common_settings(true)
     add_files("lib/aurora.cpp")
     add_headerfiles("include/(aurora/**.h)", "include/(aurora/**.hpp)", "include/(revolution.h)", "include/(revolution/**.h)",
-                    "include/(RVLFaceLib.h)", "lib/*.hpp")
+                    "include/(RVLFaceLib.h)", "include/(RFL_*.h)", "lib/*.hpp")
     add_deps("aurora-base", "aurora-platform")
     add_packages("fmt", "libsdl3", "xxhash", {public = true})
     add_packages("abseil", "sqlite3", "tracy")
@@ -272,6 +270,8 @@ target("aurora-core")
 target("aurora-os")
     set_kind("static")
     add_aurora_common_settings(true)
+    add_rules("c")
+    add_files("lib/dolphin/mem/**.c")
     add_files("lib/dolphin/os/OSInit.cpp", "lib/dolphin/os/OSMemory.cpp",
               "lib/dolphin/os/OSBootInfo.cpp", "lib/dolphin/os/OSTime.cpp",
               "lib/dolphin/os/OSAlarm.cpp",
@@ -346,7 +346,6 @@ if has_config("aurora_enable_gx") then
                   "lib/gx/regs.cpp",
                   "lib/gx/dl.cpp", "lib/gx/fifo.cpp", "lib/gx/fifo_recording.cpp", "lib/gx/gx.cpp", "lib/gx/texture.cpp",
                   "lib/gx/pipeline.cpp", "lib/gx/shader.cpp", "lib/gx/shader_info.cpp",
-                  "lib/rfl/CharacterModel.cpp", "lib/rfl/CharacterResource.cpp",
                   "lib/dolphin/gx/GXBump.cpp", "lib/dolphin/gx/GXCull.cpp",
                   "lib/dolphin/gx/GXCpu2Efb.cpp", "lib/dolphin/gx/GXDispList.cpp",
                   "lib/dolphin/gx/GXDraw.cpp", "lib/dolphin/gx/GXExtra.cpp",
@@ -358,7 +357,6 @@ if has_config("aurora_enable_gx") then
                   "lib/dolphin/gx/GXTextureRegion.cpp",
                   "lib/dolphin/gx/GXTransform.cpp", "lib/dolphin/gx/GXVert.cpp",
                   "lib/dolphin/gx/GXAurora.cpp")
-        add_headerfiles("include/(aurora/rfl/CharacterModel.hpp)")
         if has_config("aurora_enable_rmlui") then
             add_files("lib/rmlui/pipeline.cpp")
             add_defines("AURORA_ENABLE_RMLUI")

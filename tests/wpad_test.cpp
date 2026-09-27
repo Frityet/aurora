@@ -1,5 +1,6 @@
 #include <aurora/wpad.hpp>
 #include <revolution/kpad.h>
+#include <revolution/wpad.h>
 
 #include <gtest/gtest.h>
 
@@ -11,6 +12,10 @@
 #include <type_traits>
 
 namespace {
+
+int g_face_data_callback_count = 0;
+
+void face_data_callback(s32, s32) { ++g_face_data_callback_count; }
 
 static_assert(WPAD_ERR_NONE == 0 && WPAD_ERR_NO_CONTROLLER == -1 && WPAD_ERR_BUSY == -2 && WPAD_ERR_TRANSFER == -3);
 static_assert(std::is_standard_layout_v<KPADStatus> && std::is_trivially_copyable_v<KPADStatus>);
@@ -866,6 +871,21 @@ TEST_F(WpadProbeTest, SensorBarAndAutoSleepConfigurationRemainExplicitAcrossSamp
   KPADInit();
   EXPECT_EQ(WPADGetSensorBarPosition(), WPAD_SENSOR_BAR_POS_BOTTOM);
   EXPECT_EQ(service.auto_sleep_time(), 15);
+}
+
+TEST_F(WpadProbeTest, FaceDataReadReportsMissingRemoteStorageWithoutFabricatingMiiData) {
+  auto& service = aurora::wpad_service();
+  std::array<std::uint8_t, 32> buffer{};
+  g_face_data_callback_count = 0;
+
+  service.set_connected(0, false);
+  EXPECT_EQ(WPADReadFaceData(0, buffer.data(), buffer.size(), 0, face_data_callback),
+            WPAD_ERR_NO_CONTROLLER);
+
+  service.set_connected(0, true);
+  EXPECT_EQ(WPADReadFaceData(0, buffer.data(), buffer.size(), 0, face_data_callback),
+            WPAD_ERR_TRANSFER);
+  EXPECT_EQ(g_face_data_callback_count, 0);
 }
 
 } // namespace

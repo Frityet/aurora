@@ -124,7 +124,16 @@ s32 NANDCloseAsync(NANDFileInfo*, NANDCallback, NANDCommandBlock*);
 s32 NANDRead(NANDFileInfo*, void*, u32);
 s32 NANDReadAsync(NANDFileInfo*, void*, u32, NANDCallback, NANDCommandBlock*);
 
+s32 NANDSeek(NANDFileInfo*, s32, s32);
+
 s32 NANDGetLength(NANDFileInfo*, u32*);
+s32 NANDGetLengthAsync(NANDFileInfo*, u32*, NANDCallback, NANDCommandBlock*);
+
+void NANDSetUserData(NANDCommandBlock*, void*);
+void* NANDGetUserData(const NANDCommandBlock*);
+
+s32 NANDPrivateSafeOpenAsync(const char*, NANDFileInfo*, const u8, void*, const u32, NANDCallback, NANDCommandBlock*);
+s32 NANDSafeCloseAsync(NANDFileInfo*, NANDCallback, NANDCommandBlock*);
 
 s32 NANDDelete(const char*);
 

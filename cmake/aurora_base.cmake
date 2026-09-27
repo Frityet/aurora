@@ -11,7 +11,6 @@ add_library(aurora_base STATIC
         lib/thread.hpp
         lib/time.cpp
         lib/time_internal.hpp
-        lib/rfl/ResourceArchive.cpp
         lib/system_info.cpp
         lib/system_info.hpp
 )

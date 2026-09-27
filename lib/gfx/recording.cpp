@@ -73,6 +73,7 @@ struct FrameRecorder {
 
 FrameRecorder g_recorder;
 std::recursive_mutex g_recordingMutex;
+std::atomic< uint64_t > gEfbGeneration{1};
 
 std::string pass_label(std::string_view kind) {
 #ifdef AURORA_GFX_DEBUG_GROUPS
@@ -527,6 +528,14 @@ void enqueue_op(FramePacket& frame, uint32_t opIndex) {
 }
 
 void enqueue_pass(FramePacket& frame, uint32_t passIndex) {
+  if (passIndex < frame.renderPasses.size()) {
+    const auto& pass = frame.renderPasses[passIndex];
+    if (!pass.sealed && pass.colorAttachmentCount != 0 &&
+        pass.colorAttachments[SceneColorAttachmentIndex].semantic == ColorAttachmentSemantic::SceneColor &&
+        pass.has_content()) {
+      gEfbGeneration.fetch_add(1, std::memory_order_release);
+    }
+  }
   seal_pass(frame, passIndex);
   const auto opIndex = static_cast<uint32_t>(frame.ops.size());
   frame.ops.emplace_back(capture_frame_op(frame, FrameOpType::RenderPass, passIndex));
@@ -535,6 +544,8 @@ void enqueue_pass(FramePacket& frame, uint32_t passIndex) {
 } // namespace
 
 namespace detail {
+
+uint64_t efb_generation() noexcept { return gEfbGeneration.load(std::memory_order_acquire); }
 
 std::unique_lock<std::recursive_mutex> lock_recording() {
   std::unique_lock lock{g_recordingMutex, std::defer_lock};

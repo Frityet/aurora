@@ -9,7 +9,9 @@ namespace aurora::os {
 // Serialize host-to-guest execution with OS-created guest threads. SDK waits
 // and explicit yields release this ownership while retaining the caller's
 // scope, interrupt state, and allocation routing. This does not mask host
-// signals or asynchronously stop a host thread.
+// signals or asynchronously stop a host thread. Cancellation requested while
+// an SDK yield is unwinding a scheduler guard is delivered at the next control
+// checkpoint, after that guard has restored scheduler and interrupt state.
 class GuestThreadExecutionScope final {
 public:
   GuestThreadExecutionScope();

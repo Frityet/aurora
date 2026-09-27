@@ -35,7 +35,7 @@ thread_local unsigned sInterruptDepth = 0;
 // retirement clears them under the same gate before that storage can disappear.
 OSThread* sLastGuestThread = nullptr;
 OSContext* sLastGuestContext = nullptr;
-void check_thread_control();
+void check_thread_control(bool defer_cancellation = false);
 bool current_thread_cancelled();
 void reschedule();
 void yield_guest_cpu();
@@ -111,6 +111,7 @@ void OSYieldThread() {
     yield_guest_cpu();
   }
   OSRestoreInterrupts(enabled);
+  if (enabled && current_thread_cancelled()) check_thread_control();
 }
 
 
@@ -176,7 +177,12 @@ void yield_guest_cpu() {
   // so a lower-priority worker cannot steal the yielding context's turn.
   release_cpu();
   std::this_thread::yield();
-  acquire_cpu();
+  sCpuGate.lock();
+  sOwnsCpu = true;
+
+  // OSYieldThread restores its caller's saved interrupt state before deciding
+  // whether this pending cancellation can be delivered safely.
+  check_thread_control(true);
 }
 
 struct NativeThread {
@@ -383,14 +389,37 @@ bool current_thread_cancelled() {
   return sManagedThread != nullptr && sManagedThread->cancel;
 }
 
-void check_thread_control() {
-  if (current_thread_cancelled()) throw ThreadExit{reinterpret_cast<void*>(~std::uintptr_t{0})};
+void check_thread_control(bool defer_cancellation) {
+  if (current_thread_cancelled()) {
+    // Yield callers finish restoring scheduler and interrupt state first.
+    if (defer_cancellation || scheduler_count() > 0) {
+      if (sCurrentThread != nullptr && sCurrentThread->queue == &sRunQueue) {
+        dequeue_thread(&sRunQueue, sCurrentThread);
+        sCurrentThread->queue = nullptr;
+        sCurrentThread->state = OS_THREAD_STATE_RUNNING;
+        sLastGuestThread = sCurrentThread;
+        sLastGuestContext = sCurrentContext != nullptr ? sCurrentContext : &sCurrentThread->context;
+      }
+      sThreadWake.notify_all();
+      return;
+    }
+    throw ThreadExit{reinterpret_cast<void*>(~std::uintptr_t{0})};
+  }
   if (sCurrentThread == nullptr) return;
   while (sCurrentThread->suspend > 0 ||
          (sCurrentThread->state == OS_THREAD_STATE_READY && sRunQueue.head != sCurrentThread)) {
     if (sCurrentThread->state == OS_THREAD_STATE_RUNNING) sCurrentThread->state = OS_THREAD_STATE_READY;
     wait_for_control_change();
-    if (current_thread_cancelled()) throw ThreadExit{reinterpret_cast<void*>(~std::uintptr_t{0})};
+    if (current_thread_cancelled()) {
+      if (defer_cancellation || scheduler_count() > 0) {
+        if (sCurrentThread->queue == &sRunQueue) dequeue_thread(&sRunQueue, sCurrentThread);
+        sCurrentThread->queue = nullptr;
+        sCurrentThread->state = OS_THREAD_STATE_RUNNING;
+        sThreadWake.notify_all();
+        return;
+      }
+      throw ThreadExit{reinterpret_cast<void*>(~std::uintptr_t{0})};
+    }
   }
   if (sCurrentThread->state == OS_THREAD_STATE_READY) {
     dequeue_thread(&sRunQueue, sCurrentThread);
@@ -428,6 +457,7 @@ void run_managed_thread(ManagedThread* record) {
   } catch (...) {
     unsupported_thread_boundary("unhandled exception from guest thread entry point");
   }
+  if (record->cancel) value = reinterpret_cast<void*>(~std::uintptr_t{0});
   aurora::allocation::routing_state = {};
   // All original locks and join queues are owned by this same CPU gate.
   // Disable control checkpoints while publishing the completed thread state.

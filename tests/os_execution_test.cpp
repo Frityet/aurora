@@ -7,6 +7,7 @@
 #include <atomic>
 #include <barrier>
 #include <chrono>
+#include <cstdint>
 #include <future>
 #include <thread>
 #include <vector>
@@ -482,5 +483,120 @@ TEST(OSExecutionTest, CancellingReadyThreadRemovesItsSchedulerLink) {
     EXPECT_TRUE(OSSendMessage(&state.queue, nullptr, OS_MESSAGE_NOBLOCK));
     EXPECT_TRUE(OSJoinThread(&next.thread, nullptr));
   }
+}
+
+struct SchedulerYieldCancellationState {
+  std::atomic<bool> enteredGuard{false};
+  std::atomic<bool> cancelRequested{false};
+  std::atomic<bool> guardReturned{false};
+};
+
+struct BlockingReceiveState {
+  std::atomic<bool> entered{false};
+  OSMessageQueue queue{};
+  OSMessage storage[1]{};
+
+  static void* receive(void* argument) {
+    auto& state = *static_cast<BlockingReceiveState*>(argument);
+    state.entered.store(true, std::memory_order_release);
+    OSReceiveMessage(&state.queue, nullptr, OS_MESSAGE_BLOCK);
+    return reinterpret_cast<void*>(uintptr_t{7});
+  }
+};
+
+struct YieldingWorkerState {
+  std::atomic<bool> entered{false};
+
+  static void* run(void* argument) {
+    auto& state = *static_cast<YieldingWorkerState*>(argument);
+    state.entered.store(true, std::memory_order_release);
+    for (;;) OSYieldThread();
+  }
+};
+
+struct GuardedReceiveState {
+  SchedulerYieldCancellationState scheduler;
+  BlockingReceiveState receive;
+};
+
+struct NoexceptSchedulerYield {
+  SchedulerYieldCancellationState& state;
+  BOOL interruptStatus;
+
+  explicit NoexceptSchedulerYield(SchedulerYieldCancellationState& state)
+      : state(state), interruptStatus(OSDisableInterrupts()) {
+    OSDisableScheduler();
+  }
+
+  ~NoexceptSchedulerYield() noexcept {
+    OSEnableScheduler();
+    state.enteredGuard.store(true, std::memory_order_release);
+    while (!state.cancelRequested.load(std::memory_order_acquire)) OSYieldThread();
+    OSRestoreInterrupts(interruptStatus);
+    state.guardReturned.store(true, std::memory_order_release);
+  }
+};
+
+TEST(OSExecutionTest, CancellationWaitsForNoexceptSchedulerYieldGuard) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  GuardedReceiveState state;
+  OSInitMessageQueue(&state.receive.queue, state.receive.storage, 1);
+  ManagedTestThread worker([](void* argument) -> void* {
+    auto& state = *static_cast<GuardedReceiveState*>(argument);
+    {
+      NoexceptSchedulerYield guard(state.scheduler);
+    }
+    OSReceiveMessage(&state.receive.queue, nullptr, OS_MESSAGE_BLOCK);
+    return reinterpret_cast<void*>(uintptr_t{7});
+  }, &state, 16);
+  OSResumeThread(&worker.thread);
+  OSYieldThread();
+  ASSERT_TRUE(state.scheduler.enteredGuard.load(std::memory_order_acquire));
+
+  std::thread canceller([&] {
+    const BOOL interrupts = OSDisableInterrupts();
+    state.scheduler.cancelRequested.store(true, std::memory_order_release);
+    OSCancelThread(&worker.thread);
+    OSRestoreInterrupts(interrupts);
+  });
+  {
+    const aurora::os::GuestThreadWaitScope wait;
+    canceller.join();
+  }
+
+  EXPECT_TRUE(state.scheduler.guardReturned.load(std::memory_order_acquire));
+  void* result = nullptr;
+  EXPECT_TRUE(OSJoinThread(&worker.thread, &result));
+  EXPECT_EQ(result, reinterpret_cast<void*>(~uintptr_t{0}));
+}
+
+TEST(OSExecutionTest, CancellationWakesAndTerminatesBlockingMessageReceiver) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  BlockingReceiveState state;
+  OSInitMessageQueue(&state.queue, state.storage, 1);
+  ManagedTestThread worker(BlockingReceiveState::receive, &state, 16);
+  OSResumeThread(&worker.thread);
+  OSYieldThread();
+  ASSERT_TRUE(state.entered.load(std::memory_order_acquire));
+  ASSERT_EQ(worker.thread.state, OS_THREAD_STATE_WAITING);
+  ASSERT_EQ(state.queue.queueReceive.head, &worker.thread);
+
+  OSCancelThread(&worker.thread);
+  EXPECT_TRUE(OSIsThreadTerminated(&worker.thread));
+  EXPECT_EQ(worker.thread.queue, nullptr);
+}
+
+TEST(OSExecutionTest, CancellationStopsEnabledInterruptYieldLoop) {
+  const aurora::os::GuestThreadExecutionScope execution;
+  YieldingWorkerState state;
+  ManagedTestThread worker(YieldingWorkerState::run, &state, 16);
+  OSResumeThread(&worker.thread);
+  OSYieldThread();
+  ASSERT_TRUE(state.entered.load(std::memory_order_acquire));
+
+  OSCancelThread(&worker.thread);
+  void* result = nullptr;
+  EXPECT_TRUE(OSJoinThread(&worker.thread, &result));
+  EXPECT_EQ(result, reinterpret_cast<void*>(~uintptr_t{0}));
 }
 } // namespace

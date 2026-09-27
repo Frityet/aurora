@@ -530,6 +530,10 @@ void GXCopyDisp(void* dest, GXBool clear) {
     return;
   }
   aurora::gx::fifo::drain();
+  // Drain can yield while the FIFO decoder continues with newer commands.
+  // Protect the complete immediate GX copy transaction once the wait is over
+  // so pass recording and GXState ownership stay serialized with that decoder.
+  const auto recording = aurora::gfx::detail::lock_recording();
 
   const auto rect = aurora::gx::map_logical_scissor(g_gxState.dispCopy.src);
   const auto [scaledWidth, scaledHeight] =

@@ -4,8 +4,12 @@
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/vi.h>
 
+#include "../lib/gfx/recording.hpp"
+#include "../lib/gx/command_processor.hpp"
+
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -14,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -166,6 +171,44 @@ void copy_test_frame(void* destination) {
   aurora_end_frame();
 }
 
+void copy_test_frame_during_fifo_decoder(void* destination) {
+  GXSetCopyClear(GXColor{0, 0, 0, 0}, GX_MAX_Z24);
+  GXSetDispCopySrc(0, 0, Width, Height);
+  GXSetDispCopyDst(Width, Height);
+  GXSetDispCopyYScale(1.0F);
+  GXSetCopyClamp(static_cast<GXFBClamp>(GX_CLAMP_TOP | GX_CLAMP_BOTTOM));
+
+  constexpr std::array<u8, 5> drawDoneCommand{GX_LOAD_BP_REG, 0x45, 0, 0, 2};
+  std::atomic_bool startDecoder = false;
+  std::atomic_bool decoderOwnsRecording = false;
+  std::atomic_bool decodedDrawDone = false;
+  std::thread decoder([&] {
+    auto recording = aurora::gfx::detail::lock_recording();
+    decoderOwnsRecording.store(true, std::memory_order_release);
+    while (!startDecoder.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+    const auto result = aurora::gx::fifo::process(drawDoneCommand.data(), drawDoneCommand.size());
+    if (result.drawDone && result.bytesProcessed == drawDoneCommand.size()) {
+      decodedDrawDone.store(true, std::memory_order_release);
+      // Mirrors process_to: release the decoder's recording borrow before
+      // dispatching the draw-done completion (which takes its own borrow).
+      recording.unlock();
+      aurora::gfx::complete_draw();
+    }
+  });
+
+  while (!decoderOwnsRecording.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+  startDecoder.store(true, std::memory_order_release);
+  GXCopyDisp(destination, GX_TRUE);
+  decoder.join();
+  require(decodedDrawDone.load(std::memory_order_acquire),
+          "concurrent FIFO draw-done command must decode completely");
+  aurora_end_frame();
+}
+
 void prove_copy_filter() {
   AuroraConfig config{};
   config.appName = "Aurora GX copy-filter render proof";
@@ -214,7 +257,7 @@ void prove_copy_filter() {
 
   begin_test_frame();
   GXSetCopyFilter(GX_FALSE, nullptr, GX_FALSE, nullptr);
-  copy_test_frame(reinterpret_cast<void*>(std::uintptr_t{0x3000}));
+  copy_test_frame_during_fifo_decoder(reinterpret_cast<void*>(std::uintptr_t{0x3000}));
   require_color(read_probe(), {0, 252, 0, 84}, "disabled copy filter identity");
 }
 } // namespace
